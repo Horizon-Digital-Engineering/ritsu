@@ -22,7 +22,15 @@ import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
 const BASH_TIMEOUT_MS = 30_000;
+const BASH_TIMEOUT_CEIL_MS = 60_000; // hard upper bound on per-call override
 const BASH_OUTPUT_CAP = 30 * 1024; // 30KB combined stdout+stderr
+/** Per-workspace ceiling on concurrent Bash invocations. The workspace
+ *  path is the identity (an agent has one cwd-workspace, so this caps
+ *  per-agent fan-out). Two concurrent shells covers legit parallel use
+ *  ("run lint + run tests simultaneously") without letting a prompt-
+ *  injected agent spin up 100 parallel sleep loops. */
+const BASH_MAX_INFLIGHT_PER_CWD = 2;
+const bashInflight = new Map<string, number>();
 const GLOB_FILE_CAP = 500;          // tools/walks bail after this many matches
 const GREP_RESULT_CAP = 200;        // grep returns at most this many lines
 const WALK_FILE_CAP = 50_000;       // safety: never walk past this many entries
@@ -226,7 +234,7 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         required: ['command'],
         properties: {
           command: { type: 'string', description: 'Shell command to run.' },
-          timeout_ms: { type: 'integer', minimum: 100, maximum: 300_000, description: 'Override timeout (max 5 minutes).' },
+          timeout_ms: { type: 'integer', minimum: 100, maximum: 60_000, description: 'Override timeout (max 60 seconds).' },
         },
       },
       handler: async (args) => {
@@ -235,9 +243,25 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         if (!auth.ok) return `denied: ${auth.reason}`;
         const command = asString(args.command);
         if (!command) return 'error: command required';
-        const timeoutMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : BASH_TIMEOUT_MS;
-        logger.info('ra.process.bash', { cwd, cmd_preview: command.slice(0, 120) });
-        return await runBash(command, cwd, timeoutMs);
+        const requestedTimeout = typeof args.timeout_ms === 'number' ? args.timeout_ms : BASH_TIMEOUT_MS;
+        const timeoutMs = Math.min(requestedTimeout, BASH_TIMEOUT_CEIL_MS);
+        // Per-workspace concurrency cap. Refuse rather than queue — an
+        // LLM that sees "too many" can react instead of stalling on a
+        // wait that has no observability for it.
+        const inflight = bashInflight.get(cwd) ?? 0;
+        if (inflight >= BASH_MAX_INFLIGHT_PER_CWD) {
+          return `error: too many concurrent Bash calls in flight (${inflight}/${BASH_MAX_INFLIGHT_PER_CWD}). ` +
+            `Wait for one to complete before issuing another.`;
+        }
+        bashInflight.set(cwd, inflight + 1);
+        try {
+          logger.info('ra.process.bash', { cwd, cmd_preview: command.slice(0, 120) });
+          return await runBash(command, cwd, timeoutMs);
+        } finally {
+          const n = (bashInflight.get(cwd) ?? 1) - 1;
+          if (n <= 0) bashInflight.delete(cwd);
+          else bashInflight.set(cwd, n);
+        }
       },
     },
     {
