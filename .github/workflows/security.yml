@@ -8,6 +8,7 @@ on:
   schedule:
     # Weekly Sunday 06:00 UTC — catches new advisories in deps that haven't changed.
     - cron: '0 6 * * 0'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -136,6 +137,12 @@ jobs:
       id-token: write          # publish results to scorecard.dev (powers the badge)
       contents: read
       actions: read
+      # Branch-Protection + Webhooks + Maintained checks read repo
+      # administration metadata via the GitHub API. Without these
+      # permissions the checks return -1 (inconclusive) instead of an
+      # actual score, dragging the overall number down.
+      administration: read
+      checks: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
