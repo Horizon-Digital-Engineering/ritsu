@@ -5,7 +5,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed to attach the SBOM to the release
+  contents: write       # attach SBOM to the release
+  id-token: write       # OIDC token for the SLSA attestation
+  attestations: write   # write the attestation to the repo
 
 jobs:
   sbom:
@@ -30,6 +32,17 @@ jobs:
 
       - name: Generate SPDX SBOM
         run: npm sbom --sbom-format=spdx --sbom-type=application > "ritsu-${REF_NAME}-sbom.spdx.json"
+
+      # SLSA build provenance — a signed statement that "this SBOM file
+      # was produced by this workflow at this commit." Anyone consuming
+      # ritsu's release artifacts can verify the attestation chain with
+      # `gh attestation verify <file> --owner Horizon-Digital-Engineering`.
+      # Closes the supply-chain gap where an attacker swaps the SBOM for
+      # a stale / lying one.
+      - name: Attest SBOM build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v3.0.0
+        with:
+          subject-path: 'ritsu-*-sbom.*.json'
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
