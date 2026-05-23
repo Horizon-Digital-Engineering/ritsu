@@ -124,6 +124,38 @@ jobs:
           [ "$warned" = "1" ] && echo "::warning::npm audit signatures reported issues — review the log"
           true
 
+  scorecard:
+    name: OpenSSF Scorecard
+    # Skipped on PR runs — Scorecard analyzes the default branch's
+    # supply-chain posture, not per-PR diffs, so running on PRs just
+    # burns minutes on irrelevant scans.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload SARIF to code-scanning
+      id-token: write          # publish results to scorecard.dev (powers the badge)
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Scorecard analysis
+        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+      - name: Upload SARIF to code-scanning
+        uses: github/codeql-action/upload-sarif@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3
+        with:
+          sarif_file: results.sarif
+
   semgrep:
     name: SAST (semgrep)
     runs-on: ubuntu-latest
