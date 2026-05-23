@@ -17,7 +17,7 @@ import { resolve, join, relative, sep } from 'node:path';
 import { RE2 } from 're2-wasm';
 import type { Workspace } from '../../workspace-store.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
-import { checkToolUse } from '../permissions.js';
+import { checkToolUse, canonicalizeUnderWorkspace } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
@@ -148,6 +148,11 @@ async function walkFiles(root: string, base: string, out: string[]): Promise<voi
   catch { return; }
   for (const e of entries) {
     if (e.name === '.git' || e.name === 'node_modules') continue;  // common bulk skips
+    // Symlinks are skipped outright. Descending a symlink dir could
+    // exit the workspace (e.g. `proc -> /proc`), and surfacing symlink
+    // files would let Grep return content from outside the workspace
+    // through readFile-follows-symlink. Lstat-tier check (no I/O).
+    if (e.isSymbolicLink()) continue;
     const full = join(root, e.name);
     const rel = relative(base, full);
     if (e.isDirectory()) {
@@ -257,11 +262,17 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         const pattern = asString(args.pattern);
         if (!pattern) return 'error: pattern required';
         const subdir = asString(args.path);
-        const rootPath = subdir ? resolve(cwd, subdir) : cwd;
-        // Guard: subdir must still be inside the workspace.
-        if (!rootPath.startsWith(cwd + sep) && rootPath !== cwd) {
+        const lexical = subdir ? resolve(cwd, subdir) : cwd;
+        // Lexical guard first (cheap, catches `..` and absolute paths
+        // pointing out of the workspace).
+        if (!lexical.startsWith(cwd + sep) && lexical !== cwd) {
           return `error: path '${subdir}' resolves outside workspace`;
         }
+        // realpath-tier check too: a symlink at `cwd/proj -> /etc` would
+        // pass the lexical check but the walker would then list /etc.
+        const canon = await canonicalizeUnderWorkspace(lexical, workspaces, 'read');
+        if (!canon.ok) return `error: ${canon.reason}`;
+        const rootPath = canon.canonical;
         let st;
         try { st = await stat(rootPath); } catch { return `error: path not found: ${subdir}`; }
         if (!st.isDirectory()) return `error: path is not a directory: ${subdir}`;
@@ -298,12 +309,14 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         const pattern = compileGrepPattern(patternStr, args.ignore_case === true);
         if (typeof pattern === 'string') return pattern;
         const subdir = asString(args.path);
-        const rootPath = subdir ? resolve(cwd, subdir) : cwd;
-        if (!rootPath.startsWith(cwd + sep) && rootPath !== cwd) {
+        const lexical = subdir ? resolve(cwd, subdir) : cwd;
+        if (!lexical.startsWith(cwd + sep) && lexical !== cwd) {
           return `error: path '${subdir}' resolves outside workspace`;
         }
+        const canon = await canonicalizeUnderWorkspace(lexical, workspaces, 'read');
+        if (!canon.ok) return `error: ${canon.reason}`;
         const include = asString(args.include);
-        const hits = await runGrep({ cwd, rootPath, include, pattern });
+        const hits = await runGrep({ cwd, rootPath: canon.canonical, include, pattern });
         logger.debug('ra.process.grep', { pattern: patternStr, matched: hits.length });
         return hits.length === 0 ? '(no matches)' : hits.join('\n');
       },

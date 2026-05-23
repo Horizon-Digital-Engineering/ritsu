@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFsTools } from '../tools/ritsu-agent/fs.js';
@@ -108,6 +108,63 @@ describe('ritsu-agent FS tools', () => {
       const Edit = findTool(buildFsTools(ws), 'Edit');
       const out = await Edit.handler({ file_path: 'src.ts', old_string: 'nope', new_string: 'x' });
       assert.match(out, /not found/);
+    });
+  });
+
+  describe('symlink escape attempts', () => {
+    it('Read denies a symlink in the workspace that points outside', async () => {
+      // The classic exfil shape: agent has Write somewhere, drops a
+      // symlink to /etc/shadow inside its workspace, then Reads it.
+      // Without realpath canonicalization this returns /etc/shadow's
+      // content. With it, realpath resolves outside the workspace and
+      // containment fails.
+      const secret = join(outsideDir, 'secret.txt');
+      writeFileSync(secret, 'classified');
+      symlinkSync(secret, join(dir, 'escape'));
+      const Read = findTool(buildFsTools(ws), 'Read');
+      const out = await Read.handler({ file_path: 'escape' });
+      assert.match(out, /^denied:/, `expected denial, got: ${out}`);
+      assert.ok(!out.includes('classified'), 'must not return target file content');
+    });
+
+    it('Read denies a symlink that resolves to /etc/passwd', async () => {
+      // /etc/passwd is reliably present on Linux and not in any reasonable
+      // workspace. Belt-and-suspenders test that the deny-by-realpath
+      // works for system files, not just sibling tmpdirs.
+      symlinkSync('/etc/passwd', join(dir, 'passwd'));
+      const Read = findTool(buildFsTools(ws), 'Read');
+      const out = await Read.handler({ file_path: 'passwd' });
+      assert.match(out, /^denied:/);
+      assert.ok(!out.includes('root:'), 'must not return /etc/passwd contents');
+    });
+
+    it('Write refuses to write through an existing symlink', async () => {
+      // Agent has Write on the workspace, but a pre-existing symlink at
+      // workspace/log -> /tmp/some-external-file means writeFile would
+      // CLOBBER the symlink target. assertNotSymlink stops this.
+      const externalTarget = join(outsideDir, 'external-file.txt');
+      writeFileSync(externalTarget, 'original-content');
+      symlinkSync(externalTarget, join(dir, 'log'));
+      const Write = findTool(buildFsTools(ws), 'Write');
+      const out = await Write.handler({ file_path: 'log', content: 'overwritten' });
+      assert.match(out, /^denied:/);
+      assert.equal(readFileSync(externalTarget, 'utf8'), 'original-content',
+        'external file must not have been written through the symlink');
+      // The symlink itself stays — we refused to operate on it at all.
+      assert.ok(lstatSync(join(dir, 'log')).isSymbolicLink());
+    });
+
+    it('Read denies pseudo-fs paths even if a workspace covers them', async () => {
+      // Construct a hypothetical workspace that covers /proc. checkToolUse
+      // should reject the read regardless because /proc is in the
+      // pseudo-fs deny-list.
+      const procWs: Workspace[] = [
+        { id: 99, agent_id: 'a', path: '/proc', permissions: ['read'], created_at: 0 },
+      ];
+      const Read = findTool(buildFsTools(procWs), 'Read');
+      const out = await Read.handler({ file_path: '/proc/self/cmdline' });
+      assert.match(out, /^denied:/);
+      assert.ok(/pseudo-filesystem|deny/.test(out), `expected pseudo-fs deny, got: ${out}`);
     });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildProcessTools } from '../tools/ritsu-agent/process.js';
@@ -150,6 +150,45 @@ describe('ritsu-agent process tools', () => {
       const Grep = findTool(buildProcessTools(ws), 'Grep');
       const out = await Grep.handler({ pattern: 'never-found-token' });
       assert.equal(out, '(no matches)');
+    });
+  });
+
+  describe('symlink-handling in walkers', () => {
+    it('Glob does not list symlink entries', async () => {
+      writeFileSync(join(dir, 'real.txt'), 'a');
+      symlinkSync('/etc/hostname', join(dir, 'shortcut'));
+      const Glob = findTool(buildProcessTools(ws), 'Glob');
+      const out = await Glob.handler({ pattern: '*' });
+      const matches = out.split('\n');
+      assert.ok(matches.includes('real.txt'), 'regular file should be listed');
+      assert.ok(!matches.includes('shortcut'), 'symlink must not be listed');
+    });
+
+    it('Glob refuses a subdir that is a symlink pointing outside the workspace', async () => {
+      // Agent points Glob at `proc` which is actually /proc. The lexical
+      // containment check passes (still under workspace root by name),
+      // but the canonicalization step resolves /proc and rejects.
+      symlinkSync('/proc', join(dir, 'proc'));
+      const Glob = findTool(buildProcessTools(ws), 'Glob');
+      const out = await Glob.handler({ pattern: '*', path: 'proc' });
+      assert.match(out, /^error:/);
+      assert.ok(!out.includes('self'), 'must not have walked into /proc');
+    });
+
+    it('Grep does not surface content from symlinked files', async () => {
+      writeFileSync(join(dir, 'in-ws.txt'), 'workspace-marker');
+      // External secret the agent should never see via Grep.
+      const external = mkdtempSync(join(tmpdir(), 'ra-proc-secret-'));
+      try {
+        writeFileSync(join(external, 'secret.txt'), 'CANARY_should_never_appear');
+        symlinkSync(join(external, 'secret.txt'), join(dir, 'shortcut.txt'));
+        const Grep = findTool(buildProcessTools(ws), 'Grep');
+        const out = await Grep.handler({ pattern: 'CANARY' });
+        assert.ok(!out.includes('CANARY_should_never_appear'),
+          'grep must not return content from a symlinked file');
+      } finally {
+        rmSync(external, { recursive: true, force: true });
+      }
     });
   });
 });

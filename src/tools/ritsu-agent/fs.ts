@@ -5,31 +5,40 @@
  * string "Read" enables read-the-file behavior whether the agent is
  * claude-sdk (Anthropic's implementation) or ritsu-agent (this one).
  *
- * Every call routes through `checkToolUse` first; an agent can only read
- * inside a workspace with `read` permission, write inside a workspace
- * with `write`, etc. The permission gate is the same module the
- * claude-sdk dispatcher's `canUseTool` callback already uses, so the
- * two runtimes share one source of truth for what's allowed.
+ * Every call routes through two checks:
+ *
+ *   1. `checkToolUse` — lexical workspace containment + permission. Cheap;
+ *      rejects obvious `../../etc/passwd` traversal up-front.
+ *   2. `canonicalizeUnderWorkspace` — re-resolves via `fs.realpath` so
+ *      symlink-based escapes (`workspace/secret -> /etc/shadow`) can't
+ *      slip past the lexical check. Returns a canonical path; we operate
+ *      on THAT, not on the original input.
+ *
+ * Write/Edit additionally `lstat` the target to refuse writing THROUGH
+ * a symlink at the final segment — even if the symlink's target is
+ * inside the workspace, allowing it to be the named entry would let an
+ * agent shadow legitimate files with redirected ones.
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
+
 import type { Workspace } from '../../workspace-store.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
-import { checkToolUse } from '../permissions.js';
+import {
+  checkToolUse,
+  canonicalizeUnderWorkspace,
+  assertNotSymlink,
+} from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
 const DEFAULT_READ_LIMIT = 2000;       // lines, matches the Claude SDK Read default
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5MB read cap
 
-/** Returns the cwd to resolve relative paths against — the first
- *  workspace (same convention claude-sdk's canUseTool uses). */
 function cwdOf(workspaces: Workspace[]): string | undefined {
   return workspaces[0]?.path;
 }
 
-/** Resolve a (possibly relative) path argument against the agent's cwd.
- *  Returns null if no cwd is known and the path is relative. */
 function resolvePath(rawPath: string, workspaces: Workspace[]): string | null {
   if (rawPath.startsWith('/')) return rawPath;
   const cwd = cwdOf(workspaces);
@@ -60,8 +69,10 @@ export function buildFsTools(workspaces: Workspace[]): RaTool[] {
         if (!abs) return 'error: relative path with no workspace cwd';
         const auth = checkToolUse('Read', { file_path: abs }, workspaces);
         if (!auth.ok) return `denied: ${auth.reason}`;
+        const canon = await canonicalizeUnderWorkspace(abs, workspaces, 'read');
+        if (!canon.ok) return `denied: ${canon.reason}`;
         try {
-          const buf = await readFile(abs);
+          const buf = await readFile(canon.canonical);
           if (buf.byteLength > MAX_FILE_BYTES) {
             return `error: file too large (${buf.byteLength} bytes > ${MAX_FILE_BYTES} cap)`;
           }
@@ -69,10 +80,8 @@ export function buildFsTools(workspaces: Workspace[]): RaTool[] {
           const offset = typeof args.offset === 'number' ? args.offset : 0;
           const limit = typeof args.limit === 'number' ? args.limit : DEFAULT_READ_LIMIT;
           const slice = lines.slice(offset, offset + limit);
-          // 1-indexed, padded line numbers — same format the Claude SDK uses
-          // so prompts that mention "line 42" survive the swap between runtimes.
           const out = slice.map((line, i) => `${String(offset + i + 1).padStart(6, ' ')}\t${line}`).join('\n');
-          logger.debug('ra.fs.read', { abs, lines: slice.length });
+          logger.debug('ra.fs.read', { abs: canon.canonical, lines: slice.length });
           return out;
         } catch (err) {
           return `error: ${(err as Error).message}`;
@@ -100,11 +109,15 @@ export function buildFsTools(workspaces: Workspace[]): RaTool[] {
         if (!abs) return 'error: relative path with no workspace cwd';
         const auth = checkToolUse('Write', { file_path: abs }, workspaces);
         if (!auth.ok) return `denied: ${auth.reason}`;
+        const canon = await canonicalizeUnderWorkspace(abs, workspaces, 'write');
+        if (!canon.ok) return `denied: ${canon.reason}`;
+        const noSym = await assertNotSymlink(canon.canonical);
+        if (!noSym.ok) return `denied: ${noSym.reason}`;
         try {
-          await mkdir(dirname(abs), { recursive: true });
-          await writeFile(abs, content, 'utf8');
-          logger.info('ra.fs.write', { abs, bytes: Buffer.byteLength(content, 'utf8') });
-          return `wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${abs}`;
+          await mkdir(dirname(canon.canonical), { recursive: true });
+          await writeFile(canon.canonical, content, 'utf8');
+          logger.info('ra.fs.write', { abs: canon.canonical, bytes: Buffer.byteLength(content, 'utf8') });
+          return `wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${canon.canonical}`;
         } catch (err) {
           return `error: ${(err as Error).message}`;
         }
@@ -136,15 +149,19 @@ export function buildFsTools(workspaces: Workspace[]): RaTool[] {
         if (!abs) return 'error: relative path with no workspace cwd';
         const auth = checkToolUse('Edit', { file_path: abs }, workspaces);
         if (!auth.ok) return `denied: ${auth.reason}`;
+        const canon = await canonicalizeUnderWorkspace(abs, workspaces, 'write');
+        if (!canon.ok) return `denied: ${canon.reason}`;
+        const noSym = await assertNotSymlink(canon.canonical);
+        if (!noSym.ok) return `denied: ${noSym.reason}`;
         try {
-          const original = await readFile(abs, 'utf8');
+          const original = await readFile(canon.canonical, 'utf8');
           const count = countOccurrences(original, oldStr);
-          if (count === 0) return `error: old_string not found in ${abs}`;
+          if (count === 0) return `error: old_string not found in ${canon.canonical}`;
           if (count > 1) return `error: old_string appears ${count} times — pass more surrounding context so it's unique`;
           const updated = original.replace(oldStr, newStr);
-          await writeFile(abs, updated, 'utf8');
-          logger.info('ra.fs.edit', { abs });
-          return `edited ${abs}`;
+          await writeFile(canon.canonical, updated, 'utf8');
+          logger.info('ra.fs.edit', { abs: canon.canonical });
+          return `edited ${canon.canonical}`;
         } catch (err) {
           return `error: ${(err as Error).message}`;
         }
