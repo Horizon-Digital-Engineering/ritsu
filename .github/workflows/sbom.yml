@@ -49,13 +49,47 @@ jobs:
         with:
           subject-path: 'ritsu-*-sbom.*.json'
 
+      # Sigstore keyless cosign signing. No private key — the signing
+      # identity IS this workflow's OIDC token (issuer:
+      # https://token.actions.githubusercontent.com, subject:
+      # this repo + ref + workflow path). Fulcio mints a 10-min
+      # cert tied to that identity; Rekor logs the signing event to
+      # the public transparency log. Anyone verifying:
+      #   cosign verify-blob \
+      #     --certificate-identity-regexp "^https://github.com/Horizon-Digital-Engineering/ritsu/" \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --signature <file>.sig --certificate <file>.pem <file>
+      # Scorecard's Signed-Releases check pattern-matches on the
+      # `.sig` extension next to release assets.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+
+      - name: Sign SBOMs with cosign (keyless)
+        run: |
+          set -eo pipefail
+          for f in ritsu-*-sbom.*.json; do
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "$f"
+          done
+          ls -la ritsu-*-sbom.*
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
-          path: ritsu-*-sbom.*.json
+          path: |
+            ritsu-*-sbom.*.json
+            ritsu-*-sbom.*.json.sig
+            ritsu-*-sbom.*.json.pem
 
-      - name: Attach SBOMs to release
+      - name: Attach SBOMs + signatures to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$REF_NAME" ritsu-*-sbom.*.json --clobber
+        run: |
+          gh release upload "$REF_NAME" \
+            ritsu-*-sbom.*.json \
+            ritsu-*-sbom.*.json.sig \
+            ritsu-*-sbom.*.json.pem \
+            --clobber
