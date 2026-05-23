@@ -5,20 +5,28 @@
  * keys). URL comes from RITSU_SEARXNG_URL or `provider_options.searxng_url`
  * on the agent definition. Returns top-N results with title / url / snippet.
  *
- * WebFetch: HTTP GET with redirect-following + size cap. No egress
- * allowlist enforced yet — agent's tools_allowlist is the gate. A
- * per-agent egress allowlist is a follow-up (project_ritsu_state.md
- * has it on the backlog as "Network egress filtering").
+ * WebFetch: HTTP GET with manually-followed redirects + size cap. SSRF
+ * guard (see ssrf-guard.ts) rejects URLs / redirects / resolved IPs that
+ * point into private ranges, cloud metadata, loopback, etc. Closes DNS
+ * rebinding via a custom undici dispatcher that validates at connect
+ * time. Operator escape hatch:
+ * `RITSU_WEBFETCH_ALLOW_PRIVATE_HOSTS=internal.example,docs.internal`.
  */
 import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 import { stripTrailingSlashes } from '../../util/path-utils.js';
+import { safeFetch, validateUrl } from './ssrf-guard.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
 const FETCH_MAX_BYTES = 200 * 1024;     // 200KB content cap
 const SEARCH_MAX_RESULTS = 10;
+// Generic UA — explicitly identifying ourselves as ritsu in outbound
+// requests is a recon gift to anyone fingerprinting LAN probes. Matches
+// the major-version of a recent Firefox so requests pattern-match what
+// non-headless traffic looks like.
+const WEBFETCH_USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0';
 // No default — set RITSU_SEARXNG_URL to point at your searxng instance.
 // If unset, the WebSearch tool returns an error rather than fetching from
 // a hardcoded host (avoids shipping operator-specific infra in source).
@@ -63,7 +71,11 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
       handler: async (args) => {
         const url = asString(args.url).trim();
         if (!url) return 'error: url required';
-        if (!/^https?:\/\//i.test(url)) return 'error: only http(s) URLs are allowed';
+        // Stage 1: cheap URL-level validation. Runs even for the test path
+        // (fetchImpl injection) so that "only http(s) URLs" is enforced
+        // regardless of which fetch backend the caller wired up.
+        const v = validateUrl(url);
+        if (!v.ok) return `error: ${v.reason}`;
         // Permission gate is the same shared module; WebFetch is the "network"
         // category which currently returns ok unconditionally. Routing through
         // it keeps the audit point consistent.
@@ -72,11 +84,16 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
         try {
           const ctl = new AbortController();
           const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-          const res = await fetchImpl(url, {
-            signal: ctl.signal,
-            redirect: 'follow',
-            headers: { 'User-Agent': 'ritsu-agent/0.3 (+https://github.com/Horizon-Digital-Engineering/ritsu)' },
-          }).finally(() => clearTimeout(timer));
+          // safeFetch enforces IP-range + DNS-rebinding protections and
+          // follows redirects manually with per-hop re-validation. Tests
+          // can still inject `fetchImpl` to bypass the dispatcher for
+          // unit-test setups that don't (or can't) stand up a real
+          // loopback server.
+          const headers = { 'User-Agent': WEBFETCH_USER_AGENT };
+          const doFetch = opts.fetchImpl
+            ? () => opts.fetchImpl!(url, { signal: ctl.signal, redirect: 'follow', headers })
+            : () => safeFetch(url, { signal: ctl.signal, headers });
+          const res = await doFetch().finally(() => clearTimeout(timer));
           if (!res.ok) return `error: HTTP ${res.status} ${res.statusText}`;
           const ct = res.headers.get('content-type') ?? '';
           const reader = res.body?.getReader();
@@ -139,7 +156,7 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
           const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
           const res = await fetchImpl(url, {
             signal: ctl.signal,
-            headers: { 'User-Agent': 'ritsu-agent/0.3' },
+            headers: { 'User-Agent': WEBFETCH_USER_AGENT },
           }).finally(() => clearTimeout(timer));
           if (!res.ok) return `error: searxng HTTP ${res.status} ${res.statusText}`;
           const json = await res.json() as SearxngResponse;
