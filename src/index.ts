@@ -1,7 +1,7 @@
-import { hydrateEnv, loadConfig, assertAdminTokenFileWritable, type RitsuConfig } from './config.js';
+import { hydrateEnv, loadConfig, assertAdminTokenFileWritable } from './config.js';
 hydrateEnv();
-import { writeFileSync } from 'node:fs';
 import pkg from '../package.json' with { type: 'json' };
+import { bootstrapAdminToken } from './bootstrap-admin-token.js';
 import { openDatabase } from './db.js';
 import { SqliteMemoryStore } from './memory-store.js';
 import { SqliteConversationStore } from './conversation-store.js';
@@ -16,36 +16,6 @@ import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { logger } from './util/log.js';
-
-/**
- * If no admin-scoped token exists yet, mint one and write the plaintext to
- * the configured bootstrap file (mode 0600). The operator reads this file
- * once (`ritsu admin-token show`) and treats it as a secret.
- *
- * Fail-closed: if the file write fails AFTER the mint, the token is
- * revoked from the DB and the process exits non-zero. We never leave a
- * token in the DB that has no readable on-disk copy.
- * Re-run safe: if admin tokens already exist, this is a no-op.
- */
-function bootstrapAdminToken(tokens: TokenStore, cfg: RitsuConfig): void {
-  if (tokens.hasAnyActive('admin')) {
-    logger.debug('admin.token.exists');
-    return;
-  }
-  const minted = tokens.mint('bootstrap', 'admin');
-  try {
-    writeFileSync(cfg.adminTokenFile, minted.token + '\n', { mode: 0o600 });
-    logger.warn('admin.token.bootstrapped', { path: cfg.adminTokenFile, prefix: minted.prefix });
-  } catch (err) {
-    tokens.revoke(minted.id);
-    logger.error('admin.token.write-failed', {
-      path: cfg.adminTokenFile,
-      err: (err as Error).message,
-      action: 'token revoked; refusing to start with an unreachable bootstrap token',
-    });
-    process.exit(70); // EX_SOFTWARE — operator must fix RITSU_ADMIN_TOKEN_FILE
-  }
-}
 
 const cfg = loadConfig();
 // Single source of truth for the version: package.json. Anything that bumps
