@@ -1,8 +1,27 @@
 # ritsu
 
-Multi-agent MCP server. Define agents as DB rows — name, system prompt, dispatcher, model, memory backend, filesystem workspace, tool allowlist — and talk to them from any MCP client. Real `@modelcontextprotocol/sdk` on the MCP port; admin UI on a separate port with bearer-token auth, live log tail, and Prometheus-format metrics.
+> Self-hosted multi-agent MCP server. Define agents as DB rows — system prompt, dispatcher, model, memory, filesystem workspaces, tools — and talk to them from any MCP client. Strict per-agent isolation, encrypted secrets, OAuth 2.1, full audit trail.
 
-Name: 律 (ritsu), from 自律 (jiritsu, "autonomous / self-governing").
+[![CI](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml)
+[![Security](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml)
+[![SonarCloud](https://sonarcloud.io/api/project_badges/measure?project=Horizon-Digital-Engineering_ritsu&metric=alert_status)](https://sonarcloud.io/dashboard?id=Horizon-Digital-Engineering_ritsu)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
+
+---
+
+## Why ritsu
+
+Most agent frameworks are SDKs you embed in *your* app. ritsu is a **server**: agents live as inspectable DB rows, run as long-lived instances, and answer over a real MCP endpoint that any compliant client can hit — Claude Code, Claude Desktop, Cursor, raw curl. The operator surface (admin UI, CLI, audit log, tokens) is built in, not bolted on.
+
+- **Operator-inspectable everything.** Memory, conversations, tokens, audit — plain SQLite rows. CRUD-able from the admin UI. No opaque vendor "memory" with hidden state.
+- **Per-agent isolation enforced before tools fire.** `tools_allowlist` + per-path workspace permissions go through the SDK's `canUseTool` callback. An agent with no `Bash` and no writable workspace cannot exfiltrate files even if perfectly socially-engineered.
+- **Defence-in-depth by default.** Strict CSP (no `unsafe-inline`), AES-256-GCM secrets at rest, bearer tokens sha256-hashed, OAuth 2.1 + DCR + PKCE + RFC 8707 audience binding, systemd sandbox (`ProtectHome=read-only`, scoped `ReadWritePaths`, `NoNewPrivileges`).
+- **Two runtimes, one shape.** `claude-sdk` (Max plan via `@anthropic-ai/claude-agent-sdk`, $0 marginal) or `ritsu-agent` (own loop against any OpenAI-compatible provider). Same tools, same memory, same admin UI.
+
+---
 
 ## Quickstart
 
@@ -13,97 +32,124 @@ cp .env.example .env
 npm run dev                 # MCP on :7333, admin on :7334
 ```
 
-Open <http://127.0.0.1:7334/admin>.
+Open <http://127.0.0.1:7334/admin> and mint a token in the **Tokens** tab.
 
 ```bash
 # health
 curl -s http://localhost:7333/healthz
-curl -s http://localhost:7334/metrics | head
 
 # call an agent
 curl -s -X POST http://localhost:7333/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer rt_YOUR_TOKEN' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_agent","arguments":{"agent_id":"hello-world","message":"hi"}}}'
 ```
 
-## Docker
+### Docker
 
 ```bash
 docker compose up --build              # ritsu only
 docker compose --profile litellm up    # adds LiteLLM sidecar on :4000
 ```
 
-The container bind-mounts your host's `~/.claude/` so the Max-plan dispatcher works without an API key. SQLite persists in the `ritsu-data` named volume. Both ports bound to `127.0.0.1` only by default.
+Bind-mounts the host's `~/.claude/` so the Max-plan dispatcher works without an API key. State persists in the `ritsu-data` named volume. Both ports bound to `127.0.0.1` by default.
 
-## Auth
+---
 
-Default `MCP_REQUIRE_AUTH=auto` — open until you mint a token in the admin Tokens tab, then auto-locked. Set `MCP_REQUIRE_AUTH=on` in prod.
+## What's inside
 
-## Tests
+| Surface | What it does |
+|---|---|
+| `GET /mcp` (port 7333) | Real `@modelcontextprotocol/sdk` Streamable HTTP transport. Bearer-token-gated (`rt_*`). |
+| `POST /oauth/{register,authorize,token}` | RFC 7591/8414/9728/8707 OAuth 2.1 + DCR + PKCE for spec-compliant clients (claude.ai web, Claude Desktop Connectors). |
+| `/admin` (port 7334) | Tabbed UI: Dashboard, Agents, Workspaces, Memories, Conversations, Tools, MCP, Channels, Tokens, API Keys, OAuth Clients, Logs, Audit. |
+| `GET /healthz`, `/readyz`, `/version` | Liveness / readiness. |
+| `GET /metrics` | Prometheus exposition. |
+| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `url`, `doctor`. |
 
-```bash
-npm test                # node:test, in-memory SQLite, fake dispatcher
-npm run typecheck
-npm run build
-npm run test:coverage   # c8 lcov + text report
-```
+### MCP tools (current)
+
+`list_agents`, `ask_agent`, `read_agent_memory`, `create_agent`, `update_agent`, `reload_agent`
+
+Each agent additionally has these in-process per-agent MCP tools:
+- `mcp__memory__{remember,update_memory,forget,list_memories}` — agent-scoped CRUD
+- `mcp__agent_comms__{ask_agent,list_agents}` — gated by `can_call` allowlist, depth-3 loop guard
+- `mcp__agent_admin__*` — only if the agent has the `manage_agents` capability
+- `mcp__agent_monitor__*` — only if the agent has the `monitor_agents` capability
+
+### Comm channels
+
+Telegram is the only kind today. One bot ↔ one operator agent ↔ one bound chat (no group spam). Bot tokens are AES-256-GCM encrypted at rest. Discord / Slack land later; the kind enum is the extension point.
+
+---
 
 ## Layout
 
 ```
 src/
-  index.ts                       boot, two ports
-  db.ts                          openDatabase + schema + additive migrations
-  memory-store.ts                MemoryStore: sqlite + flashback stub
-  conversation-store.ts          ConversationStore: sqlite
-  agent-definition-store.ts      AgentDefinitionStore: sqlite + seedIfEmpty
-  workspace-store.ts             WorkspaceStore: per-agent filesystem roots
-  agent-host.ts                  live agent map; addOrReplace/remove
-  mcp-server.ts                  real MCP via SDK; bearer auth; 6 tools
-  metrics.ts                     Prometheus exposition
-  event-bus.ts                   in-memory log ring + emitter
-  admin/
-    server.ts                    Express CRUD + SSE + proxy + tokens
-    ui.html                      tabbed single-page UI
-    schema.ts                    zod for AgentDefinition
-  agents/
-    base.ts                      AgentBase: hooks + onMessage
-    generic.ts                   pure-JSON agent
-    registry.ts                  string → AgentCtor (extension point)
-  auth/
-    token-store.ts               mint/verify/revoke/recordUsage
-    api-key-store.ts             encrypted-at-rest provider keys
-    oauth-store.ts               OAuth 2.1 + DCR + PKCE
-    oauth-routes.ts              /.well-known + /oauth/* endpoints
-  model/
-    dispatcher.ts                ModelDispatcher interface
-    claude-direct-dispatcher.ts  Max-plan CLI via SDK; cwd + tools + canUseTool
-    litellm-dispatcher.ts        HTTP to LiteLLM proxy
-    factory.ts                   buildDispatcher(kind, model, opts)
-  util/log.ts                    redacting JSON-line logger
+  index.ts                          two ports, schema bootstrap, admin token bootstrap
+  db.ts                             openDatabase + additive migrations
+  mcp-server.ts                     MCP HTTP surface (SDK transport, OAuth, bearer auth)
+  agent-host.ts                     live agent map; addOrReplace/remove
+  agent-definition-store.ts         CRUD over agent_definitions
+  workspace-store.ts                per-agent filesystem roots + permissions
+  memory-store.ts, conversation-store.ts
+  channels/                         channel registry + telegram impl
+  auth/                             token-store, api-key-store, oauth-store, oauth-routes
+  admin/                            express CRUD + UI (ui.html / app.js / app.css)
+  agents/                           AgentBase, GenericAgent, type registry
+  model/                            dispatcher interface, claude-direct, litellm, ritsu-agent
+  tools/
+    mcp-internal/                   per-agent in-process MCP servers (memory + comms + admin + monitor)
+    ritsu-agent/                    native FS/process/network tools for the ritsu-agent runtime
+    permissions.ts                  shared tool→permission map + checkToolUse
+  cli/                              `ritsu` operator CLI
+  util/                             logger (with redaction), dotenv-lite, secret-crypto (AES-256-GCM)
+systemd/                            ritsu.service + litellm-proxy.service
+scripts/                            install.sh / configure.sh / update.sh / bootstrap-remote.sh
 ```
 
-## Standard endpoints
+---
 
-| Endpoint | Where | Notes |
-|---|---|---|
-| `/healthz`, `/readyz`, `/version` | MCP | liveness + readiness |
-| `/metrics` | admin | Prometheus exposition |
-| `/admin` | admin | tabbed UI |
-| `/mcp` | MCP | JSON-RPC + SSE (Streamable HTTP transport) |
+## Tests
+
+```bash
+npm test                # node:test, in-memory SQLite, fake dispatcher (152 tests)
+npm run typecheck
+npm run lint            # ESLint v9 flat config, type-aware
+npm run build
+npm run test:coverage   # c8 → coverage/lcov.info (consumed by SonarCloud)
+```
+
+---
+
+## Deploying
+
+See [`DEPLOY.md`](./DEPLOY.md). Two paths:
+- `scripts/bootstrap-remote.sh` — drive an install over SSH from your laptop. Recommended.
+- `scripts/install.sh` — run on the target host directly.
+
+Targets a Linux + systemd box. Footprint ~200 MB working set. Tailscale-anchored is the documented happy path; the tailnet ACL is the outer auth boundary.
+
+---
 
 ## Security
 
-ritsu is built to be self-hosted on a tailnet and to defend against credible threats out of the box. Full details in [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). One-line summary of what's baked in:
+See [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md) for the full posture. One-line summary of what's baked in:
 
-- **No public exposure by default.** Binds to `127.0.0.1`; the tailnet ACL is the outer auth boundary.
-- **Scoped bearer tokens** (`rt_*` MCP, `rat_*` admin) — sha256-hashed at rest, optional `expires_at`, audit-logged per use.
-- **OAuth 2.1 + DCR + PKCE** (RFC 7591 / 9728 / 8414 / 8707) for clients that don't fit the static-bearer model.
-- **Secrets encryption at rest** — bot tokens (and future API keys) are AES-256-GCM encrypted; master key prefers `RITSU_MASTER_KEY` or `/etc/ritsu/master-key`.
-- **Per-agent isolation** — `tools_allowlist` + per-path workspace permissions enforced via the Claude SDK's `canUseTool` BEFORE any tool touches the FS.
-- **Inter-agent allowlist** (`can_call`) with bidirectional sync + depth-3 loop guard.
-- **Systemd sandbox** — `ProtectHome=read-only`, `ProtectSystem=strict`, scoped `ReadWritePaths`, `NoNewPrivileges`.
-- **Operator-inspectable memory** — plain SQLite rows, full admin CRUD. No opaque vendor "memory tool" with hidden state.
-- **Full audit trail** — per-tool MCP calls in `mcp_token_usage`; per-admin-action mutations in `admin_audit` with body sha256 for tamper-evidence.
-- **Hardened admin UI** — strict CSP, `X-Frame-Options: DENY`, body-size + per-IP rate limits.
+- No public exposure by default (`127.0.0.1` binds; tailnet ACL is the outer auth boundary).
+- Scoped bearer tokens (`rt_*` MCP, `rat_*` admin) — sha256 at rest, optional `expires_at`, audit-logged.
+- OAuth 2.1 + DCR + PKCE + RFC 8707 audience binding for spec-compliant clients.
+- AES-256-GCM secrets at rest with master key separation (`RITSU_MASTER_KEY` env or `/etc/ritsu/master-key`).
+- Per-agent isolation enforced by the SDK's `canUseTool` BEFORE tools fire.
+- Strict CSP (`script-src 'self'; style-src 'self'`), `X-Frame-Options: DENY`, body-size + per-IP rate limits.
+- Full audit trail: per-tool MCP calls in `mcp_token_usage`, per-admin-action mutations in `admin_audit` with body sha256.
+
+Reporting: see [`SECURITY.md#reporting`](./SECURITY.md#reporting).
+
+---
+
+## License
+
+[Apache 2.0](./LICENSE).
