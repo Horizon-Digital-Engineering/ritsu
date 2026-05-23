@@ -1,6 +1,6 @@
 # ritsu
 
-> Self-hosted multi-agent MCP server. Define agents as DB rows — system prompt, dispatcher, model, memory, filesystem workspaces, tools — and talk to them from any MCP client. Strict per-agent isolation, encrypted secrets, OAuth 2.1, full audit trail.
+> **Stop maintaining a folder of `agent.md` files.** ritsu is a self-hosted multi-agent server with a real admin UI. Click "new agent," type a prompt, hit save — it's live. Edit, reload, delete, all from the browser. No commits, no redeploys, no .md sprawl.
 
 [![CI](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml)
 [![Security](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml)
@@ -14,12 +14,16 @@ Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
 
 ## Why ritsu
 
-Most agent frameworks are SDKs you embed in *your* app. ritsu is a **server**: agents live as inspectable DB rows, run as long-lived instances, and answer over a real MCP endpoint that any compliant client can hit — Claude Code, Claude Desktop, Cursor, raw curl. The operator surface (admin UI, CLI, audit log, tokens) is built in, not bolted on.
+Every AI-agent project hands you a folder of markdown files. `agents/researcher.md`, `agents/coder.md`, `agents/pm.md`. Add an agent = new file. Edit a prompt = git commit + push + redeploy. Iterate on a system prompt = open the file in your editor, save, restart, repeat. It sucks.
 
-- **Operator-inspectable everything.** Memory, conversations, tokens, audit — plain SQLite rows. CRUD-able from the admin UI. No opaque vendor "memory" with hidden state.
-- **Per-agent isolation enforced before tools fire.** `tools_allowlist` + per-path workspace permissions go through the SDK's `canUseTool` callback. An agent with no `Bash` and no writable workspace cannot exfiltrate files even if perfectly socially-engineered.
-- **Defence-in-depth by default.** Strict CSP (no `unsafe-inline`), AES-256-GCM secrets at rest, bearer tokens sha256-hashed, OAuth 2.1 + DCR + PKCE + RFC 8707 audience binding, systemd sandbox (`ProtectHome=read-only`, scoped `ReadWritePaths`, `NoNewPrivileges`).
-- **Two runtimes, one shape.** `claude-sdk` (Max plan via `@anthropic-ai/claude-agent-sdk`, $0 marginal) or `ritsu-agent` (own loop against any OpenAI-compatible provider). Same tools, same memory, same admin UI.
+ritsu kills that loop:
+
+- **Agents live in a form, not a file.** New agent? Click "Create." Edit a prompt? Type into the textarea. Hit save → the runtime hot-reloads it. No commits, no redeploys.
+- **See what your agents are actually doing.** Browse every conversation, every memory, every tool call. Live log tail. No opaque "memory" black box you can't open.
+- **Talk to your agents from anything that speaks MCP.** Claude Code, Claude Desktop, Cursor, raw curl — all hit the same `/mcp` endpoint. OAuth 2.1 for spec-compliant clients (claude.ai web), `rt_*` bearer tokens for header clients.
+- **Two runtimes.** Run on your Claude Max plan via `@anthropic-ai/claude-agent-sdk` ($0 per turn). Or point an agent at OpenAI / OpenRouter / a local LiteLLM. Same tools, same memory, same UI.
+- **Real isolation.** Per-agent tool allowlists + per-path workspace permissions enforced *before* tools touch the disk. An agent with no Bash and no writable workspace can't exfiltrate files even if perfectly socially-engineered.
+- **Secrets at rest are encrypted.** Bot tokens, API keys — AES-256-GCM with a separate master key. Audit log + bearer-token hygiene + strict CSP by default. (Full posture: [`THREAT_MODEL.md`](./THREAT_MODEL.md).)
 
 ---
 
