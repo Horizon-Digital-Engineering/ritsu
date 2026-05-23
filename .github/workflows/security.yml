@@ -56,11 +56,11 @@ jobs:
       - name: gitleaks detect
         run: |
           set -eo pipefail
-          echo "## Gitleaks" >> $GITHUB_STEP_SUMMARY
+          echo "## Gitleaks" >> "$GITHUB_STEP_SUMMARY"
           if gitleaks detect --source . --redact --no-banner --exit-code 1 --report-format sarif --report-path gitleaks.sarif; then
-            echo "OK no secrets found" >> $GITHUB_STEP_SUMMARY
+            echo "OK no secrets found" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL gitleaks found leaks (see job log; sarif uploaded as artifact)" >> $GITHUB_STEP_SUMMARY
+            echo "FAIL gitleaks found leaks (see job log; sarif uploaded as artifact)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -83,14 +83,14 @@ jobs:
       - name: npm audit (fail on high+)
         run: |
           set -eo pipefail
-          echo "## Dependency audit" >> $GITHUB_STEP_SUMMARY
+          echo "## Dependency audit" >> "$GITHUB_STEP_SUMMARY"
           if npm audit --audit-level=high 2>&1 | tee audit.txt; then
-            echo "OK no high/critical vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            echo "OK no high/critical vulnerabilities" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL vulnerabilities found:" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat audit.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "FAIL vulnerabilities found:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat audit.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -106,13 +106,13 @@ jobs:
       - name: semgrep scan
         run: |
           set -eo pipefail
-          echo "## Semgrep SAST" >> $GITHUB_STEP_SUMMARY
+          echo "## Semgrep SAST" >> "$GITHUB_STEP_SUMMARY"
           if semgrep scan --config auto --error --exclude node_modules --exclude dist 2>&1 | tee semgrep.txt; then
-            echo "OK no findings" >> $GITHUB_STEP_SUMMARY
+            echo "OK no findings" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL findings:" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat semgrep.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "FAIL findings:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat semgrep.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi

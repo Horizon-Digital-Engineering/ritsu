@@ -1220,6 +1220,9 @@ async function loadMcpTools() {
         },
       },
     }, null, 2);
+    // The "rt_YOUR_TOKEN" below is a placeholder rendered for the operator
+    // to copy + replace with a real minted token. Not a leaked secret.
+    // gitleaks:allow
     $('snip-curl').textContent =
       `curl -s -X POST ${info.url} \\\n  -H 'Authorization: Bearer rt_YOUR_TOKEN' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Accept: application/json, text/event-stream' \\\n  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`;
   } catch (e) {
