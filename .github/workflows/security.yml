@@ -87,10 +87,12 @@ jobs:
           if npm audit --audit-level=high 2>&1 | tee audit.txt; then
             echo "OK no high/critical vulnerabilities" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL vulnerabilities found:" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat audit.txt >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "FAIL vulnerabilities found:"
+              echo '```'
+              cat audit.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -110,9 +112,11 @@ jobs:
           if semgrep scan --config auto --error --exclude node_modules --exclude dist 2>&1 | tee semgrep.txt; then
             echo "OK no findings" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "FAIL findings:" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat semgrep.txt >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "FAIL findings:"
+              echo '```'
+              cat semgrep.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
