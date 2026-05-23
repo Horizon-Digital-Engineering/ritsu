@@ -4,6 +4,63 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.6.1] — 2026-05-23
+
+Supply-chain + CI hardening follow-up to 0.6.0. No runtime behavior
+change.
+
+### Security / CI
+
+- **Release artifacts are now keyless-signed with Sigstore cosign.**
+  The SBOM workflow signs each `ritsu-<version>-sbom.*.json` it
+  produces; `.sig` + `.pem` certificates are attached to the release
+  alongside the SBOMs. The signing identity is this repo's GitHub
+  Actions OIDC token — no private key on disk anywhere. Verify with:
+  ```
+  cosign verify-blob \
+    --certificate-identity-regexp "^https://github.com/Horizon-Digital-Engineering/ritsu/" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --signature ritsu-v0.6.1-sbom.cdx.json.sig \
+    --certificate ritsu-v0.6.1-sbom.cdx.json.pem \
+    ritsu-v0.6.1-sbom.cdx.json
+  ```
+- **Explicit CodeQL workflow** (`.github/workflows/codeql.yml`) using
+  `github/codeql-action` directly, replacing CodeQL "default setup".
+  Same `security-extended` query suite the default setup was running,
+  so dismissed-alert history carries over. Detectable by Scorecard's
+  SAST check, which only sees explicit workflow files.
+- **`main` branch protection enabled** (admin bypass left on so
+  direct push to main still works for the solo-dev workflow).
+- **Workflow token permissions tightened.** `build.yml` and
+  `sbom.yml` now default to `contents: read` at the top level; the
+  one job that needs `contents: write` (SBOM attach) carries the
+  elevated perms at job scope.
+
+### Fixed
+
+- **Type-confusion guard on `stripTrailingSlashes`.** The helper is
+  reachable from HTTP query params, which Express may parse as
+  arrays. `s.codePointAt(...)` returns undefined on an array, so the
+  trim loop would no-op and the array would silently pass through
+  where the caller expected a string. Now throws TypeError on
+  non-string input. Closes a critical CodeQL alert
+  (`js/type-confusion-through-parameter-tampering`).
+- **Rate-limiter on `/oauth/authorize` + `/oauth/token`** (60/min/IP
+  default, `RITSU_OAUTH_MAX_PER_MIN` to override). The pre-existing
+  `/oauth/register` limiter doesn't cover these endpoints.
+- **Admin UI static assets served from memory.** `/admin`,
+  `/admin/app.js`, `/admin/app.css` now read their files ONCE at boot
+  instead of on every request. Removes the per-request filesystem
+  access CodeQL was flagging on non-rate-limited routes. Server
+  refuses to start if any of `dist/admin/*` is missing at boot —
+  fail-loud matches the rest of the bootstrap posture.
+
+### Pinned
+
+- `node:22-bookworm-slim` pinned by digest in the Dockerfile (both
+  builder + runtime stages).
+- `scripts/setup-litellm.sh` pins pip + litellm versions explicitly.
+
 ## [0.6.0] — 2026-05-23
 
 Security-focused release. A parallel-agent audit of the auth surface,
