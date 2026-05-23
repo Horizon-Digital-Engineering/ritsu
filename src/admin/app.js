@@ -799,6 +799,16 @@ function oauthTokenStateClass(t, expired) {
   return expired ? 'level-warn' : 'level-info';
 }
 
+/** Render the software identification cell for an OAuth client row —
+ *  software_id, optionally suffixed with @software_version, or "—" when
+ *  the client didn't declare itself. Extracted so the table-row builder
+ *  doesn't carry a nested ternary inside its template literal. */
+function oauthClientSoftware(c) {
+  if (!c.software_id) return '—';
+  const v = c.software_version ? `@${esc(c.software_version)}` : '';
+  return esc(c.software_id) + v;
+}
+
 /** Map an HTTP status code to the audit-table badge palette (4xx/5xx=error, 3xx=warn, 2xx=info). */
 function statusBadgeClass(status) {
   if (status >= 400) return 'level-error';
@@ -1858,9 +1868,7 @@ function renderOAuthClients(list) {
   }
   const rows = list.map(c => {
     const tc = c.token_counts || { access_active: 0, access_total: 0, refresh_active: 0, refresh_total: 0 };
-    const sw = c.software_id
-      ? esc(c.software_id) + (c.software_version ? `@${esc(c.software_version)}` : '')
-      : '—';
+    const sw = oauthClientSoftware(c);
     const redirects = (c.redirect_uris || [])
       .map(u => `<code class="fs-md">${esc(u)}</code>`).join('<br>');
     return `<tr class="${c.revoked_at ? 'disabled' : ''}">
