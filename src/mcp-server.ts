@@ -217,10 +217,11 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
       await transport.handleRequest(req, res, req.body);
       res.on('close', () => {
         // Both close() methods return promises but we're inside a sync
-        // res.on('close') callback; nothing usefully awaits them, so
-        // mark them explicitly fire-and-forget.
-        void transport?.close();
-        void server?.close();
+        // res.on('close') callback. Explicit .catch() swallows any
+        // failure (a noop sink) so an unhandled-rejection doesn't bubble
+        // out of a teardown path the caller has already detached from.
+        transport?.close().catch(() => undefined);
+        server?.close().catch(() => undefined);
       });
     } catch (err) {
       logger.error('mcp.handler.error', { err: (err as Error).message });

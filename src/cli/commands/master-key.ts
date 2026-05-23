@@ -53,58 +53,82 @@ interface RotationStats { apiKeys: number; channels: number }
 function reencryptAll(db: Db, oldKey: Buffer, newKey: Buffer): RotationStats {
   const stats: RotationStats = { apiKeys: 0, channels: 0 };
   const tx = db.transaction(() => {
-    // api_keys.key_enc holds `<prefix>|enc:v1:...`. Decrypt the suffix
-    // under the old key, re-encrypt under the new, preserve the prefix
-    // wrapper that lets list() show a visual hint.
-    const apiKeyRows = db.prepare(
-      `SELECT id, key_enc FROM api_keys WHERE revoked_at IS NULL`,
-    ).all() as Array<{ id: number; key_enc: string }>;
-    const updateApiKey = db.prepare(`UPDATE api_keys SET key_enc = ? WHERE id = ?`);
-    for (const row of apiKeyRows) {
-      const sep = row.key_enc.indexOf('|');
-      if (sep === -1) {
-        // Legacy row (no prefix wrapper) — treat the whole field as the
-        // encrypted blob. Reads still work via the same path; rotation
-        // preserves the no-wrapper shape.
-        const plain = decryptWithKey(row.key_enc, oldKey);
-        updateApiKey.run(encryptWithKey(plain, newKey), row.id);
-      } else {
-        const prefix = row.key_enc.slice(0, sep);
-        const enc = row.key_enc.slice(sep + 1);
-        if (!enc.startsWith(ENC_PREFIX)) continue;  // already-plaintext legacy, skip
-        const plain = decryptWithKey(enc, oldKey);
-        updateApiKey.run(prefix + '|' + encryptWithKey(plain, newKey), row.id);
-      }
-      stats.apiKeys++;
-    }
-    // channels.config is a JSON blob with encrypted fields (today: bot_token
-    // on telegram). Decrypt + re-encrypt only the SECRET_FIELDS values.
-    const channelRows = db.prepare(`SELECT id, kind, config FROM channels`).all() as Array<{
-      id: number;
-      kind: string;
-      config: string;
-    }>;
-    const updateChannel = db.prepare(`UPDATE channels SET config = ? WHERE id = ?`);
-    for (const row of channelRows) {
-      const parsed = JSON.parse(row.config) as Record<string, unknown>;
-      const secretFields = row.kind === 'telegram' ? ['bot_token'] : [];
-      let touched = false;
-      for (const f of secretFields) {
-        const v = parsed[f];
-        if (typeof v === 'string' && v.startsWith(ENC_PREFIX)) {
-          const plain = decryptWithKey(v, oldKey);
-          parsed[f] = encryptWithKey(plain, newKey);
-          touched = true;
-        }
-      }
-      if (touched) {
-        updateChannel.run(JSON.stringify(parsed), row.id);
-        stats.channels++;
-      }
-    }
+    stats.apiKeys = reencryptApiKeys(db, oldKey, newKey);
+    stats.channels = reencryptChannels(db, oldKey, newKey);
   });
   tx();
   return stats;
+}
+
+/** api_keys.key_enc holds `<prefix>|enc:v1:...`. Decrypt the suffix under
+ *  the old key, re-encrypt under the new, preserve the prefix wrapper that
+ *  lets list() show a visual hint. Legacy rows (no `|` separator) get the
+ *  same treatment minus the wrapper. */
+function reencryptApiKeys(db: Db, oldKey: Buffer, newKey: Buffer): number {
+  const rows = db.prepare(
+    `SELECT id, key_enc FROM api_keys WHERE revoked_at IS NULL`,
+  ).all() as Array<{ id: number; key_enc: string }>;
+  const upd = db.prepare(`UPDATE api_keys SET key_enc = ? WHERE id = ?`);
+  let count = 0;
+  for (const row of rows) {
+    const next = rotateApiKeyValue(row.key_enc, oldKey, newKey);
+    if (next === null) continue;
+    upd.run(next, row.id);
+    count++;
+  }
+  return count;
+}
+
+/** Return the rotated value for one api_keys.key_enc row, or null if the
+ *  row holds legacy plaintext that doesn't need rotating. */
+function rotateApiKeyValue(stored: string, oldKey: Buffer, newKey: Buffer): string | null {
+  const sep = stored.indexOf('|');
+  if (sep === -1) {
+    // Legacy row (no prefix wrapper) — whole field is the encrypted blob.
+    const plain = decryptWithKey(stored, oldKey);
+    return encryptWithKey(plain, newKey);
+  }
+  const prefix = stored.slice(0, sep);
+  const enc = stored.slice(sep + 1);
+  if (!enc.startsWith(ENC_PREFIX)) return null;
+  const plain = decryptWithKey(enc, oldKey);
+  return prefix + '|' + encryptWithKey(plain, newKey);
+}
+
+/** channels.config is a JSON blob with encrypted fields (today: bot_token
+ *  on telegram). Decrypt + re-encrypt only the SECRET_FIELDS values; rows
+ *  whose secrets are still plaintext (legacy) are left as-is. */
+function reencryptChannels(db: Db, oldKey: Buffer, newKey: Buffer): number {
+  const rows = db.prepare(`SELECT id, kind, config FROM channels`).all() as Array<{
+    id: number;
+    kind: string;
+    config: string;
+  }>;
+  const upd = db.prepare(`UPDATE channels SET config = ? WHERE id = ?`);
+  let count = 0;
+  for (const row of rows) {
+    const next = rotateChannelConfig(row.kind, row.config, oldKey, newKey);
+    if (next === null) continue;
+    upd.run(next, row.id);
+    count++;
+  }
+  return count;
+}
+
+/** Return the rotated `channels.config` JSON for one row, or null if no
+ *  encrypted secret-field values were found to rotate. */
+function rotateChannelConfig(kind: string, configJson: string, oldKey: Buffer, newKey: Buffer): string | null {
+  const parsed = JSON.parse(configJson) as Record<string, unknown>;
+  const secretFields = kind === 'telegram' ? ['bot_token'] : [];
+  let touched = false;
+  for (const f of secretFields) {
+    const v = parsed[f];
+    if (typeof v === 'string' && v.startsWith(ENC_PREFIX)) {
+      parsed[f] = encryptWithKey(decryptWithKey(v, oldKey), newKey);
+      touched = true;
+    }
+  }
+  return touched ? JSON.stringify(parsed) : null;
 }
 
 /** Atomic-ish write of the new key file: write to .new, rename old to
@@ -241,12 +265,9 @@ export const masterKeyCommand: Command = {
     '  sudo systemctl start ritsu',
   ].join('\n'),
   run: async (ctx: CommandContext) => {
-    switch (ctx.subcommand) {
-      case 'rotate': return cmdRotate(ctx);
-      default:
-        console.error(`unknown subcommand: ${ctx.subcommand ?? '(none)'}`);
-        console.error(`run 'ritsu master-key --help' for usage`);
-        return 2;
-    }
+    if (ctx.subcommand === 'rotate') return cmdRotate(ctx);
+    console.error(`unknown subcommand: ${ctx.subcommand ?? '(none)'}`);
+    console.error(`run 'ritsu master-key --help' for usage`);
+    return 2;
   },
 };

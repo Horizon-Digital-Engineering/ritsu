@@ -15,7 +15,7 @@ fi
 
 # When run as a pre-commit hook, scan only the staged diff (fast).
 # When run standalone, scan the full repo history (matches CI).
-if [ -n "${GIT_INDEX_FILE:-}" ] || git diff --cached --name-only | grep -q .; then
+if [[ -n "${GIT_INDEX_FILE:-}" ]] || git diff --cached --name-only | grep -q .; then
   exec gitleaks protect --staged --redact --no-banner
 else
   exec gitleaks detect --redact --no-banner
