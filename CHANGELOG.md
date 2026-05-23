@@ -4,6 +4,172 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.6.0] — 2026-05-23
+
+Security-focused release. A parallel-agent audit of the auth surface,
+injection vectors, crypto + secrets, admin UI, and agent sandbox
+surfaced 2 CRITICAL + 7 HIGH + 10 MEDIUM findings. This release ships
+the fixes for all of them except two: cross-agent monitor scope
+tightening (needs a new `allow_monitor_from` schema field) and HMAC-
+pepper token hashing (needs a schema migration on `mcp_tokens`). Both
+deferred so they get their own design pass; tracked in the private
+ops backlog.
+
+Upgrade is mostly transparent. The behavior changes worth flagging are
+called out under **Changed** below; in particular:
+- Bash no longer inherits `process.env`; only an allowlist of generic
+  vars is forwarded. Anything an agent expected from the parent env
+  (custom `RITSU_*` vars, `*_API_KEY`, etc.) won't be there.
+- The colocated master-key fallback at `/opt/ritsu/data/.master-key`
+  is now refused unless `RITSU_ALLOW_COLOCATED_KEY=1` is set.
+- The admin-token bootstrap refuses to overwrite a pre-existing file.
+
+### Security
+
+- **WebFetch SSRF guard.** Four-layer defense: URL parse (reject
+  `userinfo` + IP-literal URLs in private ranges), manual redirect
+  handling with per-hop revalidation, custom undici dispatcher whose
+  `connect.lookup` rejects DNS-resolved private IPs (closes DNS
+  rebinding), and existing caller-side timeout + size caps. Comprehensive
+  IPv4 + IPv6 range list including the IPv4-mapped-IPv6 trick
+  (`[::ffff:127.0.0.1]`). Escape hatch via
+  `RITSU_WEBFETCH_ALLOW_PRIVATE_HOSTS`.
+- **Bash environment allowlist.** The Bash tool no longer forwards
+  `process.env` to the child shell — only `PATH`, `HOME`, `USER`,
+  `LANG`, `LC_ALL`, `TERM`. A prompt-injected agent that runs `env`
+  no longer harvests `ANTHROPIC_API_KEY`, `RITSU_ADMIN_TOKEN`, or any
+  operator-loaded credentials.
+- **Bash sandbox (opt-in).** Set `RITSU_BASH_SANDBOX=1` to wrap every
+  Bash call in `bwrap` (bubblewrap): ro-bind `/`, rw-bind only the
+  workspace, private `/tmp`, `--die-with-parent`, `--unshare-pid/uts/ipc`,
+  `--cap-drop ALL`. Network is intentionally NOT unshared (the
+  WebFetch SSRF guard is the trade-off; layer firewall rules on the
+  ritsu user if you need more). Fails loud with a remediation hint
+  when set but `bwrap` isn't installed.
+- **Symlink-safe FS tools.** `permissions.ts` now resolves through
+  `fs.realpath` and re-checks workspace containment against the
+  canonical path. An agent that drops `workspace/secret -> /etc/shadow`
+  via Write can no longer Read it back. Glob/Grep walkers skip
+  symlink dirents outright. `/proc /sys /dev` are deny-listed even
+  if a workspace happens to cover them.
+- **Workspace path-traversal prefix-confusion.** Admin-side workspace
+  creation compared `combined.startsWith(root)` without a path
+  separator — `root="/srv/foo"` matched `/srv/foobar/x`. Fixed; also
+  made `checkWorkspaceUnderSandbox` fail-closed when `systemctl`
+  can't enumerate the ReadWritePaths (was falling open on dev hosts
+  without the unit installed).
+- **OAuth consent CSRF + server-side state.** The `POST /oauth/authorize`
+  handler used to trust client-supplied `code_challenge` / `redirect_uri`
+  / `scope` from the form body. An attacker who registered a client via
+  DCR and tricked the operator into signing a forged POST could bind
+  their own PKCE to the authz code. Fixed: GET creates a server-side
+  `oauth_authorize_requests` row (10-min TTL, single-use); the
+  consent page renders only `request_id`; POST reconstructs PKCE +
+  redirect from that row. POSTs with a mismatched `Origin` header
+  are refused with 403.
+- **OAuth DCR rate-limit + unverified-client badge.** `POST /oauth/register`
+  is RFC-unauthenticated but is now per-IP rate-limited (5/hour by
+  default, override via `RITSU_DCR_MAX_PER_IP`). The consent page now
+  badges every self-registered client name as `(self-registered,
+  unverified)` so an operator second-guesses a phishing-grade lookalike.
+- **AES-GCM ciphertext binding (`enc:v2:`).** GCM provides integrity
+  of *what* was encrypted, not *where* it lives. Without AAD, an
+  attacker with DB-write could swap `key_enc` between rows and
+  `reveal(id=anthropic)` would silently return the OpenAI key. New
+  format binds each ciphertext to its row context (`api_key:id=42:key_enc`,
+  `channel:id=7:bot_token`). Legacy `enc:v1:` reads still work; rotation
+  is the v1→v2 upgrade path.
+- **Atomic admin-token bootstrap.** `writeFileSync(path,..,{mode:0o600})`
+  silently ignores the mode when the file exists. An attacker
+  pre-creating the bootstrap path at 0644 would otherwise get the
+  admin token at world-readable mode. Now uses `O_WRONLY|O_CREAT|O_EXCL`;
+  if anything is at the path, the just-minted token is revoked and
+  the process exits 70.
+- **Master-key location + perms.** The fallback path
+  `/opt/ritsu/data/.master-key` (next to the SQLite DB it protects)
+  defeats the stated DB-only-theft threat model. Now refused unless
+  `RITSU_ALLOW_COLOCATED_KEY=1` is set, with a remediation list
+  pointing at `RITSU_MASTER_KEY` or `/etc/ritsu/master-key`. Read
+  path now `statSync`s the key file (refuses anything but mode 0600)
+  and its parent directory (refuses group/world-writable).
+- **`ask_agent` confused-deputy + cycle + concurrency.** Refuses
+  calls where the callee holds capabilities the caller doesn't (A with
+  no `manage_agents` can't bounce off B to mint a wider-permission
+  agent). Refuses if `target` is already in the call chain (cycle
+  detection up front, not after burning tokens on the way down).
+  Per-caller in-flight cap of 2 — no more 50-way fan-out.
+- **Bash concurrency cap + timeout ceiling.** Per-workspace ceiling
+  of 2 in-flight calls. `timeout_ms` upper bound lowered from 5
+  minutes to 60 seconds.
+- **`/admin/api/test` validation.** The last admin-side mutating-ish
+  endpoint that used a direct `as` cast on `req.body` now parses
+  through zod (`TestPaneBody`) and runs every ephemeral workspace
+  through `checkWorkspaceUnderSandbox`.
+- **HSTS** on admin responses (when the request reached us over TLS).
+- **Log redactor split into EXACT + CONTAINS lists.** Substring match
+  on `'key'` previously redacted `monkey` / `keyboard_shortcut`;
+  exact-match for short names fixes the over-redaction. Added
+  `plaintext`, `bearer`, `master_key`, `auth_tag`.
+- **DDL identifier whitelist** in `addColumnIfMissing`. Currently
+  every call site passes hardcoded literals — this is a future-
+  maintainer guardrail against a regression that pipes user input
+  through.
+
+### Added
+
+- **New env vars** (all opt-in):
+  - `RITSU_BASH_SANDBOX=1` — enable bwrap sandbox for Bash.
+  - `RITSU_ALLOW_COLOCATED_KEY=1` — accept the fallback master-key
+    path; default is now refuse.
+  - `RITSU_WEBFETCH_ALLOW_PRIVATE_HOSTS=docs.internal,...` — allow
+    specific internal hostnames through the SSRF guard.
+  - `RITSU_DCR_MAX_PER_IP=<N>` — override the DCR rate-limit (default 5).
+  - `RITSU_SKIP_SANDBOX_CHECK=1` — opt-out of the workspace
+    sandbox-roots check when `systemctl` is unavailable (dev mode).
+- **`src/tools/ritsu-agent/ssrf-guard.ts`** with the IPv4/IPv6 range
+  classifier, URL validator, custom undici dispatcher, and a
+  `safeFetch` wrapper that does manual redirect handling.
+- **`src/bootstrap-admin-token.ts`** extracted from `src/index.ts`
+  so the precondition + fail-closed write are unit-testable without
+  standing up the full server.
+- **OpenSSF Scorecard** workflow + badge (`.github/workflows/security.yml`).
+  Pushes SARIF to code-scanning + publishes to scorecard.dev.
+- **`scripts/scan-secrets.sh` modernized** to the current `gitleaks
+  git` API (was on the deprecated `gitleaks protect` / `gitleaks detect`).
+
+### Changed
+
+- **Single `src/config.ts` for runtime config.** Server (`src/index.ts`)
+  and operator CLI now load through one validating module. Misconfig
+  (invalid port, duplicate ports, unrecognised `MCP_REQUIRE_AUTH`)
+  raises `ConfigError` listing every issue at once and exits 78
+  (`EX_CONFIG`).
+- **`RITSU_ADMIN_TOKEN_FILE`** is the canonical knob for the bootstrap
+  admin-token path; default `./data/.admin-token` for dev,
+  `/opt/ritsu/data/.admin-token` for the installer-written prod env.
+- **Bash env** is allowlisted (see Security). Anything an existing
+  setup relied on inheriting from the ritsu service env will need to
+  be set explicitly in the workspace's environment.
+- **Bash `timeout_ms`** ceiling lowered from 300_000 to 60_000.
+- **README IMPORTANT callout** updated: the admin UI's bearer auth is
+  documented, "not the open internet, yet" replaces the categorical
+  "not the open internet". DEPLOY.md framing updated to match.
+- **License switched to BUSL-1.1** (`package.json`, `LICENSE`).
+- **CodeQL false-positive dismissals** for 2× `js/clear-text-logging`
+  (`stats.apiKeys` is a row count, not a key) and 1× `js/missing-rate-limiting`
+  on the admin middleware (rate limit is applied earlier in the chain).
+
+### Fixed
+
+- **Six broken HTML template literals** in `admin/app.js` — missing
+  `>` on opening tags meant Memory content / superseded-by badges /
+  tool badges / panel-nested sections rendered as attribute-name
+  garbage. `esc()` was always there so it wasn't an XSS, just dead
+  UI in the affected tabs.
+- **`dotenv-lite` precedence** for the CLI: `/etc/ritsu/env` is now
+  loaded automatically when a CLI subcommand runs on a prod host,
+  matching what the systemd service sees.
+
 ## [0.5.0] — 2026-05-23
 
 First public release of the rebuilt repo. The 0.4.0 codebase was
