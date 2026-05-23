@@ -136,6 +136,22 @@ const BindChatBody = z.object({
   chat_id: z.number().int(),
 });
 
+/** Test-pane body. Mirrors the agent-edit form's draft state — never
+ *  persisted. The workspaces array MUST be validated and sandbox-checked
+ *  like the persistent workspace-create path; without that the test pane
+ *  becomes a "run anywhere reachable by the service account" gadget. */
+const TestPaneBody = z.object({
+  system_prompt:   z.string().min(1),
+  message:         z.string().min(1),
+  dispatcher:      z.enum(['claude-direct', 'litellm']),
+  model:           z.string().trim().min(1),
+  tools_allowlist: z.array(z.string()).optional(),
+  workspaces:      z.array(z.object({
+    path:        z.string().trim().min(1),
+    permissions: z.array(z.enum(['read', 'write', 'exec'])).min(1),
+  })).optional(),
+});
+
 /**
  * Parse `req.body` against `schema`. On failure, respond 400 with the
  * structured zod issues and return null so the handler can early-return.
@@ -938,22 +954,18 @@ export function createAdminApp(deps: AdminDeps) {
   // row, no memory write — pure "what would this prompt return."
 
   app.post('/admin/api/test', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, TestPaneBody);
+    if (!body) return;
+    const wsPaths = body.workspaces ?? [];
+    // Sandbox-check every ephemeral workspace just like the persistent
+    // workspace-create path does. Without this an admin token-holder
+    // could mint a one-shot dispatcher pointing at any filesystem path
+    // the service account can reach, with no audit row.
+    for (const w of wsPaths) {
+      if (!checkWorkspaceUnderSandbox(normalizePath(resolvePath(w.path)), res)) return;
+    }
     try {
-      const { system_prompt, message, dispatcher: dispKind, model, tools_allowlist, workspaces: wsPaths } =
-        req.body as {
-          system_prompt: string;
-          message: string;
-          dispatcher: 'claude-direct' | 'litellm';
-          model: string;
-          tools_allowlist?: string[];
-          workspaces?: Array<{ path: string; permissions: Permission[] }>;
-        };
-      if (!system_prompt || !message || !dispKind || !model) {
-        res.status(400).json({ error: 'system_prompt, message, dispatcher, model are required' });
-        return;
-      }
-      // Build ephemeral workspaces (no DB write); checkToolUse only inspects path + permissions
-      const ephemeralWs = (wsPaths ?? []).map((w, i) => ({
+      const ephemeralWs = wsPaths.map((w, i) => ({
         id: i + 1,
         agent_id: '__test__',
         path: w.path,
@@ -961,16 +973,16 @@ export function createAdminApp(deps: AdminDeps) {
         created_at: Math.floor(Date.now() / 1000),
       }));
       const { buildDispatcher } = await import('../model/factory.js');
-      const dispatcher = buildDispatcher(dispKind, model, {
+      const dispatcher = buildDispatcher(body.dispatcher, body.model, {
         cwd: ephemeralWs[0]?.path,
-        tools: tools_allowlist ?? [],
+        tools: body.tools_allowlist ?? [],
         workspaces: ephemeralWs,
       });
       const t0 = Date.now();
       const resp = await dispatcher.chat({
         messages: [
-          { role: 'system', content: system_prompt },
-          { role: 'user', content: message },
+          { role: 'system', content: body.system_prompt },
+          { role: 'user', content: body.message },
         ],
       });
       res.json({

@@ -109,6 +109,9 @@ function pkcePair(): { verifier: string; challenge: string } {
 }
 
 before(async () => {
+  // Tests hit /oauth/register many times against the same loopback IP;
+  // raise the per-IP cap so the live rate-limit doesn't interfere.
+  process.env.RITSU_DCR_MAX_PER_IP = '10000';
   db = createInMemoryDb();
   db.exec(SCHEMA);
   oauth = new OAuthStore(db);

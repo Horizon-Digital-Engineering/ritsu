@@ -110,6 +110,40 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
   });
 
   // ---- Dynamic Client Registration (RFC 7591) --------------------------
+  //
+  // DCR is unauthenticated by RFC. We add a tiny per-IP token-bucket so
+  // a tailnet (or eventually internet-facing) attacker can't flood
+  // oauth_clients with phishing-grade client_name lookalikes, and so a
+  // misbehaving client can't accidentally hot-loop registrations.
+  //
+  // Limits are intentionally low — DCR is a one-shot per real client.
+  // 5 registrations/hour/IP comfortably accommodates legitimate setup
+  // (claude.ai web Connector, Claude Desktop, local tooling) while
+  // making large-scale planting expensive.
+
+  const DCR_WINDOW_MS = 60 * 60 * 1000;     // 1 hour
+  // Override for tests + ops who need higher caps. Defaults to 5/hour,
+  // which is enough for any real human setup but expensive enough to
+  // dissuade flood-registration.
+  const DCR_MAX_PER_IP = Number(process.env.RITSU_DCR_MAX_PER_IP ?? 5);
+  const dcrBuckets = new Map<string, { count: number; resetAt: number }>();
+  app.use('/oauth/register', (req, res, next) => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const now = Date.now();
+    const bucket = dcrBuckets.get(ip);
+    if (!bucket || bucket.resetAt < now) {
+      dcrBuckets.set(ip, { count: 1, resetAt: now + DCR_WINDOW_MS });
+      next();
+      return;
+    }
+    bucket.count++;
+    if (bucket.count > DCR_MAX_PER_IP) {
+      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+      res.status(429).json({ error: 'rate limit exceeded', retry_after_s: Math.ceil((bucket.resetAt - now) / 1000) });
+      return;
+    }
+    next();
+  });
 
   app.post('/oauth/register', (req: Request, res: Response) => {
     const parsed = RegisterBody.safeParse(req.body);
@@ -432,6 +466,7 @@ function renderConsent(view: ConsentView, errorMsg?: string): SafeHtml {
   button.primary:hover { background:#357538; }
   button.deny:hover { background:#2a2a2a; }
   .err { background:#3a1c1c; border:1px solid #6a2828; color:#f5c1c1; padding:10px 12px; border-radius:6px; margin: 0 0 16px; font-size:13px; }
+  .unverified { color:#d2a25b; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; margin-left:6px; }
   a { color:#7aa7d6; }
 </style>
 </head><body>
@@ -440,7 +475,7 @@ function renderConsent(view: ConsentView, errorMsg?: string): SafeHtml {
   <div class="sub">A client wants to call this ritsu server's MCP tools on your behalf.</div>
   ${errBlock}
   <dl>
-    <dt>Client</dt><dd>${view.client_name}</dd>
+    <dt>Client</dt><dd>${view.client_name} <span class="unverified">(self-registered, unverified)</span></dd>
     <dt>Redirect URI</dt><dd>${view.redirect_uri}</dd>
     <dt>Scope</dt><dd>${view.scope}</dd>
     <dt>Resource</dt><dd>${view.resource}</dd>
