@@ -1,6 +1,6 @@
 # Security
 
-ritsu is designed to be self-hosted on a tailnet or similar trusted network. The defaults are restrictive (auth required, no public exposure, encryption at rest for sensitive config). Operators who choose to expose ritsu more broadly should read the [Threat Model](./THREAT_MODEL.md) before doing so.
+ritsu is designed to be self-hosted on a tailnet or similar trusted network. The defaults are restrictive (auth required, no public exposure, encryption at rest for sensitive config). Operators who choose to expose ritsu more broadly should read the [Threat Model](./docs/threat-model.md) before doing so.
 
 ## What ritsu defends against
 

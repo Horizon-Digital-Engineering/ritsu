@@ -9,7 +9,7 @@
  * ProtectSystem / ReadWritePaths sandbox. A model with Bash + a writable
  * workspace can do anything that user could in that directory.
  * Stronger isolation (firejail / bwrap / per-call mount namespaces) is
- * a follow-up; documented in THREAT_MODEL.md A6.
+ * a follow-up; documented in docs/threat-model.md A6.
  */
 import { spawn } from 'node:child_process';
 import { readdir, stat, readFile } from 'node:fs/promises';

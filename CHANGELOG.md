@@ -84,7 +84,7 @@ hygiene.
   and `style=""` attribute in the admin UI.
 
 ### Security
-- CSP tightened — see `THREAT_MODEL.md` § A1.
+- CSP tightened — see `docs/threat-model.md` § A1.
 - Admin API body validation is now real (zod) instead of cosmetic
   (`as` cast).
 

@@ -25,7 +25,7 @@ ritsu kills that loop:
 - **Talk to your agents from anything that speaks MCP.** Claude Code, Claude Desktop, Cursor, raw curl — all hit the same `/mcp` endpoint. OAuth 2.1 for spec-compliant clients (claude.ai web), `rt_*` bearer tokens for header clients.
 - **Two runtimes.** Run on your Claude Max plan via `@anthropic-ai/claude-agent-sdk` ($0 per turn). Or point an agent at OpenAI / OpenRouter / a local LiteLLM. Same tools, same memory, same UI.
 - **Real isolation.** Per-agent tool allowlists + per-path workspace permissions enforced *before* tools touch the disk. An agent with no Bash and no writable workspace can't exfiltrate files even if perfectly socially-engineered.
-- **Secrets at rest are encrypted.** Bot tokens, API keys — AES-256-GCM with a separate master key. Audit log + bearer-token hygiene + strict CSP by default. (Full posture: [`THREAT_MODEL.md`](./THREAT_MODEL.md).)
+- **Secrets at rest are encrypted.** Bot tokens, API keys — AES-256-GCM with a separate master key. Audit log + bearer-token hygiene + strict CSP by default. (Full posture: [`docs/threat-model.md`](./docs/threat-model.md).)
 
 ---
 
@@ -52,6 +52,11 @@ curl -s -X POST http://localhost:7333/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_agent","arguments":{"agent_id":"hello-world","message":"hi"}}}'
 ```
 
+For the full walkthrough (create a real agent, wire Claude Code to it,
+inspect the conversation from the admin UI), see
+[`docs/getting-started.md`](./docs/getting-started.md). For drop-in
+agent definitions you can paste in, see [`docs/examples/`](./docs/examples).
+
 ### Docker
 
 ```bash
@@ -72,7 +77,7 @@ Bind-mounts the host's `~/.claude/` so the Max-plan dispatcher works without an 
 | `/admin` (port 7334) | Tabbed UI: Dashboard, Agents, Workspaces, Memories, Conversations, Tools, MCP, Channels, Tokens, API Keys, OAuth Clients, Logs, Audit. |
 | `GET /healthz`, `/readyz`, `/version` | Liveness / readiness. |
 | `GET /metrics` | Prometheus exposition. |
-| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `url`, `doctor`. |
+| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `url`, `doctor`. Full reference: [`docs/cli.md`](./docs/cli.md). |
 
 ### MCP tools (current)
 
@@ -142,7 +147,7 @@ Targets a Linux + systemd box. Footprint ~200 MB working set. Tailscale-anchored
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md) for the full posture. One-line summary of what's baked in:
+See [`SECURITY.md`](./SECURITY.md) (reporting + posture summary) and [`docs/threat-model.md`](./docs/threat-model.md) (deep-dive on the adversary model) for the full posture. One-line summary of what's baked in:
 
 - No public exposure by default (`127.0.0.1` binds; tailnet ACL is the outer auth boundary).
 - Scoped bearer tokens (`rt_*` MCP, `rat_*` admin) — sha256 at rest, optional `expires_at`, audit-logged.
