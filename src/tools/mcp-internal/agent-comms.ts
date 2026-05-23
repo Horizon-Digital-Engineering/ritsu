@@ -40,6 +40,32 @@ export const COMMS_TOOL_NAMES = [
  */
 export const MAX_CALL_DEPTH = 3;
 
+/**
+ * Per-agent ceiling on simultaneous in-flight ask_agent calls. Without
+ * this, a prompt-injected agent can fan out 50 parallel asks and rack up
+ * model-token cost / wedge the host. Two is enough for legitimate
+ * parallel coordination ("ask agent-A and agent-B simultaneously") while
+ * making spray attacks pointless.
+ */
+const MAX_PER_CALLER_INFLIGHT = 2;
+
+/** Per-caller-id in-flight count. Cleared back to zero on every call's
+ *  finally — never grows past the number of LIVE callers. */
+const inflightPerCaller = new Map<string, number>();
+
+/**
+ * Capabilities the callee has but caller does not = escalation. Refuse
+ * the call to close the confused-deputy attack: caller can't borrow
+ * callee's manage_agents to mint a wider-permission agent.
+ */
+function callerEscalatesTo(
+  callerCaps: ReadonlyArray<string>,
+  calleeCaps: ReadonlyArray<string>,
+): string[] {
+  const callerSet = new Set(callerCaps);
+  return calleeCaps.filter(c => !callerSet.has(c));
+}
+
 interface CallContext {
   depth: number;
   /** Caller chain so far, including the current agent. Used only for error messages. */
@@ -136,18 +162,48 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) 
         async ({ agent_id: target, message, conversation_id }) => {
           // Re-read the caller's definition at call time so admin edits to the
           // can_call list take effect immediately, not just on next agent reload.
-          const def = await deps.defStore.read(callerAgentId);
-          const allowed = def?.can_call ?? [];
+          const callerDef = await deps.defStore.read(callerAgentId);
+          const allowed = callerDef?.can_call ?? [];
           if (!allowed.includes(target)) {
             logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'not_in_allowlist' });
             return {
+              content: [{ type: 'text', text: buildDenialMessage(callerAgentId, target, allowed) }],
+            };
+          }
+
+          // Confused-deputy guard: refuse to route through an agent with
+          // capabilities the caller doesn't already have. Otherwise A could
+          // prompt-inject B (which has manage_agents) into minting a new
+          // agent with whatever permissions A wanted.
+          const targetDef = await deps.defStore.read(target);
+          const escalated = callerEscalatesTo(callerDef?.capabilities ?? [], targetDef?.capabilities ?? []);
+          if (escalated.length > 0) {
+            logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
+            return {
               content: [{
                 type: 'text',
-                text: buildDenialMessage(callerAgentId, target, allowed),
+                text: `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${callerAgentId} does not. ` +
+                  `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`,
               }],
             };
           }
+
           const ctx = currentCallContext() ?? { depth: 0, chain: [callerAgentId] };
+
+          // Cycle guard: if `target` is already in the chain, we're about to
+          // loop. The depth cap eventually breaks this but only after burning
+          // tokens on the way down. Refuse up front.
+          if (ctx.chain.includes(target)) {
+            const chain = [...ctx.chain, target].join(' → ');
+            logger.warn('comms.cycle', { caller: callerAgentId, target, chain });
+            return {
+              content: [{
+                type: 'text',
+                text: `call cycle detected: ${chain}. Stop and answer with what you already know.`,
+              }],
+            };
+          }
+
           if (ctx.depth >= MAX_CALL_DEPTH) {
             const chain = [...ctx.chain, target].join(' → ');
             logger.warn('comms.depth-exceeded', { caller: callerAgentId, target, chain });
@@ -158,6 +214,23 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) 
               }],
             };
           }
+
+          // Concurrency cap on the caller. Refuse if this agent already has
+          // MAX_PER_CALLER_INFLIGHT outstanding calls; a single agent can't
+          // fan out a denial-of-billing attack.
+          const inflight = inflightPerCaller.get(callerAgentId) ?? 0;
+          if (inflight >= MAX_PER_CALLER_INFLIGHT) {
+            logger.warn('comms.inflight-exceeded', { caller: callerAgentId, target, inflight });
+            return {
+              content: [{
+                type: 'text',
+                text: `too many concurrent ask_agent calls in flight (${inflight}/${MAX_PER_CALLER_INFLIGHT}). ` +
+                  `Wait for one to return before issuing another.`,
+              }],
+            };
+          }
+          inflightPerCaller.set(callerAgentId, inflight + 1);
+
           const nextCtx: CallContext = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
           const convoId = conversation_id ?? deps.conversations.findOrStartInterAgentThread(callerAgentId, target);
           logger.info('comms.ask', {
@@ -178,6 +251,10 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) 
             const msg = e instanceof Error ? e.message : String(e);
             logger.error('comms.error', { caller: callerAgentId, target, error: msg });
             return { content: [{ type: 'text', text: `error calling ${target}: ${msg}` }] };
+          } finally {
+            const n = (inflightPerCaller.get(callerAgentId) ?? 1) - 1;
+            if (n <= 0) inflightPerCaller.delete(callerAgentId);
+            else inflightPerCaller.set(callerAgentId, n);
           }
         },
       ),
