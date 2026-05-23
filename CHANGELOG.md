@@ -4,6 +4,36 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.6.2] — 2026-05-23
+
+Patch release for an admin-UI regression that 0.6.1 was carrying
+(though the symptom only surfaced after a clean browser fetch — the
+no-cache headers on the static assets in 0.6.1 are what forced the
+hidden bug into the open).
+
+### Fixed
+
+- **Admin UI was permanently stuck on "loading…"** because
+  `admin/app.js` uses top-level `await` at its bootstrap section, but
+  `ui.html` loaded it as a classic `<script src="…" defer>` without
+  `type="module"`. Browsers parse-error and no JS runs. Likely
+  introduced by a cognitive-complexity refactor that flattened an
+  IIFE; browser caching masked it on 0.6.0 / 0.6.1 until a clean
+  fetch hit. Script tag now correctly says `type="module"` (modules
+  are deferred by default, so the prior `defer` attribute folds in).
+
+### Added
+
+- **Test (`src/__tests__/admin-app-js-parse.test.ts`)** to make this
+  class of bug visible in CI without needing a browser:
+  - Dynamic-imports `admin/app.js` and asserts no `SyntaxError` —
+    catches top-level-await mismatches, unclosed template literals,
+    anything that parse-fails. Runtime errors past parse (no
+    `document` in Node) are ignored.
+  - Regex check on `ui.html` that the app.js script tag carries
+    `type="module"`. Guards against the exact regression we just hit
+    if someone copy-pastes a classic `<script>` tag back in.
+
 ## [0.6.1] — 2026-05-23
 
 Supply-chain + CI hardening follow-up to 0.6.0. No runtime behavior
