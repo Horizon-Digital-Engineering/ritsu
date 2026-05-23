@@ -1,0 +1,56 @@
+name: CodeQL
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Sunday 07:00 UTC — catches new CodeQL queries against
+    # unchanged code. Same idea as the security.yml dep-audit cron.
+    - cron: '0 7 * * 0'
+
+# Default-deny at workflow scope so the runner token can't accidentally
+# write anywhere. The analyze job below opts back into the narrow set
+# it needs.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # required to upload SARIF to code-scanning
+      packages: read           # CodeQL may pull internal queries
+      actions: read            # for workflow-level metadata
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `javascript-typescript` is CodeQL's combined analyzer for both
+        # languages — one extraction pass covers .js + .ts.
+        language: [javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # CodeQL needs the workflow file referenced from here to be
+      # SHA-pinned (Scorecard's Pinned-Dependencies check) — these are
+      # the same pins build.yml and security.yml use elsewhere.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-extended` adds queries beyond the default suite
+          # (e.g. js/missing-rate-limiting, js/clear-text-logging) —
+          # the ones we've already been triaging. Keeping the same
+          # query set so dismissed-alert history matches.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3
+        with:
+          category: '/language:${{ matrix.language }}'
