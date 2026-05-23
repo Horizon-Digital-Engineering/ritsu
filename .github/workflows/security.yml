@@ -137,12 +137,10 @@ jobs:
       id-token: write          # publish results to scorecard.dev (powers the badge)
       contents: read
       actions: read
-      # Branch-Protection + Webhooks + Maintained checks read repo
-      # administration metadata via the GitHub API. Without these
-      # permissions the checks return -1 (inconclusive) instead of an
-      # actual score, dragging the overall number down.
-      administration: read
-      checks: read
+      # Branch-Protection would need a PAT (not GITHUB_TOKEN) to query
+      # branch-protection settings. Scorecard reports -1 (inconclusive)
+      # for that check without one. -1 is skipped from the overall
+      # average — it doesn't hurt the score, just doesn't help.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
