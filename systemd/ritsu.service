@@ -1,0 +1,39 @@
+[Unit]
+Description=ritsu — multi-agent MCP server
+After=network-online.target litellm-proxy.service
+Wants=network-online.target
+# Host-specific extras (extra ReadWritePaths, Requires= for shared mounts,
+# etc.) live in drop-ins under /etc/systemd/system/ritsu.service.d/.
+# scripts/configure.sh writes ritsu.service.d/agent-sync.conf automatically
+# when /mnt/agent-sync is mounted on the host.
+
+[Service]
+Type=simple
+User=ritsu
+Group=ritsu
+WorkingDirectory=/opt/ritsu
+EnvironmentFile=-/etc/ritsu/env
+ExecStart=/usr/bin/node /opt/ritsu/dist/index.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ritsu
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+# RW exceptions:
+#   /opt/ritsu/data — SQLite DB + admin-token file
+#   /home/ritsu     — ritsu's own home. The Claude Agent SDK writes to
+#     several places: ~/.claude/ (session state, todos, statsig),
+#     ~/.claude.json (a single file outside .claude/, easy to miss),
+#     ~/.local/bin/claude (optional). Opening the whole home is
+#     pragmatic — it's owned by the service user anyway, and
+#     ProtectHome=read-only still blocks ritsu from reading OTHER
+#     users' homes (which is the point of that setting).
+# Extra paths (shared SMB volumes etc.) get appended via drop-in — see above.
+ReadWritePaths=/opt/ritsu/data /home/ritsu
+
+[Install]
+WantedBy=multi-user.target

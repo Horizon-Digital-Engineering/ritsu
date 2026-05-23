@@ -1,0 +1,38 @@
+name: Bug report
+description: Something that worked before now doesn't, or behaves wrong.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what did you expect vs. see?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ritsu version
+      description: Output of `ritsu --version` or the git SHA you're running.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        `journalctl -u ritsu --since "10 min ago"` on your host, or the
+        admin-UI audit row, or the browser devtools output. Redact tokens.
+      render: shell
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Admin UI
+        - MCP / agent runtime
+        - CLI
+        - Systemd / install
+        - Other
+    validations:
+      required: true

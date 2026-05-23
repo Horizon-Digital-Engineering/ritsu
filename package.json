@@ -1,0 +1,40 @@
+{
+  "name": "ritsu",
+  "version": "0.4.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/admin && cp src/admin/ui.html dist/admin/ui.html && cp src/admin/app.js dist/admin/app.js && cp src/admin/app.css dist/admin/app.css && chmod +x dist/cli.js",
+    "start": "node dist/index.js",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "tsx --test src/__tests__/*.test.ts",
+    "test:coverage": "c8 --reporter=lcov --reporter=text --src=src --exclude='src/__tests__/**' --exclude='src/admin/app.js' tsx --test src/__tests__/*.test.ts",
+    "scan:secrets": "./scripts/scan-secrets.sh"
+  },
+  "bin": {
+    "ritsu": "./dist/cli.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.150",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^5.2.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
+    "@typescript-eslint/eslint-plugin": "^8.59.4",
+    "@typescript-eslint/parser": "^8.0.0",
+    "c8": "^11.0.0",
+    "eslint": "^10.4.0",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}

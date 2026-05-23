@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0f1115" />
+  <title>ritsu — admin</title>
+  <link rel="stylesheet" href="/admin/app.css" />
+</head>
+<body>
+  <header>
+    <h1>ritsu <small id="version">…</small></h1>
+    <span class="info" id="info-bar"></span>
+  </header>
+  <nav class="tabs primary" id="nav-primary">
+    <button type="button" data-action="switch-group" data-group="dashboard" class="active">Dashboard</button>
+    <button type="button" data-action="switch-group" data-group="agents">Agents</button>
+    <button type="button" data-action="switch-group" data-group="comms">Comms</button>
+    <button type="button" data-action="switch-group" data-group="auth">Auth</button>
+    <button type="button" data-action="switch-group" data-group="system">System</button>
+  </nav>
+  <nav class="tabs secondary empty" id="nav-secondary"></nav>
+
+  <main>
+    <!-- ============ TILES (dashboard) ============ -->
+    <section id="pane-tiles" class="pane active">
+      <div class="panel tile-header-bar">
+        <div>
+          <h2 class="m0">Agents</h2>
+          <p class="tile-header-meta">Click a tile to open a chat with that agent. Tile state refreshes every 10s.</p>
+        </div>
+        <div>
+          <button id="tiles-refresh" data-action="tiles-refresh" title="refresh now">↻</button>
+        </div>
+      </div>
+      <div id="tiles-grid" class="tile-grid">loading…</div>
+    </section>
+
+    <!-- Right-rail chat panel (lives outside the tab so it can float over). -->
+    <aside id="agent-panel" class="agent-panel" aria-hidden="true">
+      <div class="agent-panel-head">
+        <div>
+          <div class="agent-panel-title">
+            <span id="ap-dot" class="tile-dot"></span>
+            <span id="ap-id">—</span>
+          </div>
+          <div id="ap-sub" class="agent-panel-sub">—</div>
+        </div>
+        <button id="ap-close" class="ap-close" data-action="ap-close" title="close (Esc)">✕</button>
+      </div>
+      <div id="ap-transcript" class="ap-transcript">no conversation loaded.</div>
+      <form id="ap-ask-form" class="ap-ask">
+        <textarea id="ap-input" placeholder="Ask this agent… (Enter to send, Shift+Enter for newline)" rows="2"></textarea>
+        <div class="ap-ask-row">
+          <button type="button" id="ap-meta" class="ap-meta-btn" data-action="toggle-convo-picker" title="switch conversation">—</button>
+          <div id="ap-convo-picker" class="ap-convo-picker" aria-hidden="true"></div>
+          <span class="flex1"></span>
+          <button type="submit" id="ap-send" class="primary">Send</button>
+        </div>
+      </form>
+    </aside>
+
+    <!-- ============ AGENTS ============ -->
+    <section id="pane-agents" class="pane">
+      <div class="panel">
+        <h2>Agents</h2>
+        <div class="log-controls mb-3">
+          <label>Search: <input id="agent-search" type="text" placeholder="name or description…" /></label>
+          <label>Dispatcher:
+            <select id="agent-disp-filter">
+              <option value="">all</option>
+              <option value="claude-direct">claude-direct</option>
+              <option value="litellm">litellm</option>
+            </select>
+          </label>
+          <label>State:
+            <select id="agent-state-filter">
+              <option value="">all</option>
+              <option value="on">enabled</option>
+              <option value="off">disabled</option>
+            </select>
+          </label>
+        </div>
+        <div id="agent-list">loading…</div>
+      </div>
+
+      <div class="panel">
+        <h2>Create / edit</h2>
+        <form class="grid" id="agent-form">
+          <label for="f-id">id</label>
+          <input id="f-id" name="id" required pattern="[a-z0-9][a-z0-9-]*" placeholder="kebab-case-id" />
+
+          <label for="f-type">type</label>
+          <select id="f-type" name="type"></select>
+
+          <label for="f-name">name</label>
+          <input id="f-name" name="name" required />
+
+          <label for="f-description">description</label>
+          <input id="f-description" name="description" required />
+
+          <label for="f-dispatcher">dispatcher</label>
+          <select id="f-dispatcher" name="dispatcher">
+            <option value="claude-direct">claude-direct</option>
+            <option value="litellm">litellm</option>
+          </select>
+
+          <label for="f-model">model</label>
+          <input id="f-model" name="model" required value="claude-sonnet-4-6" />
+
+          <label for="f-memory-backend">memory backend</label>
+          <select id="f-memory-backend" name="memory_backend">
+            <option value="sqlite">sqlite</option>
+            <option value="flashback" disabled>flashback (V2)</option>
+          </select>
+
+          <label for="f-provider">provider</label>
+          <select id="f-provider" name="provider">
+            <option value="">claude-sdk (Max plan, $0)</option>
+            <option value="openai">openai</option>
+            <option value="openai-compat">openai-compat (OpenRouter / Together / Groq)</option>
+            <option value="litellm">litellm proxy</option>
+            <option value="anthropic" disabled>anthropic (Phase C)</option>
+          </select>
+
+          <label for="f-api-key-ref">API key</label>
+          <select id="f-api-key-ref" name="api_key_ref">
+            <option value="">— none (claude-sdk only) —</option>
+          </select>
+
+          <label for="f-provider-options">provider options</label>
+          <input id="f-provider-options" name="provider_options" placeholder='{"temperature":0.7,"max_tokens":4096}' />
+
+          <label for="f-enabled">enabled</label>
+          <span><input id="f-enabled" name="enabled" type="checkbox" checked class="input-auto" /></span>
+
+          <label for="f-tools">tools allowlist</label>
+          <div>
+            <div id="f-tools" class="row-wrap"></div>
+            <div class="form-hint">
+              Presets:
+              <button type="button" data-action="tool-preset" data-preset="researcher">Researcher</button>
+              <button type="button" data-action="tool-preset" data-preset="editor">Editor</button>
+              <button type="button" data-action="tool-preset" data-preset="readonly">Read-only</button>
+              <button type="button" data-action="tool-preset" data-preset="none">None</button>
+            </div>
+          </div>
+
+          <label for="f-can-call">can call</label>
+          <div>
+            <div id="f-can-call" class="row-wrap"></div>
+            <div class="form-hint">
+              Who this agent can ask via <code>mcp__agent_comms__ask_agent</code>. Empty = no inter-agent calls.
+            </div>
+          </div>
+
+          <label for="f-capabilities">capabilities</label>
+          <div>
+            <div id="f-capabilities" class="row-wrap">
+              <label><input type="checkbox" id="f-cap-manage" value="manage_agents" /> manage_agents</label>
+              <label><input type="checkbox" id="f-cap-monitor" value="monitor_agents" /> monitor_agents</label>
+            </div>
+            <div class="form-hint">
+              <code>manage_agents</code>: agent can mint &amp; edit other agents via <code>mcp__agent_admin__*</code>.
+              <code>monitor_agents</code>: read-only swarm inspection via <code>mcp__agent_monitor__*</code>.
+              Keep both empty for normal agents.
+            </div>
+          </div>
+
+          <label for="f-system-prompt">system prompt</label>
+          <textarea id="f-system-prompt" name="system_prompt" required></textarea>
+
+          <span></span>
+          <div id="f-warnings"></div>
+
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="submit-agent" data-method="POST">Create</button>
+            <button type="button" data-action="submit-agent" data-method="PATCH">Save (update)</button>
+            <button type="button" id="f-revert" data-action="revert-agent" class="hidden">Revert prompt</button>
+            <button type="button" data-action="clear-agent-form">Clear</button>
+          </div>
+        </form>
+
+        <div class="test-pane hidden" id="test-pane">
+          <h3>Test pane</h3>
+          <div class="txt-muted fs-sm mb-4">
+            Sends one turn using the <strong>current draft</strong> prompt + tools + (first) workspace.
+            Response is billed but <strong>not</strong> saved as a conversation. Iterate on prompts without polluting history.
+          </div>
+          <div class="row-top">
+            <textarea id="test-message" placeholder="ask the draft prompt…" class="test-input"></textarea>
+            <button class="primary" type="button" data-action="run-test">Run test</button>
+          </div>
+          <div id="test-reply" class="reply-box hidden"></div>
+          <div id="test-meta" class="meta"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ WORKSPACES ============ -->
+    <section id="pane-workspaces" class="pane">
+      <div class="panel">
+        <h2>Filesystem workspaces</h2>
+        <p>Each agent can be granted access to one or more filesystem paths. The lowest-id workspace becomes the agent's working directory; the SDK's built-in <code>Read</code>/<code>Write</code>/<code>Edit</code>/<code>Bash</code> tools operate from there. Permissions are recorded but enforced at the OS-user + cwd level in V0.3; per-tool permission checks land in V0.4.</p>
+        <div id="ws-pick">loading agents…</div>
+        <div id="ws-section" class="mt-4 hidden">
+          <h3 id="ws-section-title" class="section-title">workspaces</h3>
+          <div id="ws-list">loading…</div>
+          <form class="grid mt-4" id="ws-form">
+            <label for="ws-root">root</label>
+            <select id="ws-root" required>
+              <option value="">loading sandbox-allowed paths…</option>
+            </select>
+            <label for="ws-subpath">subpath</label>
+            <input id="ws-subpath" placeholder="(optional — leave blank to use the root itself)" />
+            <span></span>
+            <div class="resolved-line">
+              resolves to:&nbsp;<code id="ws-resolved" class="txt-fg">—</code>
+            </div>
+            <label for="ws-perms">permissions</label>
+            <div id="ws-perms" class="row">
+              <label><input type="checkbox" value="read" checked class="input-auto" /> read</label>
+              <label><input type="checkbox" value="write" class="input-auto" /> write</label>
+              <label><input type="checkbox" value="exec" class="input-auto" /> exec</label>
+            </div>
+            <span></span>
+            <div class="form-actions">
+              <button type="submit" class="primary">Add workspace</button>
+            </div>
+          </form>
+          <p class="form-hint-tight">
+            Root choices come from the systemd sandbox's <code>ReadWritePaths</code>.
+            Manage them on the host with <code>sudo ritsu path add &lt;abs-path&gt;</code>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CONVERSATIONS ============ -->
+    <section id="pane-conversations" class="pane">
+      <div class="panel">
+        <h2>Conversations</h2>
+        <p>Per-agent transcripts. Each <code>ask_agent</code> call writes its turns here; passing <code>conversation_id</code> back continues the thread.</p>
+        <div id="conv-kind-tabs" class="conv-kind-tabs" role="tablist" aria-label="Conversation kind">
+          <button type="button" class="conv-kind-tab active" data-kind="human" role="tab" aria-selected="true">Human ↔ agent</button>
+          <button type="button" class="conv-kind-tab" data-kind="agent" role="tab" aria-selected="false">Agent ↔ agent</button>
+        </div>
+        <div class="log-controls mb-3">
+          <label>Filter by agent: <input id="conv-agent-filter" type="text" placeholder="agent id…" /></label>
+          <button id="conv-refresh">Refresh</button>
+        </div>
+        <div id="conv-list">loading…</div>
+        <div id="conv-detail" class="mt-4 hidden">
+          <h3 class="section-title" id="conv-detail-title">conversation</h3>
+          <div id="conv-messages"></div>
+          <div id="conv-resume" class="resume-block">
+            <h3 class="fs-md1 txt-muted mb-3">Continue this conversation</h3>
+            <div class="row-top">
+              <textarea id="resume-message" placeholder="reply…" class="test-input"></textarea>
+              <button class="primary" type="button" data-action="resume-conversation">Send</button>
+            </div>
+            <div class="meta resume-meta" id="resume-meta"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ MEMORIES ============ -->
+    <section id="pane-memories" class="pane">
+      <div class="panel">
+        <h2>Memories</h2>
+        <p>
+          Long-term knowledge for an agent. Injected into the agent's system context every turn,
+          and writable by the agent itself via the <code>mcp__memory__*</code> tools (remember /
+          update_memory / forget / list_memories). Supersede-not-delete: active list shows only
+          the latest in each lineage; click "lineage" on any row to walk versions.
+        </p>
+        <div class="log-controls mb-3">
+          <label for="mem-agent-pick">Agent: <select id="mem-agent-pick"><option value="">— pick —</option></select></label>
+        </div>
+        <div id="mem-list">pick an agent above…</div>
+        <form id="mem-seed-form" class="grid mt-4 hidden">
+          <label for="mem-seed-content">add memory</label>
+          <textarea id="mem-seed-content" rows="2" placeholder="A single durable fact, preference, or decision. Short is better."></textarea>
+          <span></span>
+          <div class="form-actions">
+            <button type="submit" class="primary">Save memory</button>
+          </div>
+        </form>
+        <div id="mem-lineage" class="mt-4 hidden">
+          <h3 class="section-title" id="mem-lineage-title">lineage</h3>
+          <div id="mem-lineage-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TOOLS ============ -->
+    <section id="pane-tools" class="pane">
+      <div class="panel">
+        <h2>Tools</h2>
+        <p>
+          What a given agent can call: built-in SDK tools allowlisted on its
+          definition, MCP tools served by the in-process tool servers (gated
+          by <code>capabilities</code> + <code>can_call</code> + memory
+          backend), and the filesystem workspaces that back any FS-touching
+          tool. Read-only view — edit tool allowlist / can_call / capabilities
+          on the Agents form, and workspaces on the Workspaces tab.
+        </p>
+        <div class="log-controls mb-3">
+          <label>Agent: <select id="tools-agent-pick"><option value="">— pick —</option></select></label>
+        </div>
+        <div id="tools-view" class="txt-muted">pick an agent above…</div>
+      </div>
+    </section>
+
+    <!-- ============ MCP ============ -->
+    <section id="pane-mcp" class="pane">
+      <div class="panel">
+        <h2>MCP endpoint</h2>
+        <p>The MCP server lives at <code id="mcp-url">…</code>. Any MCP-speaking client (Claude Desktop, Claude Code, Cursor, <code>curl</code>) can call the tools below by pointing at that URL.</p>
+        <p id="mcp-auth-note" class="txt-muted"></p>
+      </div>
+      <div class="panel">
+        <h2>Tools</h2>
+        <p class="txt-muted">Summaries only — the live JSON Schema comes from MCP itself; call <code>tools/list</code> with your bearer to see it.</p>
+        <div id="mcp-tools">loading…</div>
+      </div>
+      <div class="panel">
+        <h2>Connect</h2>
+        <p class="txt-muted">Pick a token in the Tokens tab first, then drop one of these into your client config.</p>
+        <h3 class="subsection-title">Claude Code CLI</h3>
+        <pre id="snip-cc"></pre>
+        <h3 class="subsection-title">Claude Desktop (~/Library/Application Support/Claude/claude_desktop_config.json)</h3>
+        <pre id="snip-desktop"></pre>
+        <h3 class="subsection-title">curl smoke test</h3>
+        <pre id="snip-curl"></pre>
+      </div>
+    </section>
+
+    <!-- ============ CHANNELS ============ -->
+    <section id="pane-channels" class="pane">
+      <div class="panel">
+        <h2>Channels</h2>
+        <p>
+          Comm channels — Telegram (and later Discord/Slack/etc). Each row is one bot
+          bound to one <strong>operator agent</strong>. Inbound messages get forwarded
+          to that agent; replies post back to the user. The operator delegates to
+          other agents via its existing <code>can_call</code> list.
+        </p>
+        <div id="ch-list">loading…</div>
+      </div>
+
+      <div class="panel">
+        <h2>Add / edit channel</h2>
+        <form class="grid" id="ch-form">
+          <input type="hidden" id="ch-id" />
+
+          <label for="ch-name">name</label>
+          <input id="ch-name" required pattern="[a-z0-9][a-z0-9-]*" placeholder="kebab-case (e.g. main, ops-bot)" />
+
+          <label for="ch-kind">kind</label>
+          <select id="ch-kind">
+            <option value="telegram">telegram</option>
+          </select>
+
+          <label for="ch-operator">operator agent</label>
+          <select id="ch-operator" required></select>
+
+          <label for="ch-token">bot token</label>
+          <input id="ch-token" type="password" autocomplete="off" placeholder="123456:ABC-DEF… (from @BotFather)" />
+
+          <label for="ch-enabled">enabled</label>
+          <span><input id="ch-enabled" type="checkbox" checked class="input-auto" /></span>
+
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="submit-channel">Save</button>
+            <button type="button" data-action="clear-channel-form">Clear</button>
+          </div>
+        </form>
+
+        <div id="ch-recent-wrap" class="mt-4 hidden">
+          <h3 class="section-title">chats heard by this bot</h3>
+          <div id="ch-recent">—</div>
+          <p class="fs-md txt-muted mt-2">
+            DM the bot from your phone; it shows up here. Click <strong>Bind</strong> to lock the channel to that chat. A channel is one bot tied to exactly one chat — re-binding replaces the previous chat.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ API KEYS ============ -->
+    <section id="pane-api-keys" class="pane">
+      <div class="panel">
+        <h2>API Keys</h2>
+        <p>
+          Third-party model-provider keys (Anthropic, OpenAI, OpenRouter, local LiteLLM). Encrypted-at-rest with AES-256-GCM via the master key. Plaintext is shown <strong>once</strong> at mint time and never readable again. Agents that need a paid model reference one of these by id; <em>Phase B</em> wires the actual ritsu-agent runtime that uses them — for now the rows just sit here ready.
+        </p>
+        <div id="ak-list">loading…</div>
+      </div>
+
+      <div class="panel">
+        <h2>Mint a new key</h2>
+        <form class="grid" id="ak-form">
+          <label for="ak-name">name</label>
+          <input id="ak-name" required placeholder="e.g. anthropic-primary, openrouter-default" />
+
+          <label for="ak-provider">provider</label>
+          <select id="ak-provider">
+            <option value="anthropic">anthropic</option>
+            <option value="openai">openai</option>
+            <option value="openai-compat">openai-compat</option>
+            <option value="litellm">litellm</option>
+          </select>
+
+          <label for="ak-plaintext">plaintext key</label>
+          <input id="ak-plaintext" type="password" autocomplete="off" placeholder="paste once; we encrypt + discard" />
+
+          <span></span>
+          <div class="form-actions">
+            <button type="submit" class="primary">Mint</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- One-time-show modal: after a successful mint, display the plaintext key
+           with copy-to-clipboard and warn the operator it won't be shown again. -->
+      <div id="ak-minted-overlay" class="modal-overlay-mid">
+        <div class="minted-key-card">
+          <h3 class="mb-3">Key minted — copy it now</h3>
+          <p class="mb-5 txt-muted fs-base">This is the only time the plaintext is shown. Paste it into your password manager, then dismiss this dialog.</p>
+          <div id="ak-minted-key" class="minted-key-display"></div>
+          <div class="row-end">
+            <button type="button" id="ak-minted-copy" class="primary">Copy</button>
+            <button type="button" data-action="close-minted-key-modal">Done</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ OAUTH CLIENTS ============ -->
+    <section id="pane-oauth-clients" class="pane">
+      <div class="panel">
+        <h2>OAuth Clients</h2>
+        <p>
+          Spec-compliant MCP clients (claude.ai web's "Add custom connector",
+          Claude Desktop's Connectors UI) self-register here via
+          <code>POST /oauth/register</code> (RFC 7591 Dynamic Client
+          Registration). Public clients only — PKCE-required, no client
+          secrets. Revoke from this view to invalidate the client AND all of
+          its live access + refresh tokens at once (the cascade is automatic).
+        </p>
+        <div id="oauth-client-list">loading…</div>
+        <div id="oauth-client-detail" class="mt-4 hidden"></div>
+      </div>
+    </section>
+
+    <!-- ============ TOKENS ============ -->
+    <section id="pane-tokens" class="pane">
+      <div class="panel">
+        <h2>Active tokens</h2>
+        <p>Bearer tokens for the MCP surface. Tokens are sha256-hashed in the DB — the plaintext is only shown once at mint time. In <strong>auto</strong> auth mode, the existence of any active token flips the server from open to required.</p>
+        <div id="token-list">loading…</div>
+      </div>
+      <div class="panel">
+        <h2>Mint a token</h2>
+        <form class="grid" id="token-mint-form">
+          <label for="f-token-name">name</label>
+          <input id="f-token-name" required placeholder="claude-desktop-laptop" />
+          <span></span>
+          <div class="form-actions">
+            <button type="submit" class="primary">Mint</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============ LOGS ============ -->
+    <section id="pane-logs" class="pane">
+      <div class="panel">
+        <h2>Live log tail</h2>
+        <div class="log-controls">
+          <label>Level: <select id="log-level"></select></label>
+          <label>Filter msg: <input id="log-filter-msg" type="text" placeholder="substring…" /></label>
+          <label>Filter agent: <input id="log-filter-agent" type="text" placeholder="agent id…" /></label>
+          <label><input id="log-autoscroll" type="checkbox" checked class="input-auto" /> auto-scroll</label>
+          <button id="log-pause" data-action="log-pause">Pause</button>
+          <button id="log-clear" data-action="log-clear">Clear</button>
+        </div>
+        <div class="log-table" id="log-table"><table><thead><tr><th>time</th><th>level</th><th>msg</th><th>extra</th></tr></thead><tbody id="log-tbody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ============ AUDIT ============ -->
+    <section id="pane-audit" class="pane">
+      <div class="panel">
+        <h2>Admin action audit</h2>
+        <p>Every mutating admin API call (POST/PATCH/DELETE) is recorded here for after-the-fact review. Reads (GETs) aren't logged — too noisy. Each row pins time, token used, IP, status, and a sha256 of the request body for tamper-evidence; hover the time cell to see the full timestamp + body hash.</p>
+        <div class="log-controls">
+          <label>Path: <input id="audit-filter-path" type="text" placeholder="substring…" /></label>
+          <label>Token: <input id="audit-filter-token" type="text" placeholder="token name…" /></label>
+          <label>Method:
+            <select id="audit-filter-method">
+              <option value="">all</option>
+              <option value="POST">POST</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </label>
+          <button data-action="audit-refresh">Refresh</button>
+        </div>
+        <div class="log-table" id="audit-table"><table><thead><tr><th>time</th><th>token</th><th>ip</th><th>method</th><th>path</th><th>status</th><th>ms</th></tr></thead><tbody id="audit-tbody"></tbody></table></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="hidden"></div>
+  <div id="modal-root"></div>
+
+  <!-- Admin login modal. Hidden by default; ensureAdminToken() shows it.
+       A real <form> with a password input + hidden username so 1Password,
+       Bitwarden, Apple Passwords, and browser-builtin managers all
+       recognize it as a login and offer autofill. -->
+  <div id="admin-login" class="modal-fullpage">
+    <form id="admin-login-form" autocomplete="on" class="admin-login-card">
+      <h2 class="admin-login-title">ritsu admin</h2>
+      <p id="admin-login-msg" class="admin-login-msg">Sign in with your admin token.</p>
+      <!-- hidden username helps password managers know this is a saveable
+           login. Static value ('ritsu') so the manager always matches the
+           same credential for this origin. -->
+      <input type="text" name="username" autocomplete="username" value="ritsu" readonly tabindex="-1" class="hidden">
+      <label for="admin-login-token" class="admin-login-label">Admin token</label>
+      <input id="admin-login-token" name="password" type="password" autocomplete="current-password" placeholder="rt_..." required spellcheck="false" class="admin-login-input">
+      <button class="primary input-full" type="submit">Sign in</button>
+      <p class="admin-login-hint">Get the token once with <code>sudo cat /opt/ritsu/data/.admin-token</code> on the server. Save it in your password manager and it'll autofill from then on.</p>
+    </form>
+  </div>
+
+  <script src="/admin/app.js" defer></script>
+</body>
+</html>

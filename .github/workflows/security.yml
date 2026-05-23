@@ -1,0 +1,118 @@
+name: Security
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+  schedule:
+    # Weekly Sunday 06:00 UTC — catches new advisories in deps that haven't changed.
+    - cron: '0 6 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install actionlint
+        run: |
+          set -eo pipefail
+          VERSION=1.7.12
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          actionlint -version
+      - run: actionlint -color
+
+  secrets-trufflehog:
+    name: Secret scan (trufflehog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # trufflehog needs full history for diff scanning
+      - name: trufflehog
+        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab # v3.95.3
+        with:
+          extra_args: --only-verified
+
+  secrets-gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -eo pipefail
+          VERSION=8.30.1
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: gitleaks detect
+        run: |
+          set -eo pipefail
+          echo "## Gitleaks" >> $GITHUB_STEP_SUMMARY
+          if gitleaks detect --source . --redact --no-banner --exit-code 1 --report-format sarif --report-path gitleaks.sarif; then
+            echo "OK no secrets found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "FAIL gitleaks found leaks (see job log; sarif uploaded as artifact)" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
+          if-no-files-found: ignore
+
+  npm-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: npm audit (fail on high+)
+        run: |
+          set -eo pipefail
+          echo "## Dependency audit" >> $GITHUB_STEP_SUMMARY
+          if npm audit --audit-level=high 2>&1 | tee audit.txt; then
+            echo "OK no high/critical vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "FAIL vulnerabilities found:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat audit.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+  semgrep:
+    name: SAST (semgrep)
+    runs-on: ubuntu-latest
+    container:
+      # Pinned to a numbered tag — semgrep:latest changes daily and rules
+      # change with it. Bump deliberately when investigating new findings.
+      image: semgrep/semgrep:1.163.0
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: semgrep scan
+        run: |
+          set -eo pipefail
+          echo "## Semgrep SAST" >> $GITHUB_STEP_SUMMARY
+          if semgrep scan --config auto --error --exclude node_modules --exclude dist 2>&1 | tee semgrep.txt; then
+            echo "OK no findings" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "FAIL findings:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat semgrep.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

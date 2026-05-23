@@ -1,0 +1,20 @@
+[Unit]
+Description=LiteLLM proxy (sidecar for ritsu)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ritsu
+Group=ritsu
+WorkingDirectory=/opt/ritsu
+EnvironmentFile=-/etc/ritsu/litellm.env
+ExecStart=/opt/ritsu/.litellm-venv/bin/litellm --port 4000 --config /opt/ritsu/litellm-config.yaml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litellm-proxy
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,54 @@
+# Local dev/test orchestration for ritsu.
+#
+#   docker compose up --build           # MCP + admin only
+#   docker compose --profile litellm up  # adds LiteLLM sidecar on :4000
+#
+# The Max-plan Claude CLI session lives at ~/.claude on the host. The container
+# reads it via a bind-mount; no API key needed. If ~/.claude does not exist,
+# `claude login` once on the host, then re-up.
+
+services:
+  ritsu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ritsu:dev
+    container_name: ritsu
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7333:7333"   # MCP   (bind localhost only)
+      - "127.0.0.1:7334:7334"   # admin (bind localhost only — no auth)
+    environment:
+      PORT: 7333
+      MCP_HOST: 0.0.0.0
+      ADMIN_PORT: 7334
+      ADMIN_HOST: 0.0.0.0
+      DB_PATH: /app/data/ritsu.db
+      LITELLM_URL: http://litellm:4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}  # leave unset to use the CLI session below
+    volumes:
+      - ritsu-data:/app/data
+      # Bind the host's Claude CLI session so claude-direct dispatcher works.
+      # NOT read-only: the Agent SDK writes session state (todos, statsig logs)
+      # back into ~/.claude. The container shares your host's Claude data dir;
+      # acceptable for local dev because the same user owns both. For prod on
+      # a shared host, run as a dedicated user with its own ~/.claude.
+      - ${HOME}/.claude:/home/node/.claude
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: ritsu-litellm
+    profiles: ["litellm"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    command: ["--port", "4000", "--config", "/etc/litellm/config.yaml"]
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    volumes:
+      - ./litellm-config.yaml:/etc/litellm/config.yaml:ro
+
+volumes:
+  ritsu-data:

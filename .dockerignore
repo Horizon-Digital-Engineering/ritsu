@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.litellm-venv
+.git
+.env
+*.log
+.DS_Store
+docs
+systemd
+scripts
+README.md
