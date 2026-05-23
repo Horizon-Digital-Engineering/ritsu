@@ -1,6 +1,6 @@
 import express, { type Request, type Response } from 'express';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname, resolve as resolvePath, normalize as normalizePath } from 'node:path';
+import { join, dirname, sep, resolve as resolvePath, normalize as normalizePath } from 'node:path';
 import { spawnSync } from '../util/safe-spawn.js';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -191,7 +191,12 @@ export function resolveWorkspaceTarget(
   if (body.root) {
     const sub = (body.subpath ?? '').replace(/^\/+/, '');
     const combined = normalizePath(resolvePath(body.root, sub));
-    if (!combined.startsWith(normalizePath(body.root))) {
+    const root = normalizePath(body.root);
+    // root === combined: subpath was empty, picker landed on the root itself.
+    // Otherwise combined must sit STRICTLY under `root + sep` — without the
+    // separator, root="/srv/foo" matches "/srv/foobar/x" via prefix
+    // confusion.
+    if (combined !== root && !combined.startsWith(stripTrailingSlashes(root) + sep)) {
       res.status(400).json({ error: 'subpath traversal outside root not allowed' });
       return null;
     }
@@ -205,8 +210,17 @@ export function resolveWorkspaceTarget(
 /**
  * Check that `target` sits under one of the systemd unit's
  * ReadWritePaths. Returns true on pass, or false after responding 400.
- * If we can't read the sandbox list (systemctl missing, etc.) we let
- * the upsert through — the systemd sandbox will enforce at runtime.
+ *
+ * Two failure modes:
+ *
+ *   - `systemctl` not available or `ritsu.service` not registered:
+ *     fail CLOSED unless RITSU_SKIP_SANDBOX_CHECK=1 is set. Earlier
+ *     versions returned `true` here ("the systemd sandbox will enforce
+ *     at runtime"), which is fine in prod where systemd is the boundary
+ *     — but on a dev box without the unit installed it meant ANY
+ *     admin-supplied path was accepted, sidewise-escape-style. The env
+ *     opt-out exists so `npm run dev` doesn't lock you out.
+ *   - target is not under any ReadWritePaths entry: reject with a 400.
  */
 function checkWorkspaceUnderSandbox(target: string, res: Response): boolean {
   const rootsRes = spawnSync('systemctl', ['show', 'ritsu.service', '-p', 'ReadWritePaths', '--value'], {
@@ -215,8 +229,18 @@ function checkWorkspaceUnderSandbox(target: string, res: Response): boolean {
   const allowedRoots = rootsRes.status === 0
     ? rootsRes.stdout.trim().split(/\s+/).filter(Boolean)
     : [];
-  if (allowedRoots.length === 0) return true;
-  const inside = allowedRoots.some(r => target === r || target.startsWith(stripTrailingSlashes(r) + '/'));
+  if (allowedRoots.length === 0) {
+    if (process.env.RITSU_SKIP_SANDBOX_CHECK === '1') return true;
+    res.status(400).json({
+      error: 'sandbox roots could not be enumerated',
+      hint: 'systemctl show ritsu.service failed; set RITSU_SKIP_SANDBOX_CHECK=1 for dev without systemd',
+    });
+    return false;
+  }
+  const inside = allowedRoots.some(r => {
+    const root = stripTrailingSlashes(r);
+    return target === root || target.startsWith(root + sep);
+  });
   if (!inside) {
     res.status(400).json({
       error: 'path is outside the sandbox',

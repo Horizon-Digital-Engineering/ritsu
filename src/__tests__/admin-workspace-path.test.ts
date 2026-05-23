@@ -126,6 +126,21 @@ describe('resolveWorkspaceTarget — picker {root, subpath} shape', () => {
     );
     assert.equal(out, '/srv/agent-zones/researcher/2026/notes');
   });
+
+  it('rejects prefix-confusion where root="/srv/foo" matches "/srv/foobar/..."', () => {
+    // The bug: a lexical startsWith without a trailing separator accepts
+    // any path that shares the root's string prefix, even if the next
+    // character is part of a SIBLING directory name. `/srv/foo` against
+    // a subpath of `../foobar/x` resolves to `/srv/foobar/x`, which
+    // startsWith("/srv/foo") returns true for — admin sideways-escape.
+    const r = fakeRes();
+    const out = resolveWorkspaceTarget(
+      { root: '/srv/foo', subpath: '../foobar/x' },
+      r.res as never,
+    );
+    assert.equal(out, null, `expected rejection, got ${out}`);
+    assert.equal(r.status, 400);
+  });
 });
 
 describe('resolveWorkspaceTarget — flat path edge cases', () => {
