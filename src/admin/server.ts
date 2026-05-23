@@ -180,8 +180,11 @@ function redactChannel<T extends { config: unknown } | null>(row: T): T {
  * shapes (legacy {path}, or new picker {root, subpath}). Returns the
  * normalized absolute path, or null after responding 400 — rejects any
  * subpath that would traverse outside the chosen root.
+ *
+ * Exported for direct unit testing; the route handler in createAdminApp
+ * is the only production caller.
  */
-function resolveWorkspaceTarget(
+export function resolveWorkspaceTarget(
   body: { root?: string; subpath?: string; path?: string },
   res: Response,
 ): string | null {
