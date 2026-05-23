@@ -14,7 +14,7 @@
 Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
 
 > [!IMPORTANT]
-> **ritsu is built for your lab, not the open internet.** Every `/admin`
+> **ritsu is built for your lab — not the open internet, yet.** Every `/admin`
 > route is gated by a bearer admin token (bootstrapped on first run,
 > mode 0600 on disk), and MCP is gated by `rt_*` bearer tokens or full
 > OAuth 2.1 + DCR + PKCE — the auth is real. But the threat model still
