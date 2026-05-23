@@ -1,25 +1,36 @@
 /**
- * Symmetric encryption for sensitive config-at-rest (bot tokens, future API
- * keys, etc.). AES-256-GCM with a 12-byte random IV per encryption and the
- * built-in 16-byte auth tag. The encoded format is:
+ * Symmetric encryption for sensitive config-at-rest (bot tokens, API keys,
+ * future secrets). AES-256-GCM with a 12-byte random IV per encryption and
+ * the built-in 16-byte auth tag. Two on-disk formats:
  *
- *     enc:v1:<base64(iv || ciphertext || tag)>
+ *     enc:v1:<base64(iv || ct || tag)>           — legacy, no AAD
+ *     enc:v2:<base64(iv || ct || tag)>           — AAD binds ciphertext to row
  *
- * Plaintext input that ISN'T prefixed `enc:` is treated as legacy plaintext
- * on read so a migration isn't required — new writes always encrypt, old
- * rows transparently upgrade on the next save.
+ * Why v2: GCM gives integrity of WHAT was encrypted, not WHERE it lives.
+ * Without AAD, an attacker with DB-write (replica tamper, backup swap,
+ * future-SQLi) could swap `key_enc` between rows — `reveal(id=anthropic)`
+ * would silently return the OpenAI key. v2 binds each ciphertext to its
+ * row context via additional authenticated data, so a swap fails the tag
+ * check on decrypt.
+ *
+ * Caller contract:
+ *   - new writes: use encryptSecret(plain, aad) — always v2.
+ *   - reads: use decryptSecret(stored, aad). v2 verifies the AAD; v1 is
+ *     accepted with no AAD check (backward-compat for legacy rows);
+ *     anything not starting with `enc:` is treated as legacy plaintext.
+ *   - rotation (master-key.ts): decryptWithKey/encryptWithKey accept the
+ *     same AAD shape and always emit v2 — rotation is the v1→v2 upgrade
+ *     opportunity.
+ *
+ * AAD format is convention rather than enforced: callers build strings
+ * like `api_key:id=42:key_enc` or `channel:id=7:bot_token`. Whatever
+ * string you encrypted with, you must pass identically on decrypt.
  *
  * Master key priority (first hit wins):
  *   1. RITSU_MASTER_KEY env var (base64-encoded 32 bytes)
  *   2. /etc/ritsu/master-key  (operator-managed, ideally root-owned mode 0600)
  *   3. /opt/ritsu/data/.master-key  (auto-bootstrapped on first run; logs
  *      a warning because the key lives next to the DB it protects)
- *
- * To rotate: change the master key (env or file), then re-encrypt every
- * row that uses `enc:v1:`. A dedicated rotation script will land alongside
- * the first deployment that actually has production ciphertexts to migrate;
- * the rotation path is small (decrypt with old key, encrypt with new) and
- * doesn't need to be eager-loaded.
  */
 import {
   createCipheriv,
@@ -34,8 +45,11 @@ const ALGO = 'aes-256-gcm';
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
-/** Versioned prefix so we can change the cipher later without ambiguity. */
-const ENC_PREFIX = 'enc:v1:';
+/** Versioned prefixes. v1 = no AAD (legacy reads only). v2 = AAD-bound (writes). */
+const ENC_PREFIX_V1 = 'enc:v1:';
+const ENC_PREFIX_V2 = 'enc:v2:';
+/** Back-compat re-export for callers that previously checked the format. */
+const ENC_PREFIX = ENC_PREFIX_V2;
 
 const ENV_KEY_VAR = 'RITSU_MASTER_KEY';
 const SYSTEM_KEY_PATH = '/etc/ritsu/master-key';
@@ -98,42 +112,58 @@ export function _resetKeyCacheForTests(): void {
 }
 
 /**
- * Encrypt a plaintext under an explicit key (NOT the cached master key).
- * Used by the rotation CLI to re-encrypt every existing ciphertext under
- * the new key in one pass. Same wire format as encryptSecret().
+ * Encrypt under an explicit key (NOT the cached master key). Always emits
+ * v2 — rotation is when legacy v1 rows transparently upgrade. The `aad`
+ * is bound into the GCM tag; the same value must be passed at decrypt
+ * time.
  */
-export function encryptWithKey(plain: string, key: Buffer): string {
+export function encryptWithKey(plain: string, key: Buffer, aad: string): string {
   if (key.length !== KEY_BYTES) {
     throw new Error(`encryptWithKey: key must be ${KEY_BYTES} bytes (got ${key.length})`);
   }
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv(ALGO, key, iv);
+  cipher.setAAD(Buffer.from(aad, 'utf8'));
   const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return ENC_PREFIX + Buffer.concat([iv, ct, tag]).toString('base64');
+  return ENC_PREFIX_V2 + Buffer.concat([iv, ct, tag]).toString('base64');
 }
 
 /**
- * Decrypt an `enc:v1:` payload under an explicit key. Used by the
- * rotation CLI to read existing ciphertexts before re-encrypting them
- * under the new key. Mirrors decryptSecret() but won't fall through to
- * legacy plaintext — rotation only touches actually-encrypted rows.
+ * Decrypt under an explicit key. Accepts both v1 (no AAD) and v2 (AAD-
+ * verified). The `aad` parameter is ignored for v1; for v2 it MUST match
+ * the value used at encrypt time or the GCM tag check fails.
+ *
+ * Will not silently fall through to legacy plaintext — rotation only
+ * touches actually-encrypted rows. Throws on anything not prefixed.
  */
-export function decryptWithKey(stored: string, key: Buffer): string {
-  if (!stored.startsWith(ENC_PREFIX)) {
-    throw new Error('decryptWithKey: not an encrypted payload');
-  }
+export function decryptWithKey(stored: string, key: Buffer, aad: string): string {
   if (key.length !== KEY_BYTES) {
     throw new Error(`decryptWithKey: key must be ${KEY_BYTES} bytes (got ${key.length})`);
   }
-  const payload = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64');
+  if (stored.startsWith(ENC_PREFIX_V2)) {
+    return decryptPayload(stored.slice(ENC_PREFIX_V2.length), key, aad);
+  }
+  if (stored.startsWith(ENC_PREFIX_V1)) {
+    return decryptPayload(stored.slice(ENC_PREFIX_V1.length), key, null);
+  }
+  throw new Error('decryptWithKey: not an encrypted payload');
+}
+
+/** Shared decrypt-from-base64 + (optional) AAD verify. Caller has already
+ *  identified the format version + stripped the prefix. */
+function decryptPayload(base64: string, key: Buffer, aad: string | null): string {
+  const payload = Buffer.from(base64, 'base64');
   if (payload.length < IV_BYTES + TAG_BYTES) {
-    throw new Error('decryptWithKey: encrypted payload truncated');
+    throw new Error('encrypted payload truncated');
   }
   const iv = payload.subarray(0, IV_BYTES);
   const tag = payload.subarray(payload.length - TAG_BYTES);
   const ct = payload.subarray(IV_BYTES, payload.length - TAG_BYTES);
+  // authTagLength pinned so node refuses a shorter, potentially attacker-
+  // forged tag (GCM tag-truncation hardening).
   const decipher = createDecipheriv(ALGO, key, iv, { authTagLength: TAG_BYTES });
+  if (aad !== null) decipher.setAAD(Buffer.from(aad, 'utf8'));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
 }
@@ -178,50 +208,37 @@ export function masterKeyWritePath(source: string): string {
   return source;
 }
 
-export { ENC_PREFIX };
+export { ENC_PREFIX, ENC_PREFIX_V1, ENC_PREFIX_V2 };
 
 /**
- * Encrypt a UTF-8 string. Output is the versioned format described above.
- * Re-encrypting the same plaintext produces a different ciphertext each time
- * (random IV), which is what you want for confidentiality.
+ * Encrypt a UTF-8 string with AAD binding. Always emits v2. Re-encrypting
+ * the same plaintext produces a different ciphertext (random IV).
+ *
+ * `aad` is the context that binds this ciphertext to its row. Build it
+ * from the row identity and field name (e.g. `api_key:id=42:key_enc`).
+ * The same value MUST be passed on decrypt or the GCM tag check fails.
  */
-export function encryptSecret(plain: string): string {
-  const key = getKey();
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(ALGO, key, iv);
-  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return ENC_PREFIX + Buffer.concat([iv, ct, tag]).toString('base64');
+export function encryptSecret(plain: string, aad: string): string {
+  return encryptWithKey(plain, getKey(), aad);
 }
 
 /**
- * Decrypt a previously-encrypted value, OR transparently return legacy
- * plaintext (anything not starting with the `enc:` prefix). This lets us
- * roll out encryption without a hard migration — old rows decrypt as
- * themselves and get re-encrypted on the next write.
+ * Decrypt a stored value:
+ *   - `enc:v2:` → AAD-verified decrypt; `aad` MUST match what encrypted.
+ *   - `enc:v1:` → AAD-less decrypt; `aad` ignored (legacy compat).
+ *   - anything else → returned as-is (legacy plaintext compat).
+ *
+ * Caller upgrades v1 → v2 on the next write by passing `aad` to
+ * encryptSecret.
  */
-export function decryptSecret(stored: string): string {
-  if (!stored.startsWith(ENC_PREFIX)) {
-    // Legacy plaintext — return as-is. Caller is responsible for re-saving
-    // to upgrade the row.
+export function decryptSecret(stored: string, aad: string): string {
+  if (!stored.startsWith(ENC_PREFIX_V1) && !stored.startsWith(ENC_PREFIX_V2)) {
     return stored;
   }
-  const key = getKey();
-  const payload = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64');
-  if (payload.length < IV_BYTES + TAG_BYTES) {
-    throw new Error('encrypted payload truncated');
-  }
-  const iv = payload.subarray(0, IV_BYTES);
-  const tag = payload.subarray(payload.length - TAG_BYTES);
-  const ct = payload.subarray(IV_BYTES, payload.length - TAG_BYTES);
-  // authTagLength pinned to TAG_BYTES so node refuses to verify a shorter,
-  // potentially attacker-forged tag (GCM tag-truncation hardening).
-  const decipher = createDecipheriv(ALGO, key, iv, { authTagLength: TAG_BYTES });
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  return decryptWithKey(stored, getKey(), aad);
 }
 
-/** True if a string is in our versioned encrypted format. */
+/** True if a string is in either encrypted format (v1 or v2). */
 export function isEncrypted(s: string): boolean {
-  return typeof s === 'string' && s.startsWith(ENC_PREFIX);
+  return typeof s === 'string' && (s.startsWith(ENC_PREFIX_V1) || s.startsWith(ENC_PREFIX_V2));
 }

@@ -52,13 +52,21 @@ interface DbRow {
   revoked_at: number | null;
 }
 
+/** AAD that binds an api_keys ciphertext to its row id. Identical string
+ *  must be used at encrypt + decrypt or the GCM tag fails. The id is the
+ *  natural per-row identifier (name + provider can collide on delete+re-
+ *  mint); we get it from the auto-increment AFTER an INSERT placeholder. */
+function aadFor(id: number): string {
+  return `api_key:id=${id}:key_enc`;
+}
+
 /** Track the prefix in the encrypted blob's wrapper so list() can show a
  *  visual hint without ever holding plaintext. Format inside key_enc:
  *  `<prefix4>|<enc-payload>` — prefix is 4 plaintext chars, the rest is
  *  the encrypted full value. Cheap, deterministic, no extra column. */
-function packKeyWithPrefix(plain: string): { stored: string; prefix: string } {
+function packKeyWithPrefix(plain: string, id: number): { stored: string; prefix: string } {
   const prefix = plain.slice(0, 4);
-  return { stored: prefix + '|' + encryptSecret(plain), prefix };
+  return { stored: prefix + '|' + encryptSecret(plain, aadFor(id)), prefix };
 }
 
 function unpackPrefix(stored: string): string {
@@ -67,10 +75,10 @@ function unpackPrefix(stored: string): string {
   return stored.slice(0, sep);
 }
 
-function unpackKey(stored: string): string {
+function unpackKey(stored: string, id: number): string {
   const sep = stored.indexOf('|');
-  if (sep === -1) return decryptSecret(stored);   // legacy: no prefix wrapper
-  return decryptSecret(stored.slice(sep + 1));
+  if (sep === -1) return decryptSecret(stored, aadFor(id));   // legacy: no prefix wrapper
+  return decryptSecret(stored.slice(sep + 1), aadFor(id));
 }
 
 function rowToPublic(r: DbRow): ApiKeyRow {
@@ -89,26 +97,37 @@ function rowToPublic(r: DbRow): ApiKeyRow {
 export class ApiKeyStore {
   constructor(private readonly db: Db) {}
 
-  /** Mint = encrypt + insert. Returns plaintext exactly once. */
+  /**
+   * Mint = encrypt + insert. Returns plaintext exactly once.
+   *
+   * The encryption AAD binds the ciphertext to the row's id, but we
+   * don't know the id until AFTER the INSERT. Two-step in a single
+   * transaction: INSERT with an empty key_enc placeholder, read back the
+   * auto-increment id, encrypt with id-bound AAD, UPDATE the row. The
+   * transaction makes the placeholder window invisible to readers.
+   */
   mint(name: string, provider: ApiKeyProvider, plaintext: string): MintedApiKey {
     if (!name.trim()) throw new Error('api-key name required');
     if (!plaintext.trim()) throw new Error('api-key plaintext required');
     if (!API_KEY_PROVIDERS.includes(provider)) {
       throw new Error(`unknown provider: ${provider}`);
     }
-    const { stored, prefix } = packKeyWithPrefix(plaintext.trim());
-    const r = this.db
-      .prepare(`INSERT INTO api_keys (name, provider, key_enc) VALUES (?, ?, ?)`)
-      .run(name.trim(), provider, stored);
-    const id = Number(r.lastInsertRowid);
-    const row = this.db.prepare('SELECT created_at FROM api_keys WHERE id = ?').get(id) as { created_at: number };
-    logger.info('api-key.mint', { id, name: name.trim(), provider });
-    return {
-      id, name: name.trim(), provider,
-      plaintext: plaintext.trim(),
-      prefix,
-      created_at: row.created_at,
-    };
+    const trimmedName = name.trim();
+    const trimmedPlain = plaintext.trim();
+
+    const tx = this.db.transaction(() => {
+      const r = this.db
+        .prepare(`INSERT INTO api_keys (name, provider, key_enc) VALUES (?, ?, ?)`)
+        .run(trimmedName, provider, '');
+      const id = Number(r.lastInsertRowid);
+      const { stored, prefix } = packKeyWithPrefix(trimmedPlain, id);
+      this.db.prepare(`UPDATE api_keys SET key_enc = ? WHERE id = ?`).run(stored, id);
+      const row = this.db.prepare('SELECT created_at FROM api_keys WHERE id = ?').get(id) as { created_at: number };
+      return { id, prefix, created_at: row.created_at };
+    });
+    const { id, prefix, created_at } = tx();
+    logger.info('api-key.mint', { id, name: trimmedName, provider });
+    return { id, name: trimmedName, provider, plaintext: trimmedPlain, prefix, created_at };
   }
 
   /** Public listing. Never includes decrypted plaintext.
@@ -138,7 +157,7 @@ export class ApiKeyStore {
     // Equivalent to `if (!row || row.revoked_at !== null) return null`:
     // when row is undefined, row?.revoked_at is undefined, undefined !== null is true.
     if (row?.revoked_at !== null) return null;
-    const plaintext = unpackKey(row.key_enc);
+    const plaintext = unpackKey(row.key_enc, row.id);
     this.db
       .prepare(`UPDATE api_keys SET last_used_at = strftime('%s','now'), use_count = use_count + 1 WHERE id = ?`)
       .run(id);

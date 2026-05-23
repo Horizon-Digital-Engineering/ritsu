@@ -41,26 +41,32 @@ const SECRET_FIELDS: Record<string, readonly string[]> = {
   telegram: ['bot_token'],
 };
 
-function decryptConfig(kind: string, raw: unknown): unknown {
+/** AAD that binds a channels.config secret field to its row id + field
+ *  name. Same value must be used at encrypt + decrypt. */
+function aadFor(id: number, field: string): string {
+  return `channel:id=${id}:${field}`;
+}
+
+function decryptConfig(kind: string, id: number, raw: unknown): unknown {
   if (!raw || typeof raw !== 'object') return raw;
   const fields = SECRET_FIELDS[kind];
   if (!fields) return raw;
   const out = { ...(raw as Record<string, unknown>) };
   for (const f of fields) {
     const v = out[f];
-    if (typeof v === 'string' && v.length > 0) out[f] = decryptSecret(v);
+    if (typeof v === 'string' && v.length > 0) out[f] = decryptSecret(v, aadFor(id, f));
   }
   return out;
 }
 
-function encryptConfig(kind: string, plain: unknown): unknown {
+function encryptConfig(kind: string, id: number, plain: unknown): unknown {
   if (!plain || typeof plain !== 'object') return plain;
   const fields = SECRET_FIELDS[kind];
   if (!fields) return plain;
   const out = { ...(plain as Record<string, unknown>) };
   for (const f of fields) {
     const v = out[f];
-    if (typeof v === 'string' && v.length > 0) out[f] = encryptSecret(v);
+    if (typeof v === 'string' && v.length > 0) out[f] = encryptSecret(v, aadFor(id, f));
   }
   return out;
 }
@@ -72,7 +78,7 @@ function rowToChannel(r: DbRow): ChannelRow {
     name: r.name,
     kind: ChannelKindSchema.parse(r.kind),
     operator_agent_id: r.operator_agent_id,
-    config: decryptConfig(r.kind, parsed),
+    config: decryptConfig(r.kind, r.id, parsed),
     enabled: r.enabled === 1,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -102,21 +108,37 @@ export class SqliteChannelStore implements ChannelStore {
     return row ? rowToChannel(row) : null;
   }
 
+  /**
+   * Create = insert + encrypt-with-id-AAD. The AAD binds each secret
+   * field to the row id, but the id isn't known until AFTER the INSERT.
+   * Insert with a placeholder config (secrets-empty / unencrypted), get
+   * the id, then encrypt + UPDATE — all in one transaction so the
+   * placeholder window is invisible to readers.
+   */
   create(input: ChannelUpsert): ChannelRow {
-    const encConfig = encryptConfig(input.kind, input.config);
-    const r = this.db
-      .prepare(
-        `INSERT INTO channels (name, kind, operator_agent_id, config, enabled)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.name,
-        input.kind,
-        input.operator_agent_id,
-        JSON.stringify(encConfig),
-        input.enabled === false ? 0 : 1,
-      );
-    const id = Number(r.lastInsertRowid);
+    const tx = this.db.transaction(() => {
+      // Step 1: insert with plaintext placeholder for secret fields. The
+      // immediate UPDATE below overwrites this in the same transaction;
+      // nothing else can observe the row in this state.
+      const r = this.db
+        .prepare(
+          `INSERT INTO channels (name, kind, operator_agent_id, config, enabled)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.name,
+          input.kind,
+          input.operator_agent_id,
+          '{}',
+          input.enabled === false ? 0 : 1,
+        );
+      const id = Number(r.lastInsertRowid);
+      const encConfig = encryptConfig(input.kind, id, input.config);
+      this.db.prepare(`UPDATE channels SET config = ? WHERE id = ?`)
+        .run(JSON.stringify(encConfig), id);
+      return id;
+    });
+    const id = tx();
     logger.info('channel.create', { id, name: input.name, kind: input.kind, operator: input.operator_agent_id });
     const saved = this.read(id);
     if (!saved) throw new Error(`create vanished for ${input.name}`);
@@ -133,7 +155,7 @@ export class SqliteChannelStore implements ChannelStore {
       config: patch.config ?? existing.config,
       enabled: patch.enabled ?? existing.enabled,
     };
-    const encConfig = encryptConfig(next.kind, next.config);
+    const encConfig = encryptConfig(next.kind, id, next.config);
     this.db
       .prepare(
         `UPDATE channels
