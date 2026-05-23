@@ -3,16 +3,34 @@
  * Tool names match the Claude SDK's so the per-agent tools_allowlist
  * selector works identically across both runtimes.
  *
- * Sandboxing: none yet. Bash runs as the host user (the `ritsu` service
- * account under systemd), `cwd` is set to the first workspace. The trust
- * boundary IS the workspace + the systemd unit's ProtectHome /
- * ProtectSystem / ReadWritePaths sandbox. A model with Bash + a writable
- * workspace can do anything that user could in that directory.
- * Stronger isolation (firejail / bwrap / per-call mount namespaces) is
- * a follow-up; documented in docs/threat-model.md A6.
+ * Sandboxing posture:
+ *
+ *   - Default (RITSU_BASH_SANDBOX unset):
+ *       Bash runs as the host service user, with `cwd` set to the
+ *       agent's first workspace and an env allowlist (see C1). The
+ *       systemd unit's ProtectHome/ProtectSystem/ReadWritePaths is the
+ *       outer boundary; without it (e.g. `npm run dev`) the workspace
+ *       cwd is advisory only.
+ *
+ *   - RITSU_BASH_SANDBOX=1:
+ *       Wrap every Bash invocation in bwrap (bubblewrap):
+ *         * ro-bind / mount of the host root — binaries + libs still work
+ *         * rw-bind only of the configured workspace
+ *         * private /tmp (tmpfs) so /tmp/foo doesn't leak between agents
+ *         * --die-with-parent so the shell can't outlive the host
+ *         * --unshare-pid/uts/ipc + --cap-drop ALL for namespace/cap
+ *           isolation
+ *         * network NOT unshared — agents still need to curl APIs. The
+ *           SSRF guard on WebFetch is the deliberate trade-off; raw curl
+ *           still reaches anything routable. Operators who want network
+ *           isolation should configure firewall rules on the ritsu user.
+ *       Fails loud (returns 'error: ...') if RITSU_BASH_SANDBOX=1 is set
+ *       but `bwrap` isn't on PATH — refuse-on-misconfig matches the
+ *       SSRF + admin-token bootstrap posture.
  */
 import { spawn } from 'node:child_process';
 import { readdir, stat, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { resolve, join, relative, sep } from 'node:path';
 import { RE2 } from 're2-wasm';
 import type { Workspace } from '../../workspace-store.js';
@@ -63,12 +81,63 @@ function buildBashEnv(cwd: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/** Where to find bwrap. Common paths; cached at module load. */
+const BWRAP_PATHS = ['/usr/bin/bwrap', '/usr/local/bin/bwrap'] as const;
+const BWRAP_BIN = BWRAP_PATHS.find(p => existsSync(p)) ?? null;
+
+/**
+ * Build the bwrap arg list for one Bash invocation. The result still
+ * ends in `/bin/bash -lc <command>` — bwrap is a wrapper, not a
+ * replacement.
+ */
+function buildBwrapArgs(cwd: string, command: string): string[] {
+  return [
+    // Host root as read-only base so common binaries + libs are reachable.
+    '--ro-bind', '/', '/',
+    // Workspace as the ONLY writable path. Even if the agent's prompt
+    // injects `rm -rf /`, only this directory tree can be touched.
+    '--bind', cwd, cwd,
+    // /tmp is per-call ephemeral; no leakage between agents or runs.
+    '--tmpfs', '/tmp',
+    // procfs + minimal devs so common tooling works (`ls /proc`, `cat
+    // /dev/null`, etc).
+    '--proc', '/proc',
+    '--dev', '/dev',
+    // Run as session leader so SIGTERM/SIGKILL kills the whole shell
+    // tree, not just bwrap itself.
+    '--die-with-parent',
+    '--new-session',
+    // Drop ALL Linux capabilities so the shell can't gain elevated
+    // syscall surface (e.g. CAP_NET_RAW, CAP_DAC_OVERRIDE).
+    '--cap-drop', 'ALL',
+    // Isolate PID, UTS, IPC namespaces. Network is intentionally NOT
+    // unshared — agents do legit curl, and the SSRF guard on WebFetch
+    // is the deliberate trade-off for raw network access here.
+    '--unshare-pid',
+    '--unshare-uts',
+    '--unshare-ipc',
+    '/bin/bash', '-lc', command,
+  ];
+}
+
 /** Bash command runner. Spawns /bin/bash -c <cmd> with cwd set to the
  *  agent's first workspace. Output is captured + capped. Times out at
- *  BASH_TIMEOUT_MS. Caller can override timeout per-call. */
+ *  BASH_TIMEOUT_MS. Caller can override timeout per-call.
+ *
+ *  When RITSU_BASH_SANDBOX=1, wraps the invocation in bwrap (see
+ *  buildBwrapArgs); fails loud if bwrap isn't installed. */
 async function runBash(command: string, cwd: string, timeoutMs: number): Promise<string> {
+  const wantSandbox = process.env.RITSU_BASH_SANDBOX === '1';
+  if (wantSandbox && !BWRAP_BIN) {
+    return `error: RITSU_BASH_SANDBOX=1 but bwrap isn't installed (checked ${BWRAP_PATHS.join(', ')}). ` +
+      `apt install bubblewrap (or your distro's equivalent), or unset RITSU_BASH_SANDBOX.`;
+  }
+  const [bin, argv] = wantSandbox && BWRAP_BIN
+    ? [BWRAP_BIN, buildBwrapArgs(cwd, command)]
+    : ['/bin/bash', ['-lc', command]];
+
   return new Promise(resolveOuter => {
-    const child = spawn('/bin/bash', ['-lc', command], {
+    const child = spawn(bin, argv, {
       cwd,
       env: buildBashEnv(cwd),
       stdio: ['ignore', 'pipe', 'pipe'],
