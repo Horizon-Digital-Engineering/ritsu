@@ -60,13 +60,17 @@ function regenerateDropIn(): void {
     '',
   ];
   if (afterUnits.length > 0) {
-    lines.push('[Unit]');
-    lines.push(`After=${afterUnits.join(' ')}`);
-    lines.push(`Requires=${afterUnits.join(' ')}`);
-    lines.push('');
+    lines.push(
+      '[Unit]',
+      `After=${afterUnits.join(' ')}`,
+      `Requires=${afterUnits.join(' ')}`,
+      '',
+    );
   }
-  lines.push('[Service]');
-  lines.push(`ReadWritePaths=${paths.join(' ')}`);
+  lines.push(
+    '[Service]',
+    `ReadWritePaths=${paths.join(' ')}`,
+  );
   writeFileSync(DROPIN_FILE, lines.join('\n') + '\n', { mode: 0o644 });
 }
 

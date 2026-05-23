@@ -144,7 +144,9 @@ const BindChatBody = z.object({
 function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | null {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: 'invalid request body', issues: parsed.error.flatten() });
+    // z.treeifyError replaces zod 3's deprecated `.flatten()`; structurally
+    // similar payload (top-level `errors` + per-path child trees).
+    res.status(400).json({ error: 'invalid request body', issues: z.treeifyError(parsed.error) });
     return null;
   }
   return parsed.data;
@@ -154,10 +156,8 @@ function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | nu
  *  Used by the create + patch endpoints; lifted out of createAdminApp so the
  *  surrounding closure stays small. */
 function validateChannelConfig(kind: string, config: unknown): unknown {
-  switch (kind) {
-    case 'telegram': return TelegramConfigSchema.parse(config);
-    default: throw new Error(`unknown channel kind: ${kind}`);
-  }
+  if (kind === 'telegram') return TelegramConfigSchema.parse(config);
+  throw new Error(`unknown channel kind: ${kind}`);
 }
 
 /** Redact secrets before returning a channel row to the client — bot tokens

@@ -483,8 +483,10 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   if (caps.has('monitor_agents')) out.push(...buildAgentMonitorTools(deps));
   const allowed = new Set(deps.toolsAllowlist ?? []);
   if (deps.workspaces && deps.workspaces.length > 0) {
-    out.push(...buildFsTools(deps.workspaces).filter(t => allowed.has(t.name)));
-    out.push(...buildProcessTools(deps.workspaces).filter(t => allowed.has(t.name)));
+    out.push(
+      ...buildFsTools(deps.workspaces).filter(t => allowed.has(t.name)),
+      ...buildProcessTools(deps.workspaces).filter(t => allowed.has(t.name)),
+    );
   }
   // Network tools don't need a workspace — they hit the network, not the FS.
   out.push(...buildNetworkTools(deps.network).filter(t => allowed.has(t.name)));

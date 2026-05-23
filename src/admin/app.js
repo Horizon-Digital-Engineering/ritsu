@@ -13,7 +13,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
  *  static analyzers don't have to reason about regex engine behaviour. */
 function stripTrailingSlashes(s) {
   let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  while (end > 0 && s.codePointAt(end - 1) === 47 /* '/' */) end--;
   return end === s.length ? s : s.slice(0, end);
 }
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
@@ -247,7 +247,12 @@ async function refreshInfo() {
     $('mcp-auth-note').innerHTML = d.auth_effective === 'required'
       ? `MCP auth is <strong>required</strong>. Include <code>Authorization: Bearer rt_…</code> on every call.`
       : `MCP auth is <strong>open</strong> (mode: <code>${d.auth_mode}</code>). Mint a token to auto-lock in 'auto' mode.`;
-  } catch (e) { /* swallow */ }
+  } catch (e) {
+    // Best-effort UI refresh: if the info call fails (network blip, page
+    // closing) the existing chips stay as-is. Log for visibility but don't
+    // surface a toast on every transient blip.
+    console.warn('refreshInfo failed', e);
+  }
 }
 
 // ---- agents ----------------------------------------------------------------
@@ -452,7 +457,7 @@ async function submitAgent(method) {
   let providerOptions = {};
   if (providerOptsRaw) {
     try { providerOptions = JSON.parse(providerOptsRaw); }
-    catch (e) { toast('provider options must be valid JSON', 'err'); return; }
+    catch { toast('provider options must be valid JSON', 'err'); return; }
   }
   const body = {
     id: $('f-id').value, type: $('f-type').value, name: $('f-name').value,
@@ -565,14 +570,14 @@ function collectFormWarningLines(needs, anyFsTool, wsList, agentId) {
   }
   const wsPerms = new Set();
   for (const w of wsList) for (const p of (w.permissions || [])) wsPerms.add(p);
-  const lines = [];
-  if (needs.write && !wsPerms.has('write')) {
-    lines.push(`<strong>Write / Edit enabled</strong> but no workspace grants <code>write</code>. The agent will be denied on Write attempts.`);
-  }
-  if (needs.exec && !wsPerms.has('exec')) {
-    lines.push(`<strong>Bash enabled</strong> but no workspace grants <code>exec</code>. The agent will be denied on Bash attempts.`);
-  }
-  return lines;
+  return [
+    ...(needs.write && !wsPerms.has('write')
+      ? ['<strong>Write / Edit enabled</strong> but no workspace grants <code>write</code>. The agent will be denied on Write attempts.']
+      : []),
+    ...(needs.exec && !wsPerms.has('exec')
+      ? ['<strong>Bash enabled</strong> but no workspace grants <code>exec</code>. The agent will be denied on Bash attempts.']
+      : []),
+  ];
 }
 
 /** One-shot test: dispatches a single turn using the FORM's draft state. Not saved. */
@@ -933,8 +938,7 @@ async function sendPanelAsk() {
       updateMetaFromMessages(messages);
     }
   } catch (e) {
-    pendingNode.classList.remove('pending');
-    pendingNode.classList.remove('assistant');
+    pendingNode.classList.remove('pending', 'assistant');
     pendingNode.classList.add('system');
     pendingNode.textContent = `error: ${e.message}`;
     toast(e.message, 'err');
@@ -1651,9 +1655,16 @@ async function openLogStream() {
       logBuffer.push(ev);
       if (logBuffer.length > LOG_MAX) logBuffer.shift();
       renderLogs();
-    } catch (err) { /* ignore */ }
+    } catch (err) {
+      // Malformed SSE event payload (truncated stream, garbage line). One
+      // bad event shouldn't break the live tail — log it and keep going.
+      console.warn('log-tail parse error', err);
+    }
   };
-  logSource.onerror = () => { /* browser will reconnect */ };
+  logSource.onerror = () => {
+    // EventSource auto-reconnects on transport errors; no manual handling
+    // needed, but documenting that the empty body is deliberate.
+  };
 }
 function closeLogStream() {
   if (logSource) { logSource.close(); logSource = null; }
@@ -1714,29 +1725,29 @@ const MCP_TOOL_MAP = {
 };
 
 function deriveAgentTools(agent) {
-  const mcp = [];
-  // Memory MCP is always wired — every agent has a memory backend.
-  mcp.push({
-    server: 'memory',
-    tools: MCP_TOOL_MAP.memory,
-    note: `memory backend: ${agent.memory_backend}`,
-  });
-  // agent_comms is always wired; ask_agent has nothing to target if
-  // can_call is empty, so we surface that explicitly.
-  mcp.push({
-    server: 'agent_comms',
-    tools: MCP_TOOL_MAP.agent_comms,
-    note: (agent.can_call || []).length
-      ? `can_call: ${agent.can_call.join(', ')}`
-      : '(can_call empty — ask_agent has no allowed targets)',
-  });
+  // Memory + agent_comms MCP servers are always wired (every agent gets
+  // them at host construction). Admin + monitor are capability-gated.
   const caps = new Set(agent.capabilities || []);
-  if (caps.has('manage_agents')) {
-    mcp.push({ server: 'agent_admin',   tools: MCP_TOOL_MAP.agent_admin,   note: 'capability: manage_agents' });
-  }
-  if (caps.has('monitor_agents')) {
-    mcp.push({ server: 'agent_monitor', tools: MCP_TOOL_MAP.agent_monitor, note: 'capability: monitor_agents' });
-  }
+  const mcp = [
+    {
+      server: 'memory',
+      tools: MCP_TOOL_MAP.memory,
+      note: `memory backend: ${agent.memory_backend}`,
+    },
+    {
+      server: 'agent_comms',
+      tools: MCP_TOOL_MAP.agent_comms,
+      note: (agent.can_call || []).length
+        ? `can_call: ${agent.can_call.join(', ')}`
+        : '(can_call empty — ask_agent has no allowed targets)',
+    },
+    ...(caps.has('manage_agents')
+      ? [{ server: 'agent_admin', tools: MCP_TOOL_MAP.agent_admin, note: 'capability: manage_agents' }]
+      : []),
+    ...(caps.has('monitor_agents')
+      ? [{ server: 'agent_monitor', tools: MCP_TOOL_MAP.agent_monitor, note: 'capability: monitor_agents' }]
+      : []),
+  ];
   return { builtin: agent.tools_allowlist || [], mcp };
 }
 

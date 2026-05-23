@@ -15,8 +15,11 @@
  *   3. /opt/ritsu/data/.master-key  (auto-bootstrapped on first run; logs
  *      a warning because the key lives next to the DB it protects)
  *
- * To rotate: change the master key (env or file), then run a re-encrypt
- * script (TODO; not in v0 because we don't have ciphertexts in production yet).
+ * To rotate: change the master key (env or file), then re-encrypt every
+ * row that uses `enc:v1:`. A dedicated rotation script will land alongside
+ * the first deployment that actually has production ciphertexts to migrate;
+ * the rotation path is small (decrypt with old key, encrypt with new) and
+ * doesn't need to be eager-loaded.
  */
 import {
   createCipheriv,
@@ -85,7 +88,7 @@ function readKeyFile(path: string): Buffer {
 
 /** Lazy init — first call materializes the key; subsequent calls reuse it. */
 function getKey(): Buffer {
-  if (!cachedKey) cachedKey = loadOrBootstrapMasterKey();
+  cachedKey ??= loadOrBootstrapMasterKey();
   return cachedKey;
 }
 

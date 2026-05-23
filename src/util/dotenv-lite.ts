@@ -46,7 +46,7 @@ function parseLine(line: string): { key: string; value: string } | null {
   const eq = s.indexOf('=');
   if (eq <= 0) return null;
   const key = s.slice(0, eq).trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
+  if (!/^[A-Za-z_]\w*$/.test(key)) return null;
   let value = s.slice(eq + 1).trim();
   if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
     value = value.slice(1, -1);

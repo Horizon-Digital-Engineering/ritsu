@@ -59,7 +59,10 @@ async function cmdSet(ctx: CommandContext): Promise<number> {
   if (idx >= 0) {
     entries[idx] = { kind: 'kv', key, value, raw: `${key}=${value}` };
   } else {
-    if (entries.length > 0 && entries[entries.length - 1].raw !== '') entries.push({ kind: 'other', raw: '' });
+    // Append a blank separator line before the new kv when the last entry
+    // exists and isn't already blank. `at(-1)?.raw` is undefined on an
+    // empty entries array and '' on an existing blank line — both falsy.
+    if (entries.at(-1)?.raw) entries.push({ kind: 'other', raw: '' });
     entries.push({ kind: 'kv', key, value, raw: `${key}=${value}` });
   }
   writeFileSync(ENV_FILE, serialize(entries), { mode: 0o600 });

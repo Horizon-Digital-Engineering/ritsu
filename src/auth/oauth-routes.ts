@@ -37,7 +37,7 @@ export const RESOURCE_PATH = '/mcp';
 
 const RegisterBody = z.object({
   client_name: z.string().max(200).optional(),
-  redirect_uris: z.array(z.string().url()).min(1).max(8),
+  redirect_uris: z.array(z.url()).min(1).max(8),
   grant_types: z.array(z.string()).optional(),
   response_types: z.array(z.string()).optional(),
   token_endpoint_auth_method: z.literal('none').optional(),
@@ -49,10 +49,10 @@ const RegisterBody = z.object({
 const TokenBodyAuthCode = z.object({
   grant_type: z.literal('authorization_code'),
   code: z.string(),
-  redirect_uri: z.string().url(),
+  redirect_uri: z.url(),
   client_id: z.string(),
   code_verifier: z.string().min(43).max(128),
-  resource: z.string().url().optional(),
+  resource: z.url().optional(),
 });
 
 const TokenBodyRefresh = z.object({
@@ -64,7 +64,7 @@ const TokenBodyRefresh = z.object({
 
 /** Validate redirect_uri is registered for client AND meets OAuth 2.1 transport rule. */
 function isValidRedirect(uri: string, registered: string[]): boolean {
-  if (!registered.some(r => r === uri)) return false;
+  if (!registered.includes(uri)) return false;
   try {
     const u = new URL(uri);
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]') return true;

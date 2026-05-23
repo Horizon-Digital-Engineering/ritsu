@@ -93,21 +93,19 @@ export class ChannelRegistry {
   }
 
   private build(row: ChannelRow): CommChannel {
-    switch (row.kind) {
-      case 'telegram': {
-        const config = TelegramConfigSchema.parse(row.config);
-        return new TelegramChannel({
-          channelId: row.id,
-          channelName: row.name,
-          operatorAgentId: row.operator_agent_id,
-          config,
-          host: this.host,
-        });
-      }
-      default: {
-        const _exhaustive: never = row.kind;
-        throw new Error(`unknown channel kind: ${JSON.stringify(_exhaustive)}`);
-      }
+    if (row.kind === 'telegram') {
+      const config = TelegramConfigSchema.parse(row.config);
+      return new TelegramChannel({
+        channelId: row.id,
+        channelName: row.name,
+        operatorAgentId: row.operator_agent_id,
+        config,
+        host: this.host,
+      });
     }
+    // Exhaustiveness check: row.kind is a string-literal union; if we add
+    // a kind here without handling it the type system flags this assignment.
+    const _exhaustive: never = row.kind;
+    throw new Error(`unknown channel kind: ${JSON.stringify(_exhaustive)}`);
   }
 }

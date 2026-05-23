@@ -17,35 +17,25 @@ class MetricsRegistry {
   /** Returns Prometheus text exposition. */
   serialize(extra: Record<string, number> = {}): string {
     const mem = process.memoryUsage();
-    const out: string[] = [];
-
-    out.push('# HELP ritsu_process_rss_bytes Resident set size of the node process.');
-    out.push('# TYPE ritsu_process_rss_bytes gauge');
-    out.push(`ritsu_process_rss_bytes ${mem.rss}`);
-
-    out.push('# HELP ritsu_process_heap_used_bytes V8 heap used.');
-    out.push('# TYPE ritsu_process_heap_used_bytes gauge');
-    out.push(`ritsu_process_heap_used_bytes ${mem.heapUsed}`);
-
-    out.push('# HELP ritsu_process_heap_total_bytes V8 heap total.');
-    out.push('# TYPE ritsu_process_heap_total_bytes gauge');
-    out.push(`ritsu_process_heap_total_bytes ${mem.heapTotal}`);
-
-    out.push('# HELP ritsu_process_uptime_seconds Seconds since process start.');
-    out.push('# TYPE ritsu_process_uptime_seconds counter');
-    out.push(`ritsu_process_uptime_seconds ${Math.round(process.uptime())}`);
-
-    for (const [name, value] of Object.entries(extra)) {
-      out.push(`# TYPE ${name} gauge`);
-      out.push(`${name} ${value}`);
-    }
-
-    for (const [name, value] of this.counters) {
-      out.push(`# TYPE ${name} counter`);
-      out.push(`${name} ${value}`);
-    }
-
-    return out.join('\n') + '\n';
+    const fixed = [
+      '# HELP ritsu_process_rss_bytes Resident set size of the node process.',
+      '# TYPE ritsu_process_rss_bytes gauge',
+      `ritsu_process_rss_bytes ${mem.rss}`,
+      '# HELP ritsu_process_heap_used_bytes V8 heap used.',
+      '# TYPE ritsu_process_heap_used_bytes gauge',
+      `ritsu_process_heap_used_bytes ${mem.heapUsed}`,
+      '# HELP ritsu_process_heap_total_bytes V8 heap total.',
+      '# TYPE ritsu_process_heap_total_bytes gauge',
+      `ritsu_process_heap_total_bytes ${mem.heapTotal}`,
+      '# HELP ritsu_process_uptime_seconds Seconds since process start.',
+      '# TYPE ritsu_process_uptime_seconds counter',
+      `ritsu_process_uptime_seconds ${Math.round(process.uptime())}`,
+    ];
+    const gauges = Object.entries(extra)
+      .flatMap(([name, value]) => [`# TYPE ${name} gauge`, `${name} ${value}`]);
+    const counters = Array.from(this.counters)
+      .flatMap(([name, value]) => [`# TYPE ${name} counter`, `${name} ${value}`]);
+    return [...fixed, ...gauges, ...counters].join('\n') + '\n';
   }
 }
 
