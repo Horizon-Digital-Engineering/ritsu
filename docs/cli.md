@@ -3,6 +3,17 @@
 The operator CLI. Installed at `/usr/local/bin/ritsu` by `scripts/install.sh`
 (it's a thin wrapper around `node /opt/ritsu/dist/cli.js`).
 
+| Subcommand | Purpose |
+|---|---|
+| [`service`](#ritsu-service) | systemd unit status / restart / logs |
+| [`env`](#ritsu-env) | read/write `/etc/ritsu/env` |
+| [`path`](#ritsu-path) | manage extra ReadWritePaths the sandbox allows |
+| [`token`](#ritsu-token) | mint / list / revoke bearer tokens |
+| [`admin-token`](#ritsu-admin-token) | bootstrap-admin-token (show / rotate) |
+| [`master-key`](#ritsu-master-key) | rotate the AES-256-GCM master key |
+| [`url`](#ritsu-url) | print operator-facing URLs |
+| [`doctor`](#ritsu-doctor) | health-check the install |
+
 ```bash
 ritsu help                  # top-level listing
 ritsu <command> --help      # subcommand details
@@ -135,6 +146,48 @@ For minting additional admin tokens (per-device), use `ritsu token mint
 
 Needs root (reads/writes `/opt/ritsu/data/.admin-token`, mode 0600 owned
 by `ritsu`).
+
+---
+
+## `ritsu master-key`
+
+Rotate the AES-256-GCM master key that encrypts every secret at rest
+(Telegram bot tokens, per-agent API keys). Re-encrypts every existing
+ciphertext under a fresh key, atomically swaps the on-disk key file,
+and backs the old key up to `<path>.prev` for recovery.
+
+```
+ritsu master-key rotate            # interactive confirm before rotating
+ritsu master-key rotate --yes      # skip confirmation
+ritsu master-key rotate --json     # machine-readable result (counts, paths)
+```
+
+**Stop the ritsu service before rotating.** An in-flight write while
+rotation is mid-flight could land a row under the old key after the
+new one is already in place:
+
+```
+sudo systemctl stop ritsu
+sudo ritsu master-key rotate
+sudo systemctl start ritsu
+```
+
+Refuses to rotate when the active key comes from the `RITSU_MASTER_KEY`
+environment variable — env-mode rotation means setting a new env var
+on the systemd unit and restarting; the CLI can't reach into your unit
+file.
+
+Recovery / rollback: the old key is preserved at `<key-path>.prev`. If
+the new key turns out to be wrong, swap `.prev` back over the active
+key file and restart. Once you've confirmed the new key works,
+`shred -u` the backup.
+
+If the on-disk key write fails AFTER the DB re-encryption commits (the
+worst case — DB has new ciphertexts but disk has old key), the CLI
+prints the new key in base64 so you can write it by hand to the
+correct path. **Don't lose that output**; it's the only remaining copy.
+
+Needs root (reads `/opt/ritsu/data/ritsu.db`, writes the key file).
 
 ---
 
