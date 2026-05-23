@@ -8,7 +8,7 @@
 [![Security](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml)
 [![SonarCloud](https://sonarcloud.io/api/project_badges/measure?project=Horizon-Digital-Engineering_ritsu&metric=alert_status)](https://sonarcloud.io/dashboard?id=Horizon-Digital-Engineering_ritsu)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
 
 Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
 
@@ -188,4 +188,4 @@ Reporting: see [`SECURITY.md#reporting`](./SECURITY.md#reporting).
 
 ## License
 
-[Apache 2.0](./LICENSE).
+[BUSL 1.1](./LICENSE).
