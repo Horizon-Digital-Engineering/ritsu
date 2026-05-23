@@ -27,6 +27,34 @@ const GLOB_FILE_CAP = 500;          // tools/walks bail after this many matches
 const GREP_RESULT_CAP = 200;        // grep returns at most this many lines
 const WALK_FILE_CAP = 50_000;       // safety: never walk past this many entries
 
+/**
+ * Env vars forwarded into the Bash sandbox. We DELIBERATELY do NOT pass
+ * `{ ...process.env }` because the ritsu service process holds secrets
+ * the agent must never see — `RITSU_ADMIN_TOKEN`, `ANTHROPIC_API_KEY`,
+ * operator-loaded provider keys, etc. A prompt-injected agent with
+ * Bash would otherwise run `env` and exfiltrate all of them in one shot.
+ *
+ * The allowlist below is what a generic shell command needs to look up
+ * binaries and produce locale-correct output; nothing more. Cwd-specific
+ * vars (`PWD`, `OLDPWD`) are set explicitly in `runBash`.
+ *
+ * If you add a new entry, ask: "does this make the env useful, or is it
+ * carrying a credential?" — only the former belongs.
+ */
+const BASH_ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TERM'] as const;
+
+function buildBashEnv(cwd: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PWD: cwd };
+  for (const key of BASH_ENV_ALLOWLIST) {
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  // Anchor PATH to a sane default if the service somehow lost it — a
+  // bare-PATH bash can't even run `ls`.
+  if (!env.PATH) env.PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+  return env;
+}
+
 /** Bash command runner. Spawns /bin/bash -c <cmd> with cwd set to the
  *  agent's first workspace. Output is captured + capped. Times out at
  *  BASH_TIMEOUT_MS. Caller can override timeout per-call. */
@@ -34,7 +62,7 @@ async function runBash(command: string, cwd: string, timeoutMs: number): Promise
   return new Promise(resolveOuter => {
     const child = spawn('/bin/bash', ['-lc', command], {
       cwd,
-      env: { ...process.env, PWD: cwd },
+      env: buildBashEnv(cwd),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';

@@ -49,6 +49,41 @@ describe('ritsu-agent process tools', () => {
       const out = await Bash.handler({ command: 'pwd' });
       assert.match(out, /^denied:/);
     });
+
+    it('does NOT forward parent-process secrets to the shell', async () => {
+      // Plants a canary on every name an attacker would reach for via
+      // prompt injection. None should appear in the child's `env` output:
+      // a Bash inheriting `process.env` would echo them all.
+      const canaries: Record<string, string> = {
+        ANTHROPIC_API_KEY:        'CANARY_anthropic',
+        OPENAI_API_KEY:           'CANARY_openai',
+        RITSU_ADMIN_TOKEN:        'CANARY_admin',
+        RITSU_ADMIN_TOKEN_FILE:   'CANARY_admin_path',
+        DATABASE_URL:             'CANARY_db',
+        AWS_SECRET_ACCESS_KEY:    'CANARY_aws',
+      };
+      const restore: Record<string, string | undefined> = {};
+      for (const [k, v] of Object.entries(canaries)) {
+        restore[k] = process.env[k];
+        process.env[k] = v;
+      }
+      try {
+        const Bash = findTool(buildProcessTools(ws), 'Bash');
+        const out = await Bash.handler({ command: 'env' });
+        for (const value of Object.values(canaries)) {
+          assert.ok(!out.includes(value),
+            `BASH ENV LEAK: ${value} appeared in child env output:\n${out}`);
+        }
+        // Sanity-check that the allowlisted vars DO survive — otherwise
+        // the test could falsely pass by simply not running the command.
+        assert.match(out, /^PATH=/m, 'PATH should be forwarded');
+      } finally {
+        for (const [k, v] of Object.entries(restore)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    });
   });
 
   describe('Glob', () => {
