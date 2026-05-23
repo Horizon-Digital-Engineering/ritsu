@@ -519,7 +519,20 @@ function backfillCallerLabels(db: Db): void {
   tx();
 }
 
+/**
+ * Identifier whitelist for the DDL helper. SQLite doesn't bind table /
+ * column / type as parameters, so the only safe call shape is string
+ * interpolation — which makes this helper a one-line landmine if a
+ * future caller pipes user-controlled text through. Refuse anything
+ * that isn't a plain SQL identifier so the bug surfaces loud.
+ */
+const SQL_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SQL_TYPE_RE  = /^[A-Za-z][A-Za-z0-9_ ()'"[\]{}=\-,.]*$/;
+
 function addColumnIfMissing(db: Db, table: string, column: string, type: string): void {
+  if (!SQL_IDENT_RE.test(table)) throw new Error(`addColumnIfMissing: table identifier '${table}' is not a plain identifier`);
+  if (!SQL_IDENT_RE.test(column)) throw new Error(`addColumnIfMissing: column identifier '${column}' is not a plain identifier`);
+  if (!SQL_TYPE_RE.test(type))   throw new Error(`addColumnIfMissing: type '${type}' contains disallowed characters`);
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (cols.some(c => c.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);

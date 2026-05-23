@@ -17,8 +17,26 @@ export const LEVELS: Record<Level, number> = { debug: 10, info: 20, warn: 30, er
 let minLevel = LEVELS[(process.env.LOG_LEVEL as Level) ?? 'info'];
 let currentLevel: Level = (process.env.LOG_LEVEL as Level) ?? 'info';
 
-/** Names whose values are always redacted (case-insensitive substring match). */
-const SENSITIVE_KEYS = [
+/**
+ * Field-name matchers for redaction. Each entry is matched
+ * case-insensitively. The split between EXACT and CONTAINS exists
+ * because a pure substring match on short tokens like "key" wrongly
+ * redacts benign names like `monkey` or `keyboard_shortcut`, while a
+ * pure exact match misses real secrets stored under names like
+ * `admin_token` or `bot_token`.
+ *
+ *   EXACT     — match key === entry  (low-false-positive names)
+ *   CONTAINS  — substring match (broad — for names that come in many
+ *               compounds like `bot_token` / `refresh_token`).
+ */
+const SENSITIVE_EXACT = new Set([
+  'key',
+  'plaintext',
+  'bearer',
+  'auth_tag',
+  'master_key',
+]);
+const SENSITIVE_CONTAINS = [
   'token',
   'password',
   'passwd',
@@ -36,7 +54,8 @@ const REDACT = '[redacted]';
 
 function isSensitive(key: string): boolean {
   const k = key.toLowerCase();
-  return SENSITIVE_KEYS.some(s => k.includes(s));
+  if (SENSITIVE_EXACT.has(k)) return true;
+  return SENSITIVE_CONTAINS.some(s => k.includes(s));
 }
 
 function redact(value: unknown, depth = 0): unknown {

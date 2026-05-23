@@ -1194,7 +1194,7 @@ function renderMemoryList(list) {
     <tr data-id="${m.id}">
       <td class="id-cell">${m.id}</td>
       <td>${fmtTime(new Date(m.created_at * 1000).toISOString())}</td>
-      <td class="mem-content wrap-pre" ${esc(m.content)}</td>
+      <td class="mem-content wrap-pre">${esc(m.content)}</td>
       <td class="row-actions">
         <button data-action="open-lineage" data-id="${m.id}">lineage</button>
         <button data-action="edit-memory" data-id="${m.id}">edit</button>
@@ -1246,7 +1246,7 @@ async function openLineage(memId) {
       <div class="lineage-card ${m.superseded_by ? 'dim' : ''}">
         <div class="convo-msg-meta">
           v${i+1} · id=${m.id} · ${fmtTime(new Date(m.created_at * 1000).toISOString())}
-          ${m.superseded_by ? `<span class="badge ml-2" superseded by ${m.superseded_by}</span>` : '<span class="badge ml-2" active</span>'}
+          ${m.superseded_by ? `<span class="badge ml-2">superseded by ${m.superseded_by}</span>` : '<span class="badge ml-2">active</span>'}
         </div>
         <div class="wrap-pre">${esc(m.content)}</div>
       </div>
@@ -1792,7 +1792,7 @@ async function renderToolsFor(agentId) {
     const wsList = wsResp.workspaces || [];
 
     const builtinSection = builtin.length
-      ? builtin.map(t => `<span class="badge accent-tint" ${esc(t)}</span>`).join('')
+      ? builtin.map(t => `<span class="badge accent-tint">${esc(t)}</span>`).join('')
       : '<em class="txt-muted">(none — agent has no built-in SDK tools allowlisted)</em>';
 
     const mcpSection = mcp.map(s => `
@@ -1828,15 +1828,15 @@ async function renderToolsFor(agentId) {
         ${glyphFor(agent.id)}<code>${esc(agent.id)}</code>
         <span class="txt-muted ml-3">runtime: ${runtime} · model: <code>${esc(agent.model)}</code></span>
       </div>
-      <div class="panel panel-nested" 
+      <div class="panel panel-nested">
         <h2>Built-in SDK tools <span class="fw-400 tt-none txt-muted fs-sm">(claude-sdk allowlist)</span></h2>
         <div>${builtinSection}</div>
       </div>
-      <div class="panel panel-nested" 
+      <div class="panel panel-nested">
         <h2>MCP tools <span class="fw-400 tt-none txt-muted fs-sm">(in-process)</span></h2>
         ${mcpSection}
       </div>
-      <div class="panel panel-nested" 
+      <div class="panel panel-nested">
         <h2>Workspaces</h2>
         ${wsSection}
       </div>

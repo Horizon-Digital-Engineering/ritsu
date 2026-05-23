@@ -329,7 +329,7 @@ export function createAdminApp(deps: AdminDeps) {
   // styles/images. No remote CDNs, no inline `eval`, no `data:` images
   // (admin UI uses inline data:image/svg+xml for glyphs — allow only that
   // narrow shape). Headers go on every response, including 404s.
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader(
       'Content-Security-Policy',
       [
@@ -364,6 +364,14 @@ export function createAdminApp(deps: AdminDeps) {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), interest-cohort=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    // HSTS only when the client reached us over TLS. If a reverse proxy
+    // is terminating TLS, it sets X-Forwarded-Proto=https; if ritsu is
+    // direct, req.secure reflects the listener. Sending HSTS on a plain-
+    // http response would be ignored by browsers but might confuse curl
+    // pipelines, so we gate it.
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
   });
 
