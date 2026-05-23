@@ -1220,18 +1220,8 @@ async function loadMcpTools() {
         },
       },
     }, null, 2);
-    // Snippet built up line-by-line so `curl` and the Authorization header
-    // never share a source line — keeps gitleaks' curl-auth-header rule
-    // from flagging the rendered template ('rt_YOUR_TOKEN' is the
-    // placeholder the operator replaces with a real minted token).
-    const curlAuthHeader = "Authorization: Bearer rt_YOUR_TOKEN";
-    $('snip-curl').textContent = [
-      `curl -s -X POST ${info.url} \\`,
-      `  -H '${curlAuthHeader}' \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -H 'Accept: application/json, text/event-stream' \\`,
-      `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`,
-    ].join('\n');
+    $('snip-curl').textContent =
+      `curl -s -X POST ${info.url} \\\n  -H 'Authorization: Bearer rt_YOUR_TOKEN' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Accept: application/json, text/event-stream' \\\n  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'`;
   } catch (e) {
     $('mcp-tools').innerHTML = `<div class="txt-err">Failed to load: ${esc(e.message)}</div>`;
   }
