@@ -37,7 +37,7 @@ import {
   createDecipheriv,
   randomBytes,
 } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from './log.js';
 
@@ -73,16 +73,41 @@ function loadOrBootstrapMasterKey(): Buffer {
     return raw;
   }
   if (existsSync(FALLBACK_KEY_PATH)) {
+    if (process.env.RITSU_ALLOW_COLOCATED_KEY !== '1') {
+      throw new Error(
+        `Master key found at ${FALLBACK_KEY_PATH} but it sits next to the SQLite DB it protects.\n` +
+        `A single backup or filesystem snapshot exfiltrates both ciphertext + key.\n` +
+        `Either:\n` +
+        `  1. Move the key:  sudo mv ${FALLBACK_KEY_PATH} ${SYSTEM_KEY_PATH} && sudo chmod 0600 ${SYSTEM_KEY_PATH}\n` +
+        `  2. OR set RITSU_MASTER_KEY=<base64> in the env (best for prod)\n` +
+        `  3. OR set RITSU_ALLOW_COLOCATED_KEY=1 to acknowledge the trade-off`,
+      );
+    }
     const raw = readKeyFile(FALLBACK_KEY_PATH);
     logger.warn('crypto.master-key.colocated', {
       path: FALLBACK_KEY_PATH,
-      hint: 'Master key shares a directory with the SQLite DB it protects. Move to /etc/ritsu/master-key or set RITSU_MASTER_KEY for stronger separation.',
+      hint: 'Master key shares a directory with the SQLite DB it protects. RITSU_ALLOW_COLOCATED_KEY=1 acknowledges the risk.',
     });
     return raw;
   }
-  // First boot — bootstrap into the fallback location.
+  // First boot — bootstrap. Refuses to drop the key into the colocated
+  // fallback path unless the operator has opted in.
+  if (process.env.RITSU_ALLOW_COLOCATED_KEY !== '1') {
+    throw new Error(
+      `No master key found.\n` +
+      `Bootstrap refuses to write to the fallback path (${FALLBACK_KEY_PATH}) because it sits\n` +
+      `next to the DB. Pick one:\n` +
+      `  1. echo "RITSU_MASTER_KEY=$(openssl rand -base64 32)" >> /etc/ritsu/env  (recommended)\n` +
+      `  2. sudo install -o ritsu -g ritsu -m 0600 -D <(openssl rand -base64 32) ${SYSTEM_KEY_PATH}\n` +
+      `  3. set RITSU_ALLOW_COLOCATED_KEY=1 to accept the colocated fallback`,
+    );
+  }
   const key = randomBytes(KEY_BYTES);
-  mkdirSync(dirname(FALLBACK_KEY_PATH), { recursive: true });
+  const dir = dirname(FALLBACK_KEY_PATH);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // mkdirSync respects existing dir perms; explicitly chmod so an
+  // already-present 0755 dir gets tightened.
+  try { chmodSync(dir, 0o700); } catch { /* not the owner — operator must fix */ }
   writeFileSync(FALLBACK_KEY_PATH, key.toString('base64') + '\n', { mode: 0o600 });
   logger.warn('crypto.master-key.bootstrapped', {
     path: FALLBACK_KEY_PATH,
@@ -91,7 +116,36 @@ function loadOrBootstrapMasterKey(): Buffer {
   return key;
 }
 
+/**
+ * Read the master key from disk + assert on-disk hygiene. Refuses to
+ * load if:
+ *   - the file mode isn't 0600 (any group/world bit set leaks the secret)
+ *   - the parent directory is world-writable (file perms are meaningless
+ *     when an attacker can rename the parent or drop a replacement)
+ */
 function readKeyFile(path: string): Buffer {
+  let st;
+  try { st = statSync(path); }
+  catch (err) { throw new Error(`cannot stat master key at ${path}: ${(err as Error).message}`); }
+  const mode = st.mode & 0o777;
+  if (mode !== 0o600) {
+    throw new Error(
+      `master key at ${path} has mode ${mode.toString(8)} (expected 600).\n` +
+      `Tighten with: sudo chmod 0600 ${path}`,
+    );
+  }
+  // Parent must not be world-writable. A 0755 dir is fine (others can't
+  // modify it), 0777 / 0775 / o+w / g+w are not.
+  let parentSt;
+  try { parentSt = statSync(dirname(path)); }
+  catch { parentSt = null; }
+  if (parentSt && (parentSt.mode & 0o022) !== 0) {
+    throw new Error(
+      `parent dir of master key (${dirname(path)}) is group- or world-writable ` +
+      `(mode ${(parentSt.mode & 0o777).toString(8)}). ` +
+      `Tighten with: sudo chmod go-w ${dirname(path)}`,
+    );
+  }
   const raw = readFileSync(path, 'utf8').trim();
   const key = Buffer.from(raw, 'base64');
   if (key.length !== KEY_BYTES) {

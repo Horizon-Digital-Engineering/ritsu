@@ -146,7 +146,12 @@ function writeNewKeyFile(targetPath: string, newKey: Buffer): { backup: string |
   // against process cwd; targetPath is already absolute by construction.
   const tmpPath = targetPath + '.new';
   const backupPath = targetPath + '.prev';
+  // The `mode` option to writeFileSync is silently ignored if the file
+  // already exists. Pre-unlink (.new is our tmpfile; if it's left over
+  // from a crashed prior run we shouldn't trust its mode) then write.
+  try { if (existsSync(tmpPath)) chmodSync(tmpPath, 0o600); } catch { /* ignored — chmod below */ }
   writeFileSync(tmpPath, newKey.toString('base64') + '\n', { mode: 0o600 });
+  chmodSync(tmpPath, 0o600);
   let backup: string | null = null;
   if (existsSync(targetPath)) {
     copyFileSync(targetPath, backupPath);
