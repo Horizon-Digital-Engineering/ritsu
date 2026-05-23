@@ -6,4 +6,9 @@ useDefault = true
 
 [allowlist]
 description = "rt_YOUR_TOKEN is the placeholder string the admin UI renders into copy-paste connect snippets (curl / mcp-remote / Claude Desktop config). Real ritsu MCP bearer tokens have base64url body after the rt_ prefix and would not match this exact literal."
+# regexTarget = "line" makes the allowlist match the entire raw line, not
+# just the captured secret — needed because rules like curl-auth-header
+# capture the bearer value after "Bearer " and the placeholder rt_YOUR_TOKEN
+# only appears in admin-UI snippet strings that we own.
+regexTarget = "line"
 regexes = ['''rt_YOUR_TOKEN''']

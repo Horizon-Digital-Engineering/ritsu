@@ -83,18 +83,20 @@ jobs:
       - name: npm audit (fail on high+)
         run: |
           set -eo pipefail
-          echo "## Dependency audit" >> "$GITHUB_STEP_SUMMARY"
-          if npm audit --audit-level=high 2>&1 | tee audit.txt; then
-            echo "OK no high/critical vulnerabilities" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
+          {
+            echo "## Dependency audit"
+            if npm audit --audit-level=high 2>&1 | tee audit.txt; then
+              echo "OK no high/critical vulnerabilities"
+              ok=1
+            else
               echo "FAIL vulnerabilities found:"
               echo '```'
               cat audit.txt
               echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+              ok=0
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "${ok:-0}" = "1" ] || exit 1
       - name: npm audit signatures (supply-chain integrity)
         # Verifies every installed package's tarball matches a Sigstore /
         # registry signature. Catches a compromised registry mirror or a
@@ -104,20 +106,23 @@ jobs:
         # detected, not on missing signatures.
         run: |
           set -eo pipefail
-          echo "## Dependency signatures" >> "$GITHUB_STEP_SUMMARY"
-          if npm audit signatures 2>&1 | tee signatures.txt; then
-            echo "OK signatures verified" >> "$GITHUB_STEP_SUMMARY"
-          else
-            # Some packages are unsigned (not bad signatures) — surface the
-            # output but don't fail until npm-audit-signatures matures.
-            {
+          warned=0
+          {
+            echo "## Dependency signatures"
+            if npm audit signatures 2>&1 | tee signatures.txt; then
+              echo "OK signatures verified"
+            else
+              # Some packages are unsigned (not bad signatures) — surface the
+              # output but don't fail until npm-audit-signatures matures.
               echo "WARN signature audit reported issues (see log):"
               echo '```'
               cat signatures.txt
               echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::npm audit signatures reported issues — review the log"
-          fi
+              warned=1
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$warned" = "1" ] && echo "::warning::npm audit signatures reported issues — review the log"
+          true
 
   semgrep:
     name: SAST (semgrep)
