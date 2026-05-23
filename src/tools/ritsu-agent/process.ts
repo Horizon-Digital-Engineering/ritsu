@@ -131,6 +131,53 @@ async function walkFiles(root: string, base: string, out: string[]): Promise<voi
   }
 }
 
+/** Compile the agent-supplied pattern with re2-wasm (linear-time, no
+ *  backtracking) so a maliciously-crafted pattern can't trigger catastrophic
+ *  backtracking against this server's event loop. The 'u' flag is required
+ *  by the re2-wasm binding. Returns the compiled matcher or a string error
+ *  message that the caller passes back to the agent. */
+function compileGrepPattern(patternStr: string, ignoreCase: boolean): { test(s: string): boolean } | string {
+  try {
+    return new RE2(patternStr, ignoreCase ? 'iu' : 'u');
+  } catch (e) {
+    return `error: invalid regex: ${(e as Error).message}`;
+  }
+}
+
+/** Walk targetFiles, scan each line with `pattern`, collect at most
+ *  GREP_RESULT_CAP `path:line:text` hits. Unreadable files are skipped
+ *  silently — broken symlinks, perms mismatches, binary files that throw
+ *  on UTF-8 decode all fall in this bucket and aren't worth surfacing. */
+async function runGrep(opts: {
+  cwd: string;
+  rootPath: string;
+  include: string;
+  pattern: { test(s: string): boolean };
+}): Promise<string[]> {
+  const files: string[] = [];
+  await walkFiles(opts.rootPath, opts.cwd, files);
+  const targetFiles = opts.include ? files.filter(f => globMatch(opts.include, f)) : files;
+  const hits: string[] = [];
+  for (const rel of targetFiles) {
+    if (hits.length >= GREP_RESULT_CAP) break;
+    let content: string;
+    try { content = await readFile(resolve(opts.cwd, rel), 'utf8'); }
+    catch { continue; }
+    scanLinesIntoHits(content, rel, opts.pattern, hits);
+  }
+  return hits;
+}
+
+/** Match every line in `content` against `pattern`, append `path:line:text`
+ *  to `hits` for each match. Stops as soon as `hits` hits GREP_RESULT_CAP. */
+function scanLinesIntoHits(content: string, rel: string, pattern: { test(s: string): boolean }, hits: string[]): void {
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (hits.length >= GREP_RESULT_CAP) return;
+    if (pattern.test(lines[i])) hits.push(`${rel}:${i + 1}:${lines[i]}`);
+  }
+}
+
 export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
   const cwd = workspaces[0]?.path;
   return [
@@ -220,37 +267,15 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         if (!auth.ok) return `denied: ${auth.reason}`;
         const patternStr = asString(args.pattern);
         if (!patternStr) return 'error: pattern required';
-        // Compile the agent-supplied pattern with re2-wasm, NOT the native
-        // RegExp engine. re2 is linear-time by construction (no
-        // backtracking), so a maliciously-crafted pattern can't trigger
-        // catastrophic backtracking against this server's event loop. The
-        // 'u' flag is required by the re2-wasm binding.
-        let pattern: { test(s: string): boolean };
-        try { pattern = new RE2(patternStr, args.ignore_case ? 'iu' : 'u'); }
-        catch (e) { return `error: invalid regex: ${(e as Error).message}`; }
+        const pattern = compileGrepPattern(patternStr, args.ignore_case === true);
+        if (typeof pattern === 'string') return pattern;
         const subdir = asString(args.path);
-        const include = asString(args.include);
         const rootPath = subdir ? resolve(cwd, subdir) : cwd;
         if (!rootPath.startsWith(cwd + sep) && rootPath !== cwd) {
           return `error: path '${subdir}' resolves outside workspace`;
         }
-        const files: string[] = [];
-        await walkFiles(rootPath, cwd, files);
-        const targetFiles = include ? files.filter(f => globMatch(include, f)) : files;
-        const hits: string[] = [];
-        for (const rel of targetFiles) {
-          if (hits.length >= GREP_RESULT_CAP) break;
-          let content: string;
-          try { content = await readFile(resolve(cwd, rel), 'utf8'); }
-          catch { continue; }
-          const lines = content.split('\n');
-          for (let i = 0; i < lines.length; i++) {
-            if (pattern.test(lines[i])) {
-              hits.push(`${rel}:${i + 1}:${lines[i]}`);
-              if (hits.length >= GREP_RESULT_CAP) break;
-            }
-          }
-        }
+        const include = asString(args.include);
+        const hits = await runGrep({ cwd, rootPath, include, pattern });
         logger.debug('ra.process.grep', { pattern: patternStr, matched: hits.length });
         return hits.length === 0 ? '(no matches)' : hits.join('\n');
       },

@@ -530,42 +530,50 @@ function applyToolPreset(name) {
 async function recomputeFormWarnings() {
   const banner = $('f-warnings');
   if (!banner) return;
-  const tools = new Set(readToolsAllowlist());
-  const needsRead  = ['Read','Glob','Grep'].some(t => tools.has(t));
-  const needsWrite = ['Write','Edit'].some(t => tools.has(t));
-  const needsExec  = tools.has('Bash');
-  const anyFsTool  = needsRead || needsWrite || needsExec;
-
   await ensureWorkspaceCache();
+  banner.innerHTML = buildWarningHtml(readToolsAllowlist(), editingWorkspaces, editingAgentId);
+}
 
-  // editingWorkspaces is one of: array of workspaces, [], or {error: msg}
-  if (editingWorkspaces && editingWorkspaces.error) {
-    banner.innerHTML = `<div class="warn-banner">⚠ <strong>Could not load workspaces for this agent</strong> — ${esc(editingWorkspaces.error)}. The tool-vs-workspace check is paused; the agent may still work if workspaces exist server-side.</div>`;
-    return;
+/** Map (selected tools, workspace cache, editingAgentId) → the warning-banner
+ *  HTML string. Pure function — easier to reason about than mutating banner
+ *  in-flight across branches, and unit-testable if we ever want to. */
+function buildWarningHtml(toolList, workspaces, agentId) {
+  const tools = new Set(toolList);
+  const needs = {
+    read:  ['Read','Glob','Grep'].some(t => tools.has(t)),
+    write: ['Write','Edit'].some(t => tools.has(t)),
+    exec:  tools.has('Bash'),
+  };
+  const anyFsTool = needs.read || needs.write || needs.exec;
+
+  // workspaces is one of: array of workspaces, [], or {error: msg}
+  if (workspaces && workspaces.error) {
+    return `<div class="warn-banner">⚠ <strong>Could not load workspaces for this agent</strong> — ${esc(workspaces.error)}. The tool-vs-workspace check is paused; the agent may still work if workspaces exist server-side.</div>`;
   }
-  const wsList = Array.isArray(editingWorkspaces) ? editingWorkspaces : [];
-  const wsCount = wsList.length;
+  const wsList = Array.isArray(workspaces) ? workspaces : [];
+  const lines = collectFormWarningLines(needs, anyFsTool, wsList, agentId);
+  return lines.length ? `<div class="warn-banner">⚠ ${lines.join('<br>')}</div>` : '';
+}
+
+/** Decide which tool-vs-workspace mismatch lines to surface. Extracted from
+ *  buildWarningHtml so the branch logic stays scoped and readable. */
+function collectFormWarningLines(needs, anyFsTool, wsList, agentId) {
+  if (anyFsTool && wsList.length === 0) {
+    return [agentId
+      ? `<strong>Filesystem tools enabled but no workspace set for "${esc(agentId)}".</strong> Add one in the Workspaces tab or those tools will fail at runtime.`
+      // CREATE mode — agent doesn't exist yet, can't have workspaces. Softer hint.
+      : `<em>You'll need to add a workspace after saving this agent — filesystem tools require one.</em>`];
+  }
   const wsPerms = new Set();
   for (const w of wsList) for (const p of (w.permissions || [])) wsPerms.add(p);
-
   const lines = [];
-  if (anyFsTool && wsCount === 0) {
-    if (editingAgentId) {
-      lines.push(`<strong>Filesystem tools enabled but no workspace set for "${esc(editingAgentId)}".</strong> Add one in the Workspaces tab or those tools will fail at runtime.`);
-    } else {
-      // CREATE mode — agent doesn't exist yet, can't have workspaces.
-      // Softer hint instead of an error.
-      lines.push(`<em>You'll need to add a workspace after saving this agent — filesystem tools require one.</em>`);
-    }
-  } else {
-    if (needsWrite && !wsPerms.has('write')) {
-      lines.push(`<strong>Write / Edit enabled</strong> but no workspace grants <code>write</code>. The agent will be denied on Write attempts.`);
-    }
-    if (needsExec && !wsPerms.has('exec')) {
-      lines.push(`<strong>Bash enabled</strong> but no workspace grants <code>exec</code>. The agent will be denied on Bash attempts.`);
-    }
+  if (needs.write && !wsPerms.has('write')) {
+    lines.push(`<strong>Write / Edit enabled</strong> but no workspace grants <code>write</code>. The agent will be denied on Write attempts.`);
   }
-  banner.innerHTML = lines.length ? `<div class="warn-banner">⚠ ${lines.join('<br>')}</div>` : '';
+  if (needs.exec && !wsPerms.has('exec')) {
+    lines.push(`<strong>Bash enabled</strong> but no workspace grants <code>exec</code>. The agent will be denied on Bash attempts.`);
+  }
+  return lines;
 }
 
 /** One-shot test: dispatches a single turn using the FORM's draft state. Not saved. */

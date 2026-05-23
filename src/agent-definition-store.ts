@@ -94,92 +94,8 @@ export class SqliteAgentDefinitionStore implements AgentDefinitionStore {
     // one into previous_system_prompt (one-step undo). On INSERT: previous_*
     // stay null.
     const tx = this.db.transaction(() => {
-      this.db
-        .prepare(
-          `INSERT INTO agent_definitions
-             (id, type, name, description, system_prompt, dispatcher, model,
-              memory_backend, tools_allowlist, can_call, provider, api_key_ref,
-              provider_options, capabilities, enabled)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             type            = excluded.type,
-             name            = excluded.name,
-             description     = excluded.description,
-             previous_system_prompt = CASE
-               WHEN agent_definitions.system_prompt <> excluded.system_prompt
-                 THEN agent_definitions.system_prompt
-               ELSE agent_definitions.previous_system_prompt
-             END,
-             previous_saved_at = CASE
-               WHEN agent_definitions.system_prompt <> excluded.system_prompt
-                 THEN agent_definitions.updated_at
-               ELSE agent_definitions.previous_saved_at
-             END,
-             system_prompt    = excluded.system_prompt,
-             dispatcher       = excluded.dispatcher,
-             model            = excluded.model,
-             memory_backend   = excluded.memory_backend,
-             tools_allowlist  = excluded.tools_allowlist,
-             can_call         = excluded.can_call,
-             provider         = excluded.provider,
-             api_key_ref      = excluded.api_key_ref,
-             provider_options = excluded.provider_options,
-             capabilities     = excluded.capabilities,
-             enabled          = excluded.enabled,
-             updated_at       = strftime('%s','now')`,
-        )
-        .run(
-          validated.id,
-          validated.type,
-          validated.name,
-          validated.description,
-          validated.system_prompt,
-          validated.dispatcher,
-          validated.model,
-          validated.memory_backend,
-          JSON.stringify(validated.tools_allowlist),
-          JSON.stringify(validated.can_call),
-          validated.provider,
-          validated.api_key_ref,
-          JSON.stringify(validated.provider_options),
-          JSON.stringify(validated.capabilities),
-          validated.enabled ? 1 : 0,
-        );
-
-      // Apply bidirectional sync using direct UPDATEs (would loop if we
-      // re-entered upsert). Tolerate dangling ids — the user may have removed
-      // an agent without scrubbing references.
-      if (addedEdges.length || removedEdges.length) {
-        const readRow = this.db.prepare('SELECT can_call FROM agent_definitions WHERE id = ?');
-        const writeRow = this.db.prepare(
-          `UPDATE agent_definitions SET can_call = ?, updated_at = strftime('%s','now') WHERE id = ?`,
-        );
-        const touched: string[] = [];
-        for (const otherId of addedEdges) {
-          const row = readRow.get(otherId) as { can_call: string } | undefined;
-          if (!row) continue;
-          const list = JSON.parse(row.can_call) as string[];
-          if (list.includes(validated.id)) continue;
-          writeRow.run(JSON.stringify([...list, validated.id]), otherId);
-          touched.push(otherId);
-        }
-        for (const otherId of removedEdges) {
-          const row = readRow.get(otherId) as { can_call: string } | undefined;
-          if (!row) continue;
-          const list = JSON.parse(row.can_call) as string[];
-          if (!list.includes(validated.id)) continue;
-          writeRow.run(JSON.stringify(list.filter(id => id !== validated.id)), otherId);
-          touched.push(otherId);
-        }
-        if (touched.length) {
-          logger.info('def-store.can-call-sync', {
-            id: validated.id,
-            added: addedEdges,
-            removed: removedEdges,
-            synced: touched,
-          });
-        }
-      }
+      writeAgentDefRow(this.db, validated);
+      syncCanCallEdges(this.db, validated.id, addedEdges, removedEdges);
     });
     tx();
     logger.info('def-store.upsert', { id: validated.id });
@@ -218,6 +134,126 @@ export class SqliteAgentDefinitionStore implements AgentDefinitionStore {
     if (!saved) throw new Error(`revert vanished for ${id}`);
     return saved;
   }
+}
+
+/** UPSERT the validated agent-definition row. ON CONFLICT preserves the
+ *  previous_system_prompt for one-step undo when system_prompt actually
+ *  changes. Kept separate from upsert() so the cognitive complexity of
+ *  the transaction body stays manageable. */
+function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
+  db.prepare(
+    `INSERT INTO agent_definitions
+       (id, type, name, description, system_prompt, dispatcher, model,
+        memory_backend, tools_allowlist, can_call, provider, api_key_ref,
+        provider_options, capabilities, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       type            = excluded.type,
+       name            = excluded.name,
+       description     = excluded.description,
+       previous_system_prompt = CASE
+         WHEN agent_definitions.system_prompt <> excluded.system_prompt
+           THEN agent_definitions.system_prompt
+         ELSE agent_definitions.previous_system_prompt
+       END,
+       previous_saved_at = CASE
+         WHEN agent_definitions.system_prompt <> excluded.system_prompt
+           THEN agent_definitions.updated_at
+         ELSE agent_definitions.previous_saved_at
+       END,
+       system_prompt    = excluded.system_prompt,
+       dispatcher       = excluded.dispatcher,
+       model            = excluded.model,
+       memory_backend   = excluded.memory_backend,
+       tools_allowlist  = excluded.tools_allowlist,
+       can_call         = excluded.can_call,
+       provider         = excluded.provider,
+       api_key_ref      = excluded.api_key_ref,
+       provider_options = excluded.provider_options,
+       capabilities     = excluded.capabilities,
+       enabled          = excluded.enabled,
+       updated_at       = strftime('%s','now')`,
+  ).run(
+    validated.id,
+    validated.type,
+    validated.name,
+    validated.description,
+    validated.system_prompt,
+    validated.dispatcher,
+    validated.model,
+    validated.memory_backend,
+    JSON.stringify(validated.tools_allowlist),
+    JSON.stringify(validated.can_call),
+    validated.provider,
+    validated.api_key_ref,
+    JSON.stringify(validated.provider_options),
+    JSON.stringify(validated.capabilities),
+    validated.enabled ? 1 : 0,
+  );
+}
+
+/** Apply bidirectional can_call sync: if A adds B, append A to B's can_call;
+ *  if A removes B, drop A from B's can_call. Uses direct UPDATEs so this
+ *  doesn't recurse into upsert(). Tolerates dangling ids — the operator may
+ *  have removed an agent without scrubbing references. */
+function syncCanCallEdges(
+  db: Db,
+  agentId: string,
+  addedEdges: readonly string[],
+  removedEdges: readonly string[],
+): void {
+  if (addedEdges.length === 0 && removedEdges.length === 0) return;
+  const readRow = db.prepare('SELECT can_call FROM agent_definitions WHERE id = ?');
+  const writeRow = db.prepare(
+    `UPDATE agent_definitions SET can_call = ?, updated_at = strftime('%s','now') WHERE id = ?`,
+  );
+  const touched: string[] = [];
+  for (const otherId of addedEdges) {
+    if (addAgentToOtherCanCall(readRow, writeRow, otherId, agentId)) touched.push(otherId);
+  }
+  for (const otherId of removedEdges) {
+    if (removeAgentFromOtherCanCall(readRow, writeRow, otherId, agentId)) touched.push(otherId);
+  }
+  if (touched.length) {
+    logger.info('def-store.can-call-sync', {
+      id: agentId,
+      added: addedEdges,
+      removed: removedEdges,
+      synced: touched,
+    });
+  }
+}
+
+/** Add `agentId` to `otherId`'s can_call list. Returns true if a row was
+ *  actually written (existing other, agentId not already present). */
+function addAgentToOtherCanCall(
+  readRow: ReturnType<Db['prepare']>,
+  writeRow: ReturnType<Db['prepare']>,
+  otherId: string,
+  agentId: string,
+): boolean {
+  const row = readRow.get(otherId) as { can_call: string } | undefined;
+  if (!row) return false;
+  const list = JSON.parse(row.can_call) as string[];
+  if (list.includes(agentId)) return false;
+  writeRow.run(JSON.stringify([...list, agentId]), otherId);
+  return true;
+}
+
+/** Drop `agentId` from `otherId`'s can_call list. Returns true if a row
+ *  was actually written (existing other, agentId currently present). */
+function removeAgentFromOtherCanCall(
+  readRow: ReturnType<Db['prepare']>,
+  writeRow: ReturnType<Db['prepare']>,
+  otherId: string,
+  agentId: string,
+): boolean {
+  const row = readRow.get(otherId) as { can_call: string } | undefined;
+  if (!row) return false;
+  const list = JSON.parse(row.can_call) as string[];
+  if (!list.includes(agentId)) return false;
+  writeRow.run(JSON.stringify(list.filter(id => id !== agentId)), otherId);
+  return true;
 }
 
 /**

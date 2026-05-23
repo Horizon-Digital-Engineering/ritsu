@@ -123,33 +123,53 @@ export class TelegramChannel implements CommChannel {
     while (this.running) {
       this.abort = new AbortController();
       try {
-        const updates = await this.api<TelegramUpdate[]>('getUpdates', {
-          offset: this.offset,
-          timeout: LONG_POLL_TIMEOUT_S,
-          allowed_updates: ['message'],
-        }, this.abort.signal);
-        for (const u of updates) {
-          this.offset = u.update_id + 1;
-          if (!this.running) break;
-          const msg = u.message ?? u.edited_message;
-          if (!msg || !msg.text) continue;
-          await this.handleMessage(msg);
-        }
+        const updates = await this.fetchUpdates(this.abort.signal);
+        await this.dispatchUpdates(updates);
       } catch (err) {
-        if (!this.running) break;
-        // AbortError is the expected path on shutdown — already handled by
-        // the `running` check above; treat anything else as a transient
-        // failure and back off.
-        const name = (err as Error).name;
-        if (name === 'AbortError') continue;
-        logger.warn('channel.telegram.poll-error', {
-          channel_id: this.channelId, err: (err as Error).message,
-        });
-        await sleep(2000);
+        const cont = await this.handlePollError(err);
+        if (!cont) break;
       } finally {
         this.abort = null;
       }
     }
+  }
+
+  /** One getUpdates round-trip. Pulled out of the polling loop body so the
+   *  loop's control flow (running flag + abort + error handling) reads in
+   *  one screen. */
+  private async fetchUpdates(signal: AbortSignal): Promise<TelegramUpdate[]> {
+    return this.api<TelegramUpdate[]>('getUpdates', {
+      offset: this.offset,
+      timeout: LONG_POLL_TIMEOUT_S,
+      allowed_updates: ['message'],
+    }, signal);
+  }
+
+  /** Advance the long-poll offset and route each message through handleMessage.
+   *  Bails on shutdown to keep latency on stop() bounded. */
+  private async dispatchUpdates(updates: TelegramUpdate[]): Promise<void> {
+    for (const u of updates) {
+      this.offset = u.update_id + 1;
+      if (!this.running) return;
+      const msg = u.message ?? u.edited_message;
+      if (!msg || !msg.text) continue;
+      await this.handleMessage(msg);
+    }
+  }
+
+  /** Classify a poll-loop error. Resolves to false when the loop should stop
+   *  (shutdown was requested), true when it should continue. AbortError is
+   *  the expected shutdown signal and is handled by the outer `running`
+   *  check; everything else logs and sleeps 2s before letting the loop
+   *  re-enter fetchUpdates. */
+  private async handlePollError(err: unknown): Promise<boolean> {
+    if (!this.running) return false;
+    if ((err as Error).name === 'AbortError') return true;
+    logger.warn('channel.telegram.poll-error', {
+      channel_id: this.channelId, err: (err as Error).message,
+    });
+    await sleep(2000);
+    return true;
   }
 
   /** Snapshot of every chat that's tried to reach this bot since start.

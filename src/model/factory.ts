@@ -65,38 +65,42 @@ export interface DispatcherOpts {
  */
 export function buildDispatcher(kind: DispatcherKind, model: string, opts: DispatcherOpts = {}): ModelDispatcher {
   switch (kind) {
-    case 'claude-direct': {
-      const claudeOpts: ClaudeDirectOpts = {
-        ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
-        ...(opts.tools === undefined ? {} : { tools: opts.tools }),
-        ...(opts.workspaces === undefined ? {} : { workspaces: opts.workspaces }),
-        ...(opts.memory === undefined ? {} : { memory: opts.memory }),
-        ...(opts.comms === undefined ? {} : { comms: opts.comms }),
-        ...(opts.admin === undefined ? {} : { admin: opts.admin }),
-        ...(opts.monitor === undefined ? {} : { monitor: opts.monitor }),
-      };
-      return new ClaudeDirectDispatcher(model, claudeOpts);
-    }
-    case 'litellm':
-      // Legacy thin OpenAI-compat shim; superseded by 'ritsu-agent' for new
-      // work. Kept around for any agent still configured against it.
-      return new LiteLLMDispatcher(model);
-    case 'ritsu-agent': {
-      if (!opts.ritsuAgent) {
-        throw new Error('ritsu-agent dispatcher requires opts.ritsuAgent (provider, apiKeyRef, apiKeys, toolDeps)');
-      }
-      return new RitsuAgentDispatcher({
-        provider: opts.ritsuAgent.provider,
-        apiKeyRef: opts.ritsuAgent.apiKeyRef,
-        apiKeys: opts.ritsuAgent.apiKeys,
-        defaultModel: model,
-        providerOptions: opts.ritsuAgent.providerOptions,
-        toolDeps: opts.ritsuAgent.toolDeps,
-      });
-    }
+    case 'claude-direct': return new ClaudeDirectDispatcher(model, claudeOptsFrom(opts));
+    case 'litellm':       return new LiteLLMDispatcher(model);
+    case 'ritsu-agent':   return new RitsuAgentDispatcher(ritsuAgentOptsFrom(opts, model));
     default: {
       const _exhaustive: never = kind;
       throw new Error(`Unknown dispatcher kind: ${JSON.stringify(_exhaustive)}`);
     }
   }
+}
+
+/** Project DispatcherOpts down to ClaudeDirectOpts, dropping fields that
+ *  are undefined so the spread doesn't violate exactOptionalPropertyTypes. */
+function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
+  const out: ClaudeDirectOpts = {};
+  if (opts.cwd        !== undefined) out.cwd        = opts.cwd;
+  if (opts.tools      !== undefined) out.tools      = opts.tools;
+  if (opts.workspaces !== undefined) out.workspaces = opts.workspaces;
+  if (opts.memory     !== undefined) out.memory     = opts.memory;
+  if (opts.comms      !== undefined) out.comms      = opts.comms;
+  if (opts.admin      !== undefined) out.admin      = opts.admin;
+  if (opts.monitor    !== undefined) out.monitor    = opts.monitor;
+  return out;
+}
+
+/** Project DispatcherOpts → RitsuAgentDispatcher constructor args; throws if
+ *  the caller forgot to wire the ritsu-agent runtime config. */
+function ritsuAgentOptsFrom(opts: DispatcherOpts, defaultModel: string) {
+  if (!opts.ritsuAgent) {
+    throw new Error('ritsu-agent dispatcher requires opts.ritsuAgent (provider, apiKeyRef, apiKeys, toolDeps)');
+  }
+  return {
+    provider: opts.ritsuAgent.provider,
+    apiKeyRef: opts.ritsuAgent.apiKeyRef,
+    apiKeys: opts.ritsuAgent.apiKeys,
+    defaultModel,
+    providerOptions: opts.ritsuAgent.providerOptions,
+    toolDeps: opts.ritsuAgent.toolDeps,
+  };
 }

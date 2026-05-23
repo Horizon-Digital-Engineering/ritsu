@@ -1,5 +1,5 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { ChatRequest, ChatResponse, ModelDispatcher } from './dispatcher.js';
+import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
+import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import { checkToolUse } from '../tools/permissions.js';
@@ -71,14 +71,7 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const model = req.model ?? this.defaultModel;
-    const systemMsg = req.messages
-      .filter(m => m.role === 'system')
-      .map(m => m.content)
-      .join('\n\n');
-    const userPrompt = req.messages
-      .filter(m => m.role !== 'system')
-      .map(m => `${m.role.toUpperCase()}: ${m.content}`)
-      .join('\n\n');
+    const { systemMsg, userPrompt } = formatMessages(req.messages);
 
     logger.debug('claude-direct.chat', {
       model,
@@ -89,64 +82,8 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    // The canUseTool gate fires on EVERY tool the SDK is about to invoke,
-    // including the memory + comms MCP tools and any other custom MCP servers.
-    // Allow memory + comms tools unconditionally (they're already authorized
-    // by being on the per-agent in-process MCP — the tool handlers do their
-    // own allowlist + loop-guard checks). Route everything else through
-    // checkToolUse which only knows about workspace permissions for built-in
-    // FS tools.
-    const inProcessMcpTools = new Set<string>([
-      ...MEMORY_TOOL_NAMES,
-      ...COMMS_TOOL_NAMES,
-      ...ADMIN_TOOL_NAMES,
-      ...MONITOR_TOOL_NAMES,
-    ]);
-    const canUseTool = (workspaces.length === 0 && !this.opts.memory && !this.opts.comms && !this.opts.admin && !this.opts.monitor)
-      ? undefined
-      : async (toolName: string, input: Record<string, unknown>) => {
-          if (inProcessMcpTools.has(toolName)) {
-            return { behavior: 'allow' as const, updatedInput: input };
-          }
-          const result = checkToolUse(toolName, input, workspaces);
-          if (result.ok) {
-            return { behavior: 'allow' as const, updatedInput: input };
-          }
-          logger.warn('tool.denied', { tool: toolName, reason: result.reason });
-          return { behavior: 'deny' as const, message: result.reason };
-        };
-
-    // Build per-agent in-process MCP servers. Each closes the caller's
-    // agent_id over its handlers so identity can't be spoofed by tool args.
-    const memoryServer = this.opts.memory
-      ? buildAgentMemoryMcp(this.opts.memory.agentId, this.opts.memory.store)
-      : null;
-    const commsServer = this.opts.comms
-      ? buildAgentCommsMcp(this.opts.comms.callerAgentId, this.opts.comms.deps)
-      : null;
-    const adminServer = this.opts.admin
-      ? buildAgentAdminMcp(this.opts.admin.callerAgentId, this.opts.admin.deps)
-      : null;
-    const monitorServer = this.opts.monitor
-      ? buildAgentMonitorMcp(this.opts.monitor.callerAgentId, this.opts.monitor.deps)
-      : null;
-    const mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>> = {};
-    if (memoryServer) mcpServers[MEMORY_MCP_NAME] = memoryServer;
-    if (commsServer) mcpServers[COMMS_MCP_NAME] = commsServer;
-    if (adminServer) mcpServers[ADMIN_MCP_NAME] = adminServer;
-    if (monitorServer) mcpServers[MONITOR_MCP_NAME] = monitorServer;
-    const haveMcpServers = Object.keys(mcpServers).length > 0;
-
-    // The SDK's `tools` option allowlists BUILT-IN tools only (Read, Bash, ...).
-    // For MCP tools we have to add their fully-qualified names to allowedTools.
-    // Otherwise the SDK strips them out of the model's toolbelt even though
-    // the server is registered. Same gotcha that bit me on the OAuth work.
-    const allowedTools: string[] = [];
-    if (memoryServer) allowedTools.push(...MEMORY_TOOL_NAMES);
-    if (commsServer) allowedTools.push(...COMMS_TOOL_NAMES);
-    if (adminServer) allowedTools.push(...ADMIN_TOOL_NAMES);
-    if (monitorServer) allowedTools.push(...MONITOR_TOOL_NAMES);
-    const haveAllowedTools = allowedTools.length > 0;
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts);
+    const { mcpServers, allowedTools } = buildMcpServers(this.opts);
 
     for await (const event of query({
       prompt: userPrompt,
@@ -155,29 +92,119 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         model,
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
-        ...(haveMcpServers ? { mcpServers } : {}),
-        ...(haveAllowedTools ? { allowedTools } : {}),
+        ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+        ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(canUseTool ? { canUseTool } : {}),
       },
     })) {
-      if (event.type !== 'result') continue;
-      if (event.subtype === 'success') {
-        return {
-          content: event.result,
-          model,
-          usage: {
-            // The SDK types usage as unknown; narrow at the boundary so the
-            // returned shape is the documented number-or-undefined pair.
-            input_tokens: (event.usage as { input_tokens?: number } | undefined)?.input_tokens,
-            output_tokens: (event.usage as { output_tokens?: number } | undefined)?.output_tokens,
-          },
-          raw: event,
-        };
-      }
-      const errs = 'errors' in event ? event.errors.join('; ') : 'unknown';
-      throw new Error(`Claude SDK error: ${event.subtype} (${errs})`);
+      const result = extractResult(event, model);
+      if (result) return result;
     }
 
     throw new Error('Claude SDK stream ended without a result message');
   }
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+/** Split a flat message list into the SDK's expected (systemPrompt, userPrompt)
+ *  shape. System turns concatenate into systemPrompt; everything else becomes
+ *  a single user-prompt blob with role-prefixed lines. */
+function formatMessages(messages: readonly ChatMessage[]): { systemMsg: string; userPrompt: string } {
+  const systemMsg = messages
+    .filter(m => m.role === 'system')
+    .map(m => m.content)
+    .join('\n\n');
+  const userPrompt = messages
+    .filter(m => m.role !== 'system')
+    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n\n');
+  return { systemMsg, userPrompt };
+}
+
+/** Names of in-process MCP tools that are pre-authorized by their per-agent
+ *  servers. Memoised at module load — these never change at runtime. */
+const IN_PROCESS_MCP_TOOLS = new Set<string>([
+  ...MEMORY_TOOL_NAMES,
+  ...COMMS_TOOL_NAMES,
+  ...ADMIN_TOOL_NAMES,
+  ...MONITOR_TOOL_NAMES,
+]);
+
+/**
+ * Build the SDK's `canUseTool` callback. Returns undefined when no permission
+ * gate is needed (no workspaces AND no in-process MCP servers wired). The
+ * callback allows in-process MCP tools unconditionally (their handlers do
+ * their own allowlist + loop-guard checks) and routes everything else through
+ * checkToolUse which enforces workspace permissions on built-in FS tools.
+ */
+function buildCanUseToolCallback(
+  workspaces: Workspace[],
+  opts: ClaudeDirectOpts,
+): CanUseTool | undefined {
+  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor) {
+    return undefined;
+  }
+  return async (toolName, input) => {
+    if (IN_PROCESS_MCP_TOOLS.has(toolName)) {
+      return { behavior: 'allow' as const, updatedInput: input };
+    }
+    const result = checkToolUse(toolName, input, workspaces);
+    if (result.ok) return { behavior: 'allow' as const, updatedInput: input };
+    logger.warn('tool.denied', { tool: toolName, reason: result.reason });
+    return { behavior: 'deny' as const, message: result.reason };
+  };
+}
+
+/**
+ * Build the SDK's mcpServers map + the matching allowedTools list. The SDK's
+ * `tools` option allowlists BUILT-IN tools only (Read, Bash, ...); MCP tools
+ * have to be named in `allowedTools` by their fully-qualified `mcp__*__*`
+ * name or the SDK strips them from the model's toolbelt even when the server
+ * is registered.
+ */
+function buildMcpServers(opts: ClaudeDirectOpts): {
+  mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>>;
+  allowedTools: string[];
+} {
+  const mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>> = {};
+  const allowedTools: string[] = [];
+  if (opts.memory) {
+    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store);
+    allowedTools.push(...MEMORY_TOOL_NAMES);
+  }
+  if (opts.comms) {
+    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps);
+    allowedTools.push(...COMMS_TOOL_NAMES);
+  }
+  if (opts.admin) {
+    mcpServers[ADMIN_MCP_NAME] = buildAgentAdminMcp(opts.admin.callerAgentId, opts.admin.deps);
+    allowedTools.push(...ADMIN_TOOL_NAMES);
+  }
+  if (opts.monitor) {
+    mcpServers[MONITOR_MCP_NAME] = buildAgentMonitorMcp(opts.monitor.callerAgentId, opts.monitor.deps);
+    allowedTools.push(...MONITOR_TOOL_NAMES);
+  }
+  return { mcpServers, allowedTools };
+}
+
+/**
+ * Pull a ChatResponse out of an SDK event, or null when the event isn't a
+ * terminal result. Throws on result events with an error subtype so the
+ * caller's loop surfaces the failure instead of silently waiting on more
+ * events that will never come.
+ */
+function extractResult(event: { type: string; subtype?: string; result?: string; usage?: unknown; errors?: string[] }, model: string): ChatResponse | null {
+  if (event.type !== 'result') return null;
+  if (event.subtype === 'success') {
+    const usage = event.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+    return {
+      content: event.result ?? '',
+      model,
+      usage: { input_tokens: usage?.input_tokens, output_tokens: usage?.output_tokens },
+      raw: event,
+    };
+  }
+  const errs = event.errors ? event.errors.join('; ') : 'unknown';
+  throw new Error(`Claude SDK error: ${event.subtype ?? 'unknown'} (${errs})`);
 }

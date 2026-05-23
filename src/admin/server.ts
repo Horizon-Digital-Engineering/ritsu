@@ -151,6 +151,81 @@ function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | nu
 }
 
 /**
+ * Resolve the workspace's target path from one of the two accepted body
+ * shapes (legacy {path}, or new picker {root, subpath}). Returns the
+ * normalized absolute path, or null after responding 400 — rejects any
+ * subpath that would traverse outside the chosen root.
+ */
+function resolveWorkspaceTarget(
+  body: { root?: string; subpath?: string; path?: string },
+  res: Response,
+): string | null {
+  if (body.root) {
+    const sub = (body.subpath ?? '').replace(/^\/+/, '');
+    const combined = normalizePath(resolvePath(body.root, sub));
+    if (!combined.startsWith(normalizePath(body.root))) {
+      res.status(400).json({ error: 'subpath traversal outside root not allowed' });
+      return null;
+    }
+    return combined;
+  }
+  if (body.path) return normalizePath(resolvePath(body.path));
+  res.status(400).json({ error: 'path (or root + subpath) required' });
+  return null;
+}
+
+/**
+ * Check that `target` sits under one of the systemd unit's
+ * ReadWritePaths. Returns true on pass, or false after responding 400.
+ * If we can't read the sandbox list (systemctl missing, etc.) we let
+ * the upsert through — the systemd sandbox will enforce at runtime.
+ */
+function checkWorkspaceUnderSandbox(target: string, res: Response): boolean {
+  const rootsRes = spawnSync('systemctl', ['show', 'ritsu.service', '-p', 'ReadWritePaths', '--value'], {
+    encoding: 'utf8',
+  });
+  const allowedRoots = rootsRes.status === 0
+    ? rootsRes.stdout.trim().split(/\s+/).filter(Boolean)
+    : [];
+  if (allowedRoots.length === 0) return true;
+  const inside = allowedRoots.some(r => target === r || target.startsWith(stripTrailingSlashes(r) + '/'));
+  if (!inside) {
+    res.status(400).json({
+      error: 'path is outside the sandbox',
+      hint: `must be under one of: ${allowedRoots.join(', ')} — add a new root with 'sudo ritsu path add'`,
+    });
+    return false;
+  }
+  return true;
+}
+
+/** Filter the request's permissions down to known values, defaulting to
+ *  `['read']` when omitted. Returns null after responding 400 if the
+ *  resulting set is empty. */
+function parseWorkspacePerms(perms: ReadonlyArray<Permission> | undefined, res: Response): Permission[] | null {
+  const cleanPerms = (perms ?? ['read']).filter(p => PERMISSION_VALUES.includes(p));
+  if (cleanPerms.length === 0) {
+    res.status(400).json({ error: `permissions must be a non-empty subset of ${PERMISSION_VALUES.join(', ')}` });
+    return null;
+  }
+  return cleanPerms;
+}
+
+/** Best-effort mkdir -p of `target`. Returns true on success / already-exists,
+ *  or false after responding 400 with the OS error — silently storing an
+ *  unusable workspace row would be worse than failing loud. */
+function ensureWorkspaceDirExists(target: string, res: Response): boolean {
+  if (existsSync(target)) return true;
+  try {
+    mkdirSync(target, { recursive: true });
+    return true;
+  } catch (err) {
+    res.status(400).json({ error: `cannot create ${target}`, detail: (err as Error).message });
+    return false;
+  }
+}
+
+/**
  * Standalone admin app. Bound to ADMIN_PORT (localhost-only by default).
  * No auth on the admin surface itself — operator-tier UI, not exposed.
  *
@@ -771,75 +846,16 @@ export function createAdminApp(deps: AdminDeps) {
 
   app.post('/admin/agents/:id/workspaces', async (req: Request, res: Response) => {
     const agent = await defStore.read(param(req.params.id));
-    if (!agent) {
-      res.status(404).json({ error: 'agent not found' });
-      return;
-    }
-    // Two accepted shapes (back-compat + new picker UX):
-    //   { path: "/mnt/agent-sync/projects/foo", permissions: [...] }    legacy
-    //   { root: "/mnt/agent-sync", subpath: "projects/foo", ... }       new
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return; }
     const wsBody = parseBody(req, res, WorkspaceCreateBody);
     if (!wsBody) return;
-    const root    = wsBody.root;
-    const subpath = wsBody.subpath ?? '';
-    const flat    = wsBody.path;
-    const perms   = wsBody.permissions;
 
-    let target: string;
-    if (root) {
-      // Normalize the subpath; reject any traversal that would escape root.
-      const sub = subpath.replace(/^\/+/, '');
-      const combined = normalizePath(resolvePath(root, sub));
-      if (!combined.startsWith(normalizePath(root))) {
-        res.status(400).json({ error: 'subpath traversal outside root not allowed' });
-        return;
-      }
-      target = combined;
-    } else if (flat) {
-      target = normalizePath(resolvePath(flat));
-    } else {
-      res.status(400).json({ error: 'path (or root + subpath) required' });
-      return;
-    }
-
-    // Validate the resolved path sits under one of the sandbox-allowed roots.
-    const rootsRes = spawnSync('systemctl', ['show', 'ritsu.service', '-p', 'ReadWritePaths', '--value'], {
-      encoding: 'utf8',
-    });
-    const allowedRoots = rootsRes.status === 0
-      ? rootsRes.stdout.trim().split(/\s+/).filter(Boolean)
-      : [];
-    if (allowedRoots.length > 0) {
-      const inside = allowedRoots.some(r => target === r || target.startsWith(stripTrailingSlashes(r) + '/'));
-      if (!inside) {
-        res.status(400).json({
-          error: 'path is outside the sandbox',
-          hint: `must be under one of: ${allowedRoots.join(', ')} — add a new root with 'sudo ritsu path add'`,
-        });
-        return;
-      }
-    }
-
-    const cleanPerms = (perms ?? ['read']).filter(p => PERMISSION_VALUES.includes(p)) as Permission[];
-    if (cleanPerms.length === 0) {
-      res.status(400).json({ error: `permissions must be a non-empty subset of ${PERMISSION_VALUES.join(', ')}` });
-      return;
-    }
-
-    // mkdir -p the target if it doesn't exist. Best-effort: if the FS doesn't
-    // let us create it (e.g. wrong group on the underlying mount), surface
-    // the OS error rather than silently storing an unusable workspace row.
-    if (!existsSync(target)) {
-      try {
-        mkdirSync(target, { recursive: true });
-      } catch (err) {
-        res.status(400).json({
-          error: `cannot create ${target}`,
-          detail: (err as Error).message,
-        });
-        return;
-      }
-    }
+    const target = resolveWorkspaceTarget(wsBody, res);
+    if (target === null) return;
+    if (!checkWorkspaceUnderSandbox(target, res)) return;
+    const cleanPerms = parseWorkspacePerms(wsBody.permissions, res);
+    if (cleanPerms === null) return;
+    if (!ensureWorkspaceDirExists(target, res)) return;
 
     try {
       const ws = workspaces.upsert({ agent_id: agent.id, path: target, permissions: cleanPerms });

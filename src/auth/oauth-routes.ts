@@ -240,77 +240,80 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       res.status(400).json({ error: 'invalid_request', error_description: 'grant_type required' });
       return;
     }
-    const grantType = dispatch.data.grant_type;
-
-    if (grantType === 'authorization_code') {
-      const parsed = TokenBodyAuthCode.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_request', error_description: parsed.error.message });
-        return;
-      }
-      const client = oauth.getClient(parsed.data.client_id);
-      if (!client) {
-        res.status(400).json({ error: 'invalid_client' });
-        return;
-      }
-      const info = oauth.consumeAuthzCode({
-        code: parsed.data.code,
-        client_id: parsed.data.client_id,
-        redirect_uri: parsed.data.redirect_uri,
-        code_verifier: parsed.data.code_verifier,
-      });
-      if (!info) {
-        res.status(400).json({ error: 'invalid_grant', error_description: 'code invalid, expired, used, or PKCE mismatch' });
-        return;
-      }
-      // RFC 8707: if client sent `resource` on token request, it MUST match
-      // the resource bound to the authz code.
-      if (parsed.data.resource && stripTrailingSlashes(parsed.data.resource) !== info.resource) {
-        res.status(400).json({ error: 'invalid_target', error_description: 'resource mismatch with authorization request' });
-        return;
-      }
-      const tok = oauth.mintTokens({ client_id: info.client_id, scope: info.scope, resource: info.resource });
-      logger.info('oauth.token.issued', { client_id: info.client_id, scope: info.scope, resource: info.resource });
-      res.json({
-        access_token: tok.access_token,
-        token_type: 'Bearer',
-        expires_in: tok.expires_in,
-        refresh_token: tok.refresh_token,
-        scope: tok.scope,
-      });
-      return;
+    switch (dispatch.data.grant_type) {
+      case 'authorization_code': return handleAuthorizationCodeGrant(req, res, oauth);
+      case 'refresh_token':       return handleRefreshTokenGrant(req, res, oauth);
+      default:                    res.status(400).json({ error: 'unsupported_grant_type' });
     }
+  });
+}
 
-    if (grantType === 'refresh_token') {
-      const parsed = TokenBodyRefresh.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_request', error_description: parsed.error.message });
-        return;
-      }
-      const client = oauth.getClient(parsed.data.client_id);
-      if (!client) {
-        res.status(400).json({ error: 'invalid_client' });
-        return;
-      }
-      const rotated = oauth.rotateRefresh({
-        refresh_token: parsed.data.refresh_token,
-        client_id: parsed.data.client_id,
-      });
-      if (!rotated) {
-        res.status(400).json({ error: 'invalid_grant' });
-        return;
-      }
-      res.json({
-        access_token: rotated.access_token,
-        token_type: 'Bearer',
-        expires_in: rotated.expires_in,
-        refresh_token: rotated.refresh_token,
-        scope: rotated.scope,
-      });
-      return;
-    }
+/** RFC 6749 §4.1.3 — authorization_code grant. Validates the body shape,
+ *  resolves the client, consumes the authz code (one-shot), enforces the
+ *  RFC 8707 audience binding, and mints the access + refresh pair. */
+function handleAuthorizationCodeGrant(req: Request, res: Response, oauth: OAuthStore): void {
+  const parsed = TokenBodyAuthCode.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_request', error_description: parsed.error.message });
+    return;
+  }
+  if (!oauth.getClient(parsed.data.client_id)) {
+    res.status(400).json({ error: 'invalid_client' });
+    return;
+  }
+  const info = oauth.consumeAuthzCode({
+    code: parsed.data.code,
+    client_id: parsed.data.client_id,
+    redirect_uri: parsed.data.redirect_uri,
+    code_verifier: parsed.data.code_verifier,
+  });
+  if (!info) {
+    res.status(400).json({ error: 'invalid_grant', error_description: 'code invalid, expired, used, or PKCE mismatch' });
+    return;
+  }
+  // RFC 8707: if client sent `resource` on the token request, it MUST match
+  // the resource bound to the authz code.
+  if (parsed.data.resource && stripTrailingSlashes(parsed.data.resource) !== info.resource) {
+    res.status(400).json({ error: 'invalid_target', error_description: 'resource mismatch with authorization request' });
+    return;
+  }
+  const tok = oauth.mintTokens({ client_id: info.client_id, scope: info.scope, resource: info.resource });
+  logger.info('oauth.token.issued', { client_id: info.client_id, scope: info.scope, resource: info.resource });
+  res.json({
+    access_token: tok.access_token,
+    token_type: 'Bearer',
+    expires_in: tok.expires_in,
+    refresh_token: tok.refresh_token,
+    scope: tok.scope,
+  });
+}
 
-    res.status(400).json({ error: 'unsupported_grant_type' });
+/** RFC 6749 §6 — refresh_token grant. Validates the body, resolves the
+ *  client, rotates the refresh token (single-use, returns a new pair). */
+function handleRefreshTokenGrant(req: Request, res: Response, oauth: OAuthStore): void {
+  const parsed = TokenBodyRefresh.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'invalid_request', error_description: parsed.error.message });
+    return;
+  }
+  if (!oauth.getClient(parsed.data.client_id)) {
+    res.status(400).json({ error: 'invalid_client' });
+    return;
+  }
+  const rotated = oauth.rotateRefresh({
+    refresh_token: parsed.data.refresh_token,
+    client_id: parsed.data.client_id,
+  });
+  if (!rotated) {
+    res.status(400).json({ error: 'invalid_grant' });
+    return;
+  }
+  res.json({
+    access_token: rotated.access_token,
+    token_type: 'Bearer',
+    expires_in: rotated.expires_in,
+    refresh_token: rotated.refresh_token,
+    scope: rotated.scope,
   });
 }
 
