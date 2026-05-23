@@ -12,6 +12,19 @@
 
 Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
 
+> [!IMPORTANT]
+> **ritsu is built for your lab, not the open internet.** It's designed
+> to live on a box you control, behind a private network boundary
+> (Tailscale, WireGuard, your home LAN). The admin UI has no auth on
+> the local-bind port; the tailnet/VPN ACL *is* the outer auth
+> boundary. Exposing the admin port directly to the public internet is
+> a misconfiguration — the threat model assumes you don't.
+>
+> If you want a remote-but-still-authenticated path, front the admin
+> port with Tailscale Funnel + ritsu's bearer token, or put a reverse
+> proxy with auth in front of it. Don't open `127.0.0.1:7334` to `0.0.0.0`
+> without thinking about it.
+
 ---
 
 ## Why ritsu

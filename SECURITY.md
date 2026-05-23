@@ -1,6 +1,8 @@
 # Security
 
-ritsu is designed to be self-hosted on a tailnet or similar trusted network. The defaults are restrictive (auth required, no public exposure, encryption at rest for sensitive config). Operators who choose to expose ritsu more broadly should read the [Threat Model](./docs/threat-model.md) before doing so.
+ritsu is a **lab tool**, not an internet-facing service. It's meant to run on a box you control, behind a private network boundary you trust (Tailscale, WireGuard, your home LAN). The defaults reflect that posture: bound to `127.0.0.1`, admin UI gated only by network reachability + bearer token, no public exposure unless you go out of your way to enable it.
+
+If you decide to put ritsu somewhere reachable from the open internet, read the [Threat Model](./docs/threat-model.md) first and front it with auth at the edge (Tailscale Funnel + ACL, Cloudflare Tunnel + Access, reverse proxy with mTLS, etc.). The defaults are not enough for that deployment shape.
 
 ## What ritsu defends against
 

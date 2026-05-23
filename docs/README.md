@@ -26,9 +26,12 @@ Everything that's longer than a code comment but doesn't fit in `src/`.
   forward-looking design memo on the `claude-sdk` vs `ritsu-agent`
   runtime split + the unified Tools tab.
 
-## Production
+## Lab deployment
 
-- [**../DEPLOY.md**](../DEPLOY.md) — full server deployment guide
+ritsu is a lab tool — see the [README warning](../README.md) for the
+network-boundary assumption.
+
+- [**../DEPLOY.md**](../DEPLOY.md) — full server install guide
   (systemd, install scripts, Tailscale Serve fronting).
 
 - [**../SECURITY.md**](../SECURITY.md) — one-page security posture +

@@ -4,8 +4,9 @@ Zero to a working agent in five minutes, on your laptop. After this you'll
 have ritsu running, an MCP token minted, a custom agent created, and a
 real conversation with it from Claude Code (or curl).
 
-For a real production deployment, see [`DEPLOY.md`](../DEPLOY.md) instead —
-this guide is the dev / evaluation flow.
+For a real lab deployment (systemd, persistent install, Tailscale Serve
+fronting, the `ritsu` operator CLI), see [`DEPLOY.md`](../DEPLOY.md). This
+guide is the dev / evaluation flow.
 
 ## 1. Boot the server
 

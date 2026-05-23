@@ -1,4 +1,16 @@
-# Deploying ritsu
+# Deploying ritsu to your lab
+
+ritsu is a **lab tool**, not an internet-facing service. The intended
+target is a Linux box on a network you control — a home server, an
+office NAS, a Tailscale-anchored VM, a Raspberry Pi on your LAN. The
+admin UI has no built-in auth on its local-bind port; the network
+boundary (tailnet ACL, VPN, LAN) is the outer auth boundary. **Don't
+bind the admin port to a public-internet address.**
+
+If you want over-internet access, front it with Tailscale Funnel,
+Cloudflare Tunnel + Access, or a reverse proxy that enforces auth
+before traffic hits ritsu's admin port. Real production deployment on
+a public address is out of scope for the V1 default config.
 
 Target: a Linux host with Node 20+ and systemd. ritsu runs as a dedicated `ritsu` user, listens on two ports (one for MCP, one for admin), writes everything to a single SQLite file.
 
@@ -68,7 +80,7 @@ Skip this only if you've set `ANTHROPIC_API_KEY` in `/etc/ritsu/env` instead (in
 |---|---|---|
 | `PORT` | 7333 | MCP surface |
 | `MCP_HOST` | 127.0.0.1 | Bind. Set to a private interface (Tailscale, WireGuard, internal LAN) for remote clients. |
-| `MCP_REQUIRE_AUTH` | auto | Set to `on` in prod — fail closed even if the token table is empty |
+| `MCP_REQUIRE_AUTH` | auto | Set to `on` once you've minted at least one token — fail closed even if the token table is empty |
 | `ADMIN_PORT` | 7334 | Admin UI + ops endpoints |
 | `ADMIN_HOST` | 127.0.0.1 | **Do not expose** — admin has no auth in V1. SSH-tunnel to manage. |
 | `DB_PATH` | ./data/ritsu.db | All state in one file |
