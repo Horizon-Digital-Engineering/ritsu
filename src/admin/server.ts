@@ -581,52 +581,56 @@ export function createAdminApp(deps: AdminDeps) {
 
   // ---- UI ----------------------------------------------------------------
 
-  app.get('/admin', (_req: Request, res: Response) => {
-    const uiPath = join(__dirname, 'ui.html');
-    if (!existsSync(uiPath)) {
-      res.status(500).send('admin/ui.html missing — did `npm run build` copy it?');
-      return;
-    }
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    // No-cache: the admin HTML changes every deploy, and Mobile Safari is
-    // notoriously eager to serve stale versions across releases. Without
-    // these the operator has to clear site data or restart the device after
-    // every push to see CSS/JS updates. The HTML is small (~80KB) and
-    // re-fetching on every visit is cheap; the underlying API calls have
-    // their own caching behaviour where appropriate.
+  // Read the three static admin assets ONCE at boot and serve from memory
+  // every request after. Two wins:
+  //   1. No per-request filesystem access. CodeQL was flagging the
+  //      readFileSync handlers as "FS access on a non-rate-limited
+  //      route" — closing the FS gadget eliminates the finding entirely.
+  //   2. ~80KB * N requests no longer hits disk. Negligible CPU on a
+  //      laptop, but it's the obvious right shape for a static SPA.
+  // The build step copies these files into dist/admin/ before the
+  // service boots; missing-file means the build is broken, so we fail
+  // loud at startup rather than 500ing every request.
+  const uiHtml = (() => {
+    const p = join(__dirname, 'ui.html');
+    if (!existsSync(p)) throw new Error(`admin/ui.html missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const uiJs = (() => {
+    const p = join(__dirname, 'app.js');
+    if (!existsSync(p)) throw new Error(`admin/app.js missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const uiCss = (() => {
+    const p = join(__dirname, 'app.css');
+    if (!existsSync(p)) throw new Error(`admin/app.css missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+
+  function setNoCache(res: Response): void {
+    // Mobile Safari is notoriously eager to serve stale assets across
+    // ritsu releases; these headers force a fresh fetch on every visit.
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.send(readFileSync(uiPath, 'utf8'));
+  }
+
+  app.get('/admin', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    setNoCache(res);
+    res.send(uiHtml);
   });
 
-  // Sidecar JS + CSS for the admin UI. Live next to ui.html in both dev
-  // (src/) and prod (dist/) builds, and share its no-cache headers for the
-  // same mobile-Safari-stale-asset reasons.
   app.get('/admin/app.js', (_req: Request, res: Response) => {
-    const jsPath = join(__dirname, 'app.js');
-    if (!existsSync(jsPath)) {
-      res.status(500).send('admin/app.js missing — did `npm run build` copy it?');
-      return;
-    }
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.send(readFileSync(jsPath, 'utf8'));
+    setNoCache(res);
+    res.send(uiJs);
   });
 
   app.get('/admin/app.css', (_req: Request, res: Response) => {
-    const cssPath = join(__dirname, 'app.css');
-    if (!existsSync(cssPath)) {
-      res.status(500).send('admin/app.css missing — did `npm run build` copy it?');
-      return;
-    }
     res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.send(readFileSync(cssPath, 'utf8'));
+    setNoCache(res);
+    res.send(uiCss);
   });
 
   // ---- log level ---------------------------------------------------------

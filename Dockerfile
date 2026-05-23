@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- builder ----------------------------------------------------------------
-FROM node:22-bookworm-slim AS builder
+FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS builder
 WORKDIR /app
 
 # No native deps: ritsu uses node:sqlite (built-in) and zero other C add-ons,
@@ -18,7 +18,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # ---- runtime ----------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

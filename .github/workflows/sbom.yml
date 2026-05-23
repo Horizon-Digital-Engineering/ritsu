@@ -4,15 +4,20 @@ on:
     types: [published]
   workflow_dispatch:
 
+# Default-deny at the top level so the workflow can't accidentally use
+# a write-scoped token outside the one job that needs it. Scorecard's
+# Token-Permissions check requires this even when there's only one job.
 permissions:
-  contents: write       # attach SBOM to the release
-  id-token: write       # OIDC token for the SLSA attestation
-  attestations: write   # write the attestation to the repo
+  contents: read
 
 jobs:
   sbom:
     name: Generate + attach SBOM
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # attach SBOM to the release
+      id-token: write       # OIDC token for the SLSA attestation
+      attestations: write   # write the attestation to the repo
     env:
       # Hoisted out of `run:` interpolation per semgrep's
       # github-actions.security.run-shell-injection rule: github.* context

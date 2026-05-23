@@ -190,6 +190,40 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
     });
   });
 
+  // ---- Rate limit on the auth + token endpoints ------------------------
+  //
+  // /oauth/authorize and /oauth/token both run authorization-style checks
+  // on every call (admin-token verify, PKCE compare, refresh-token lookup).
+  // CodeQL's js/missing-rate-limiting flags handlers that do auth without
+  // a visible per-handler limiter. The /admin/api rate limiter doesn't
+  // cover these (different mount). A separate per-IP token bucket lives
+  // here. 60/min/IP is plenty for legitimate setups (one redirect dance
+  // = 1 GET + 1 POST + 1 token exchange = 3 calls per login) while
+  // making credential-stuffing the admin_token expensive.
+
+  const OAUTH_WINDOW_MS = 60 * 1000;
+  const OAUTH_MAX_PER_IP = Number(process.env.RITSU_OAUTH_MAX_PER_MIN ?? 60);
+  const oauthBuckets = new Map<string, { count: number; resetAt: number }>();
+  const oauthRateLimit = (req: Request, res: Response, next: () => void): void => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const now = Date.now();
+    const bucket = oauthBuckets.get(ip);
+    if (!bucket || bucket.resetAt < now) {
+      oauthBuckets.set(ip, { count: 1, resetAt: now + OAUTH_WINDOW_MS });
+      next();
+      return;
+    }
+    bucket.count++;
+    if (bucket.count > OAUTH_MAX_PER_IP) {
+      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+      res.status(429).json({ error: 'rate limit exceeded', retry_after_s: Math.ceil((bucket.resetAt - now) / 1000) });
+      return;
+    }
+    next();
+  };
+  app.use('/oauth/authorize', oauthRateLimit);
+  app.use('/oauth/token',     oauthRateLimit);
+
   // ---- Authorization endpoint -----------------------------------------
   //
   // CSRF + state binding: GET creates a server-side authorize-request row

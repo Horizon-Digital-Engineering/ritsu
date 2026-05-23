@@ -6,6 +6,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Default token to read-only; the SonarQube job needs nothing else.
+permissions:
+  contents: read
+
 jobs:
   sonarqube:
     name: SonarQube
