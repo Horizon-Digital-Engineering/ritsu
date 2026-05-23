@@ -1,10 +1,10 @@
 /**
  * `ritsu admin-token` — manage the bootstrap admin token specifically.
  *
- * This token lives at /opt/ritsu/data/.admin-token (mode 0600 owned by
- * ritsu) and is what configure.sh prints loudly on first install. It's
- * also what every other `ritsu` subcommand reads by default to auth
- * against the admin API.
+ * This token lives at the path configured by RITSU_ADMIN_TOKEN_FILE
+ * (default /opt/ritsu/data/.admin-token, mode 0600 owned by ritsu) and is
+ * what configure.sh prints loudly on first install. It's also what every
+ * other `ritsu` subcommand reads by default to auth against the admin API.
  *
  * Subcommands:
  *   show              print it (requires confirmation unless --yes)
@@ -18,7 +18,8 @@ import { readFileSync, writeFileSync, existsSync, chmodSync, chownSync } from 'n
 import { spawnSync } from '../../util/safe-spawn.js';
 import { createInterface } from 'node:readline/promises';
 import type { Command, CommandContext } from '../registry.js';
-import { resolveAdminToken, resolveBaseUrl, apiCall, DEFAULT_ADMIN_TOKEN_FILE } from '../api.js';
+import { resolveAdminToken, resolveBaseUrl, apiCall } from '../api.js';
+import { loadConfig } from '../../config.js';
 
 interface TokenRow {
   id: number;
@@ -47,8 +48,9 @@ async function confirm(prompt: string): Promise<boolean> {
 }
 
 async function cmdShow(ctx: CommandContext): Promise<number> {
-  if (!existsSync(DEFAULT_ADMIN_TOKEN_FILE)) {
-    console.error(`admin token file missing: ${DEFAULT_ADMIN_TOKEN_FILE}`);
+  const tokenFile = loadConfig().adminTokenFile;
+  if (!existsSync(tokenFile)) {
+    console.error(`admin token file missing: ${tokenFile}`);
     console.error(`run 'ritsu admin-token rotate' to mint one`);
     return 1;
   }
@@ -56,8 +58,9 @@ async function cmdShow(ctx: CommandContext): Promise<number> {
     const ok = await confirm('Print the admin token to the terminal? (it will appear in scrollback)');
     if (!ok) { console.error('aborted'); return 1; }
   }
-  process.stdout.write(readFileSync(DEFAULT_ADMIN_TOKEN_FILE, 'utf8'));
-  if (!readFileSync(DEFAULT_ADMIN_TOKEN_FILE, 'utf8').endsWith('\n')) console.log();
+  const contents = readFileSync(tokenFile, 'utf8');
+  process.stdout.write(contents);
+  if (!contents.endsWith('\n')) console.log();
   return 0;
 }
 
@@ -93,9 +96,10 @@ async function cmdRotate(ctx: CommandContext): Promise<number> {
   });
   const oldRows = list.tokens.filter(t => !t.revoked_at && t.name === 'bootstrap' && t.id !== minted.id);
 
+  const tokenFile = loadConfig().adminTokenFile;
   // Write new plaintext to the on-disk file BEFORE revoking the old one — if
   // anything below fails we still have a valid token on disk.
-  writeAdminTokenFile(minted.token);
+  writeAdminTokenFile(tokenFile, minted.token);
 
   for (const row of oldRows) {
     try {
@@ -111,16 +115,16 @@ async function cmdRotate(ctx: CommandContext): Promise<number> {
   console.log('');
   console.log(`    ${minted.token}`);
   console.log('');
-  console.log(`  file: ${DEFAULT_ADMIN_TOKEN_FILE}`);
+  console.log(`  file: ${tokenFile}`);
   console.log(`  prefix: ${minted.prefix}`);
   console.log(`  ${oldRows.length} previous bootstrap admin token(s) revoked`);
   console.log('');
   return 0;
 }
 
-function writeAdminTokenFile(token: string): void {
-  writeFileSync(DEFAULT_ADMIN_TOKEN_FILE, token + '\n', { mode: 0o600 });
-  chmodSync(DEFAULT_ADMIN_TOKEN_FILE, 0o600);
+function writeAdminTokenFile(path: string, token: string): void {
+  writeFileSync(path, token + '\n', { mode: 0o600 });
+  chmodSync(path, 0o600);
   // Restore ritsu user ownership. Without this, the file ends up owned by
   // root (the user running the rotate CLI) and ritsu can't read it on next
   // bootstrap.
@@ -130,7 +134,7 @@ function writeAdminTokenFile(token: string): void {
     if (ritsuStat.status === 0 && ritsuGid.status === 0) {
       const uid = Number.parseInt(ritsuStat.stdout.trim(), 10);
       const gid = Number.parseInt(ritsuGid.stdout.trim(), 10);
-      if (Number.isFinite(uid) && Number.isFinite(gid)) chownSync(DEFAULT_ADMIN_TOKEN_FILE, uid, gid);
+      if (Number.isFinite(uid) && Number.isFinite(gid)) chownSync(path, uid, gid);
     }
   } catch { /* best-effort */ }
 }

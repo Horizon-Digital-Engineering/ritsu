@@ -1,7 +1,6 @@
-import { loadDotenv } from './util/dotenv-lite.js';
-loadDotenv();
+import { hydrateEnv, loadConfig, assertAdminTokenFileWritable, type RitsuConfig } from './config.js';
+hydrateEnv();
 import { writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import pkg from '../package.json' with { type: 'json' };
 import { openDatabase } from './db.js';
 import { SqliteMemoryStore } from './memory-store.js';
@@ -12,59 +11,54 @@ import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
 import { OAuthStore } from './auth/oauth-store.js';
 import { AgentHost } from './agent-host.js';
-import { createMcpServer, parseAuthMode } from './mcp-server.js';
+import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { logger } from './util/log.js';
-import { stripTrailingSlashes } from './util/path-utils.js';
-
-const ADMIN_TOKEN_FILE = '/opt/ritsu/data/.admin-token';
 
 /**
  * If no admin-scoped token exists yet, mint one and write the plaintext to
- * ADMIN_TOKEN_FILE (mode 0600, owned by the running user). The operator
- * (configure.sh or by hand) reads this file once and treats it as a secret.
+ * the configured bootstrap file (mode 0600). The operator reads this file
+ * once (`ritsu admin-token show`) and treats it as a secret.
+ *
+ * Fail-closed: if the file write fails AFTER the mint, the token is
+ * revoked from the DB and the process exits non-zero. We never leave a
+ * token in the DB that has no readable on-disk copy.
  * Re-run safe: if admin tokens already exist, this is a no-op.
  */
-function bootstrapAdminToken(tokens: TokenStore): void {
+function bootstrapAdminToken(tokens: TokenStore, cfg: RitsuConfig): void {
   if (tokens.hasAnyActive('admin')) {
     logger.debug('admin.token.exists');
     return;
   }
   const minted = tokens.mint('bootstrap', 'admin');
   try {
-    writeFileSync(ADMIN_TOKEN_FILE, minted.token + '\n', { mode: 0o600 });
-    logger.warn('admin.token.bootstrapped', { path: ADMIN_TOKEN_FILE, prefix: minted.prefix });
+    writeFileSync(cfg.adminTokenFile, minted.token + '\n', { mode: 0o600 });
+    logger.warn('admin.token.bootstrapped', { path: cfg.adminTokenFile, prefix: minted.prefix });
   } catch (err) {
+    tokens.revoke(minted.id);
     logger.error('admin.token.write-failed', {
-      path: ADMIN_TOKEN_FILE,
+      path: cfg.adminTokenFile,
       err: (err as Error).message,
-      hint: 'admin token minted in DB but plaintext not saved — read it from journal once or revoke + restart to retry',
+      action: 'token revoked; refusing to start with an unreachable bootstrap token',
     });
+    process.exit(70); // EX_SOFTWARE — operator must fix RITSU_ADMIN_TOKEN_FILE
   }
 }
 
-const PORT             = Number(process.env.PORT ?? 7333);
-const MCP_HOST         = process.env.MCP_HOST ?? '127.0.0.1';
-const ADMIN_PORT       = Number(process.env.ADMIN_PORT ?? 7334);
-const ADMIN_HOST       = process.env.ADMIN_HOST ?? '127.0.0.1';
-const DB_PATH          = resolve(process.env.DB_PATH ?? './data/ritsu.db');
-const AUTH_MODE        = parseAuthMode(process.env.MCP_REQUIRE_AUTH);
-// Extra Host header values to accept on /mcp (for reverse proxies like
-// Tailscale Serve that forward a public hostname in Host).
-const ALLOWED_HOSTS    = (process.env.RITSU_ALLOWED_HOSTS ?? '')
-  .split(',').map(s => s.trim()).filter(Boolean);
-// Canonical public origin (no trailing slash). Required for OAuth.
-// e.g. https://your-host.your-tailnet.ts.net:9443
-const PUBLIC_URL       = stripTrailingSlashes(process.env.RITSU_PUBLIC_URL ?? '') || undefined;
+const cfg = loadConfig();
 // Single source of truth for the version: package.json. Anything that bumps
 // the npm version (npm version, manual edit) flows through to the running
 // service's /version endpoint, admin UI, and CLI `ritsu --version`.
-const VERSION          = pkg.version;
+const VERSION = pkg.version;
 
 async function main(): Promise<void> {
-  const db = openDatabase(DB_PATH);
+  // Refuse to start if the bootstrap path isn't a sane place for a 0600 file.
+  // Runs BEFORE openDatabase so a bad config doesn't even touch the DB.
+  assertAdminTokenFileWritable(cfg);
+
+  const db = openDatabase(cfg.dbPath);
   const memory = new SqliteMemoryStore(db);
   const conversations = new SqliteConversationStore(db);
   const defStore = new SqliteAgentDefinitionStore(db);
@@ -73,7 +67,7 @@ async function main(): Promise<void> {
   const oauth = new OAuthStore(db);
   const workspaces = new WorkspaceStore(db);
 
-  bootstrapAdminToken(tokens);
+  bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
 
   const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys);
@@ -93,10 +87,10 @@ async function main(): Promise<void> {
     defStore,
     tokens,
     oauth,
-    authMode: AUTH_MODE,
-    bindHost: MCP_HOST,
-    allowedHosts: ALLOWED_HOSTS,
-    publicUrl: PUBLIC_URL,
+    authMode: cfg.authMode,
+    bindHost: cfg.mcpHost,
+    allowedHosts: [...cfg.allowedHosts],
+    publicUrl: cfg.publicUrl,
     version: VERSION,
   });
 
@@ -112,23 +106,23 @@ async function main(): Promise<void> {
     channelRegistry: channels,
     oauth,
     version: VERSION,
-    authMode: AUTH_MODE,
-    mcpUrl: `http://${MCP_HOST === '0.0.0.0' ? '127.0.0.1' : MCP_HOST}:${PORT}`,
+    authMode: cfg.authMode,
+    mcpUrl: `http://${cfg.mcpHost === '0.0.0.0' ? '127.0.0.1' : cfg.mcpHost}:${cfg.mcpPort}`,
   });
 
-  const mcpServer = mcpApp.listen(PORT, MCP_HOST, () => {
+  const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, () => {
     logger.info('mcp.listening', {
-      host: MCP_HOST,
-      port: PORT,
-      auth_mode: AUTH_MODE,
+      host: cfg.mcpHost,
+      port: cfg.mcpPort,
+      auth_mode: cfg.authMode,
     });
   });
 
-  const adminServer = adminApp.listen(ADMIN_PORT, ADMIN_HOST, () => {
+  const adminServer = adminApp.listen(cfg.adminPort, cfg.adminHost, () => {
     logger.info('admin.listening', {
-      host: ADMIN_HOST,
-      port: ADMIN_PORT,
-      url: `http://${ADMIN_HOST}:${ADMIN_PORT}/admin`,
+      host: cfg.adminHost,
+      port: cfg.adminPort,
+      url: `http://${cfg.adminHost}:${cfg.adminPort}/admin`,
     });
   });
 
@@ -151,6 +145,13 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (err) {
+  // Config errors get the message printed plainly so the operator can
+  // read it without parsing a structured log line. Everything else takes
+  // the normal structured-log path with full stack.
+  if ((err as Error)?.name === 'ConfigError') {
+    process.stderr.write(`${(err as Error).message}\n`);
+    process.exit(78); // EX_CONFIG
+  }
   logger.error('fatal', { err: (err as Error).stack ?? String(err) });
   process.exit(1);
 }

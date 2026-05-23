@@ -6,31 +6,35 @@
  * Token resolution priority:
  *   1. --token <tok> flag
  *   2. RITSU_ADMIN_TOKEN env var
- *   3. /opt/ritsu/data/.admin-token on disk (default install location)
+ *   3. The file at config.adminTokenFile (default
+ *      /opt/ritsu/data/.admin-token; override with RITSU_ADMIN_TOKEN_FILE
+ *      to match the server's bootstrap path).
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { stripTrailingSlashes } from '../util/path-utils.js';
 
-export const DEFAULT_ADMIN_TOKEN_FILE = '/opt/ritsu/data/.admin-token';
-export const DEFAULT_BASE_URL = 'http://127.0.0.1:7334';
+import { loadConfig } from '../config.js';
+import { stripTrailingSlashes } from '../util/path-utils.js';
 
 export function resolveAdminToken(flagToken: string | boolean | undefined): string {
   if (typeof flagToken === 'string' && flagToken.trim()) return flagToken.trim();
   const env = process.env.RITSU_ADMIN_TOKEN;
   if (env?.trim()) return env.trim();
-  if (existsSync(DEFAULT_ADMIN_TOKEN_FILE)) {
+
+  const cfg = loadConfig();
+  const tokenFile = cfg.adminTokenFile;
+  if (existsSync(tokenFile)) {
     try {
-      return readFileSync(DEFAULT_ADMIN_TOKEN_FILE, 'utf8').trim();
+      return readFileSync(tokenFile, 'utf8').trim();
     } catch (err) {
       throw new Error(
-        `cannot read ${DEFAULT_ADMIN_TOKEN_FILE} (${(err as Error).message}). ` +
+        `cannot read ${tokenFile} (${(err as Error).message}). ` +
         `Re-run with sudo, pass --token, or set RITSU_ADMIN_TOKEN.`,
       );
     }
   }
   throw new Error(
-    'no admin token found. Provide --token, set RITSU_ADMIN_TOKEN, or run ' +
-    `from a host with ${DEFAULT_ADMIN_TOKEN_FILE} (requires sudo).`,
+    `no admin token found. Provide --token, set RITSU_ADMIN_TOKEN, or run ` +
+    `from a host with ${tokenFile} (set RITSU_ADMIN_TOKEN_FILE to override).`,
   );
 }
 
@@ -38,7 +42,11 @@ export function resolveBaseUrl(flagUrl: string | boolean | undefined): string {
   if (typeof flagUrl === 'string' && flagUrl.trim()) return stripTrailingSlashes(flagUrl);
   const env = process.env.RITSU_URL;
   if (env?.trim()) return stripTrailingSlashes(env);
-  return DEFAULT_BASE_URL;
+  const cfg = loadConfig();
+  // adminHost === 0.0.0.0 means "bind everywhere"; we can't connect to that
+  // literally, so fall back to loopback for the client.
+  const host = cfg.adminHost === '0.0.0.0' ? '127.0.0.1' : cfg.adminHost;
+  return `http://${host}:${cfg.adminPort}`;
 }
 
 export interface ApiRequest {

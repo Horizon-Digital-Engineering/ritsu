@@ -15,7 +15,8 @@ git clone https://github.com/Horizon-Digital-Engineering/ritsu.git
 cd ritsu
 npm install
 claude login         # one-time, drops your Max-plan creds at ~/.claude/.credentials.json
-cp .env.example .env
+cp .env.example .env # sets RITSU_ADMIN_TOKEN_FILE=./data/.admin-token for dev
+mkdir -p data        # bootstrap path; the server refuses to start if it's missing
 npm run dev          # MCP on :7333, admin on :7334
 ```
 
@@ -45,7 +46,9 @@ cat data/.admin-token
 
 (That file is auto-generated on first boot — mode 0600, contents are an
 `rat_*` bearer token. Paste it into the modal. The browser remembers it via
-`localStorage`.)
+`localStorage`. The path comes from `RITSU_ADMIN_TOKEN_FILE`; if the write
+fails the server revokes the token and exits non-zero, so an unreachable
+bootstrap token can never get stranded in the DB.)
 
 You should see the **Dashboard** tab with one tile: `hello-world`. That's
 the smoke-test agent the server seeds on first run.

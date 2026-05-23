@@ -118,6 +118,10 @@ ${PUBLIC_URL_LINE}
 
 DB_PATH=/opt/ritsu/data/ritsu.db
 LOG_LEVEL=info
+
+# Bootstrap admin token (mode 0600 owned by ritsu). The server writes this
+# path on first start; `ritsu admin-token show` reads it.
+RITSU_ADMIN_TOKEN_FILE=/opt/ritsu/data/.admin-token
 EOF
 note "ok"
 

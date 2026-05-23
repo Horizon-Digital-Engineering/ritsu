@@ -14,17 +14,18 @@
 Name: 律 (*ritsu*), from 自律 (*jiritsu*, "autonomous / self-governing").
 
 > [!IMPORTANT]
-> **ritsu is built for your lab, not the open internet.** It's designed
-> to live on a box you control, behind a private network boundary
-> (Tailscale, WireGuard, your home LAN). The admin UI has no auth on
-> the local-bind port; the tailnet/VPN ACL *is* the outer auth
-> boundary. Exposing the admin port directly to the public internet is
-> a misconfiguration — the threat model assumes you don't.
+> **ritsu is built for your lab, not the open internet.** Every `/admin`
+> route is gated by a bearer admin token (bootstrapped on first run,
+> mode 0600 on disk), and MCP is gated by `rt_*` bearer tokens or full
+> OAuth 2.1 + DCR + PKCE — the auth is real. But the threat model still
+> assumes you're behind a private network boundary (Tailscale, WireGuard,
+> your home LAN); the network ACL is defence-in-depth on top of the
+> bearer auth, not a substitute for it.
 >
-> If you want a remote-but-still-authenticated path, front the admin
-> port with Tailscale Funnel + ritsu's bearer token, or put a reverse
-> proxy with auth in front of it. Don't open `127.0.0.1:7334` to `0.0.0.0`
-> without thinking about it.
+> For a remote-but-still-authenticated path, front the admin port with
+> Tailscale Funnel, Cloudflare Tunnel + Access, or a reverse proxy that
+> enforces auth on its own. Don't bind `0.0.0.0` on the admin port
+> without thinking about what's in front of it.
 
 ---
 
@@ -60,21 +61,31 @@ What's baked in:
 ```bash
 npm install
 claude login                # one-time, reads ~/.claude/.credentials.json
-cp .env.example .env
+cp .env.example .env        # sets RITSU_ADMIN_TOKEN_FILE=./data/.admin-token for dev
+mkdir -p data               # bootstrap path; the server refuses to start without it
 npm run dev                 # MCP on :7333, admin on :7334
 ```
 
-Open <http://127.0.0.1:7334/admin> and mint a token in the **Tokens** tab.
+On first start the server mints a bootstrap admin token and writes the
+plaintext to `./data/.admin-token` (mode 0600). Read it:
+
+```bash
+cat data/.admin-token
+```
+
+Then open <http://127.0.0.1:7334/admin>, paste that token when prompted,
+and you're in. From there you can mint per-client MCP tokens in the
+**Tokens** tab.
 
 ```bash
 # health
 curl -s http://localhost:7333/healthz
 
-# call an agent
+# call an agent (use the rt_ token you minted, not the admin bootstrap one)
 curl -s -X POST http://localhost:7333/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -H 'Authorization: Bearer rt_YOUR_TOKEN' \
+  -H 'Authorization: Bearer rt_YOUR_MCP_TOKEN' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_agent","arguments":{"agent_id":"hello-world","message":"hi"}}}'
 ```
 

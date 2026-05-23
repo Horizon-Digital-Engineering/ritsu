@@ -15,6 +15,8 @@
  * Add new subcommands in src/cli/commands/<name>.ts and register them
  * in COMMANDS below.
  */
+import { hydrateEnv } from './config.js';
+hydrateEnv();
 import { spawnSync } from './util/safe-spawn.js';
 import { ALL_COMMANDS, type Command } from './cli/registry.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -64,12 +66,14 @@ function topLevelHelp(): string {
     groups,
     '',
     'Flags (most commands):',
-    '  --token <tok>     admin token (default: read from /opt/ritsu/data/.admin-token)',
-    '  --url   <url>     admin API base URL (default: http://127.0.0.1:7334)',
+    '  --token <tok>     admin token (default: RITSU_ADMIN_TOKEN_FILE,',
+    '                    falling back to /opt/ritsu/data/.admin-token)',
+    '  --url   <url>     admin API base URL (default: ADMIN_HOST:ADMIN_PORT,',
+    '                    falling back to http://127.0.0.1:7334)',
     '  --json            machine-readable output',
     '  --help            show command-specific help',
     '',
-    'Env vars: RITSU_ADMIN_TOKEN, RITSU_URL',
+    'Env vars: RITSU_ADMIN_TOKEN, RITSU_ADMIN_TOKEN_FILE, RITSU_URL',
     '',
     'Run `ritsu <command> --help` for subcommand details.',
   ].join('\n');

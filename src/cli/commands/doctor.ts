@@ -9,7 +9,7 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { SERVICE_NAME } from '../systemd.js';
-import { DEFAULT_ADMIN_TOKEN_FILE } from '../api.js';
+import { loadConfig } from '../../config.js';
 
 type Status = 'ok' | 'warn' | 'fail';
 interface Check { name: string; status: Status; detail: string }
@@ -29,15 +29,15 @@ function checkListening(port: number, label: string): Check {
     : { name: `${label} listening`, status: 'fail', detail: `nothing on port ${port}` };
 }
 
-function checkAdminTokenFile(): Check {
-  if (!existsSync(DEFAULT_ADMIN_TOKEN_FILE)) {
-    return { name: 'admin token file', status: 'fail', detail: `missing: ${DEFAULT_ADMIN_TOKEN_FILE}` };
+function checkAdminTokenFile(tokenFile: string): Check {
+  if (!existsSync(tokenFile)) {
+    return { name: 'admin token file', status: 'fail', detail: `missing: ${tokenFile}` };
   }
-  const st = statSync(DEFAULT_ADMIN_TOKEN_FILE);
+  const st = statSync(tokenFile);
   if ((st.mode & 0o777) !== 0o600) {
     return { name: 'admin token file', status: 'warn', detail: `mode is ${(st.mode & 0o777).toString(8)} (expected 600)` };
   }
-  return { name: 'admin token file', status: 'ok', detail: DEFAULT_ADMIN_TOKEN_FILE };
+  return { name: 'admin token file', status: 'ok', detail: tokenFile };
 }
 
 function checkDbWritable(): Check {
@@ -89,15 +89,13 @@ export const doctorCommand: Command = {
   needsRoot: true, // db writability + admin token file inspection
   help: () => 'ritsu doctor — run a set of post-install sanity checks',
   run: async (ctx: CommandContext) => {
-    const env = loadEnv();
-    const port      = Number(env.PORT       ?? 7333);
-    const adminPort = Number(env.ADMIN_PORT ?? 7334);
+    const cfg = loadConfig();
 
     const checks: Check[] = [
       checkServiceActive(),
-      checkListening(port,      'mcp'),
-      checkListening(adminPort, 'admin'),
-      checkAdminTokenFile(),
+      checkListening(cfg.mcpPort,   'mcp'),
+      checkListening(cfg.adminPort, 'admin'),
+      checkAdminTokenFile(cfg.adminTokenFile),
       checkDbWritable(),
       checkClaudeSession(),
       checkSandboxPaths(),
@@ -123,15 +121,3 @@ export const doctorCommand: Command = {
   },
 };
 
-function loadEnv(): Record<string, string> {
-  if (!existsSync('/etc/ritsu/env')) return {};
-  const out: Record<string, string> = {};
-  for (const raw of readFileSync('/etc/ritsu/env', 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
-  }
-  return out;
-}

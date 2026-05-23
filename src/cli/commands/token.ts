@@ -129,9 +129,9 @@ export const tokenCommand: Command = {
     'Flags:',
     '  --json   machine-readable output',
     '',
-    'Auth: reads /opt/ritsu/data/.admin-token by default. Override with',
-    '--token or RITSU_ADMIN_TOKEN. For remote use also pass --url or set',
-    'RITSU_URL (default http://127.0.0.1:7334).',
+    'Auth: reads the configured admin-token file by default (RITSU_ADMIN_TOKEN_FILE,',
+    'default /opt/ritsu/data/.admin-token). Override with --token or RITSU_ADMIN_TOKEN.',
+    'For remote use also pass --url or set RITSU_URL.',
   ].join('\n'),
   run: async (ctx: CommandContext) => {
     switch (ctx.subcommand) {

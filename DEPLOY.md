@@ -1,16 +1,19 @@
 # Deploying ritsu to your lab
 
-ritsu is a **lab tool**, not an internet-facing service. The intended
-target is a Linux box on a network you control — a home server, an
-office NAS, a Tailscale-anchored VM, a Raspberry Pi on your LAN. The
-admin UI has no built-in auth on its local-bind port; the network
-boundary (tailnet ACL, VPN, LAN) is the outer auth boundary. **Don't
-bind the admin port to a public-internet address.**
+ritsu is a **lab tool**, not a multi-tenant SaaS. The intended target is
+a Linux box on a network you control — a home server, an office NAS, a
+Tailscale-anchored VM, a Raspberry Pi on your LAN. Every `/admin` route
+is gated by a bearer admin token (bootstrapped on first run, mode 0600
+on disk), so the auth is real; the network boundary (tailnet ACL, VPN,
+LAN) is defence-in-depth on top of that. **Don't bind the admin port
+to a public-internet address without something doing TLS + auth in
+front of it.**
 
-If you want over-internet access, front it with Tailscale Funnel,
-Cloudflare Tunnel + Access, or a reverse proxy that enforces auth
-before traffic hits ritsu's admin port. Real production deployment on
-a public address is out of scope for the V1 default config.
+For over-internet access, front it with Tailscale Funnel, Cloudflare
+Tunnel + Access, or a reverse proxy that enforces auth on its own.
+ritsu's OAuth 2.1 + DCR + PKCE flow on `/mcp` (configured via
+`RITSU_PUBLIC_URL`) is what claude.ai's "Add custom connector" UI
+expects on the MCP port.
 
 Target: a Linux host with Node 20+ and systemd. ritsu runs as a dedicated `ritsu` user, listens on two ports (one for MCP, one for admin), writes everything to a single SQLite file.
 
