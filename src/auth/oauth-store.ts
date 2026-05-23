@@ -17,6 +17,7 @@ import type { Db } from '../db.js';
 const ACCESS_TTL_S  = 60 * 60;          // 1h
 const REFRESH_TTL_S = 60 * 60 * 24 * 30; // 30d
 const CODE_TTL_S    = 60 * 5;            // 5m
+const AUTHZ_REQ_TTL_S = 60 * 10;          // 10m — operator window to approve consent
 
 function sha(s: string): string {
   return createHash('sha256').update(s).digest('hex');
@@ -81,6 +82,21 @@ export interface AuthzCodeInfo {
   scope: string;
   code_challenge: string;
   resource: string;
+}
+
+export interface AuthorizeRequestParams {
+  client_id: string;
+  redirect_uri: string;
+  scope: string;
+  state: string | undefined;
+  code_challenge: string;
+  code_challenge_method: 'S256';
+  resource: string;
+}
+
+export interface AuthorizeRequestRecord extends AuthorizeRequestParams {
+  request_id: string;
+  expires_at: number;
 }
 
 export class OAuthStore {
@@ -174,6 +190,82 @@ export class OAuthStore {
           .run(client_id);
       }
       return r.changes > 0;
+    });
+    return tx();
+  }
+
+  // ---- authorize requests (GET-set, POST-consume; CSRF + state binding) -
+
+  /**
+   * Persist an in-flight authorize request. Returned `request_id` is the
+   * only field the consent form carries back to us; everything else
+   * (PKCE, redirect_uri, scope, resource, state) is reloaded from the DB
+   * on POST. That removes the attack where a malicious page submits the
+   * consent form with a different code_challenge than the GET rendered.
+   *
+   * Caller is responsible for having already validated the params via
+   * `validateAuthorize` — this method does NO cross-checking, it just
+   * stores.
+   */
+  createAuthorizeRequest(params: AuthorizeRequestParams): AuthorizeRequestRecord {
+    const request_id = rand(24);
+    const expires_at = Math.floor(Date.now() / 1000) + AUTHZ_REQ_TTL_S;
+    this.db
+      .prepare(
+        `INSERT INTO oauth_authorize_requests
+          (request_id, client_id, redirect_uri, scope, state, code_challenge,
+           code_challenge_method, resource, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        request_id,
+        params.client_id,
+        params.redirect_uri,
+        params.scope,
+        params.state ?? null,
+        params.code_challenge,
+        params.code_challenge_method,
+        params.resource,
+        expires_at,
+      );
+    return { ...params, request_id, expires_at };
+  }
+
+  /**
+   * Single-use lookup. Marks the row consumed and returns its params if
+   * still live. Returns null if the request_id is unknown, expired, or
+   * already consumed — the consent POST handler should treat all three
+   * the same way (refuse to mint).
+   */
+  consumeAuthorizeRequest(request_id: string): AuthorizeRequestRecord | null {
+    const now = Math.floor(Date.now() / 1000);
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare(
+          `SELECT request_id, client_id, redirect_uri, scope, state,
+                  code_challenge, code_challenge_method, resource,
+                  expires_at, consumed_at
+             FROM oauth_authorize_requests
+            WHERE request_id = ?`,
+        )
+        .get(request_id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      if ((row.consumed_at as number | null) !== null) return null;
+      if ((row.expires_at as number) < now) return null;
+      this.db
+        .prepare(`UPDATE oauth_authorize_requests SET consumed_at = ? WHERE request_id = ?`)
+        .run(now, request_id);
+      return {
+        request_id: row.request_id as string,
+        client_id: row.client_id as string,
+        redirect_uri: row.redirect_uri as string,
+        scope: row.scope as string,
+        state: (row.state as string | null) ?? undefined,
+        code_challenge: row.code_challenge as string,
+        code_challenge_method: row.code_challenge_method as 'S256',
+        resource: row.resource as string,
+        expires_at: row.expires_at as number,
+      };
     });
     return tx();
   }

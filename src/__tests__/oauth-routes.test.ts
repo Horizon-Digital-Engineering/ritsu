@@ -33,6 +33,19 @@ CREATE TABLE oauth_clients (
   created_at                 INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   revoked_at                 INTEGER
 );
+CREATE TABLE oauth_authorize_requests (
+  request_id            TEXT PRIMARY KEY,
+  client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  redirect_uri          TEXT NOT NULL,
+  scope                 TEXT NOT NULL,
+  state                 TEXT,
+  code_challenge        TEXT NOT NULL,
+  code_challenge_method TEXT NOT NULL CHECK (code_challenge_method IN ('S256')),
+  resource              TEXT NOT NULL,
+  expires_at            INTEGER NOT NULL,
+  consumed_at           INTEGER,
+  created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
 CREATE TABLE oauth_authz_codes (
   code_hash             TEXT PRIMARY KEY,
   client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id),
@@ -128,6 +141,7 @@ beforeEach(() => {
     DELETE FROM oauth_refresh_tokens;
     DELETE FROM oauth_access_tokens;
     DELETE FROM oauth_authz_codes;
+    DELETE FROM oauth_authorize_requests;
     DELETE FROM oauth_clients;
   `);
 });
@@ -361,14 +375,33 @@ describe('POST /oauth/authorize', () => {
     challenge = pkcePair().challenge;
   });
 
-  /** Helper: POST the consent form. Returns the raw Response so callers
-   *  can inspect status / Location header. Form-encoded body, no redirect
-   *  follow (we want to see the 302). */
+  /** Helper: drive the full consent round-trip. Does a GET first to
+   *  obtain a fresh request_id (the new flow puts PKCE / redirect / scope
+   *  / resource in server-side state, not the POST body), then POSTs with
+   *  the request_id + decision + admin_token. Returns the raw Response so
+   *  callers can inspect status / Location header. */
+  async function obtainRequestId(query: Record<string, string>): Promise<string | null> {
+    const r = await fetch(`${baseUrl}/oauth/authorize?${new URLSearchParams(query).toString()}`);
+    if (r.status !== 200) return null;
+    const html = await r.text();
+    const m = html.match(/name="request_id" value="([^"]+)"/);
+    return m ? m[1] : null;
+  }
+
   async function postConsent(fields: Record<string, string>): Promise<Response> {
+    // Split fields: GET params go to GET, decision/admin_token to POST.
+    const getParams: Record<string, string> = {};
+    const postParams: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (k === 'decision' || k === 'admin_token') postParams[k] = v;
+      else getParams[k] = v;
+    }
+    const requestId = await obtainRequestId(getParams);
+    if (requestId) postParams.request_id = requestId;
     return fetch(`${baseUrl}/oauth/authorize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(fields).toString(),
+      body: new URLSearchParams(postParams).toString(),
       redirect: 'manual',
     });
   }
@@ -453,6 +486,68 @@ describe('POST /oauth/authorize', () => {
     });
     assert.equal(r.status, 401);
   });
+
+  it('refuses a POST whose request_id does not exist (replay / forged)', async () => {
+    const r = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        request_id: 'this_was_never_issued',
+        decision: 'approve',
+        admin_token: adminToken,
+      }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(r.status, 400);
+    assert.match(await r.text(), /expired or already used/);
+  });
+
+  it('refuses a second POST with the same request_id (single-use)', async () => {
+    // Get a request_id and use it once (approve) — second attempt must
+    // refuse, even with the same admin_token.
+    const requestId = await obtainRequestId({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'https://example.com/callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    assert.ok(requestId);
+    const a = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ request_id: requestId ?? '', decision: 'approve', admin_token: adminToken }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(a.status, 302);
+    const b = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ request_id: requestId ?? '', decision: 'approve', admin_token: adminToken }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(b.status, 400);
+  });
+
+  it('rejects a POST with a cross-origin Origin header', async () => {
+    const requestId = await obtainRequestId({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'https://example.com/callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const r = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://attacker.example',
+      },
+      body: new URLSearchParams({ request_id: requestId ?? '', decision: 'approve', admin_token: adminToken }).toString(),
+      redirect: 'manual',
+    });
+    assert.equal(r.status, 403);
+  });
 });
 
 // ---- Token endpoint — authorization_code grant (RFC 8707) --------------
@@ -479,18 +574,23 @@ describe('POST /oauth/token authorization_code', () => {
     const p = pkcePair();
     challenge = p.challenge;
     verifier = p.verifier;
-    // 3. POST consent with approve, capture the authz code from the redirect.
+    // 3. GET consent to obtain a request_id, then POST approve with it.
+    const getR = await fetch(`${baseUrl}/oauth/authorize?${new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'https://example.com/cb',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      scope: 'mcp',
+      resource,
+    }).toString()}`);
+    const html = await getR.text();
+    const requestId = html.match(/name="request_id" value="([^"]+)"/)?.[1] ?? '';
     const consent = await fetch(`${baseUrl}/oauth/authorize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        response_type: 'code',
-        client_id: clientId,
-        redirect_uri: 'https://example.com/cb',
-        code_challenge: challenge,
-        code_challenge_method: 'S256',
-        scope: 'mcp',
-        resource,
+        request_id: requestId,
         decision: 'approve',
         admin_token: adminToken,
       }).toString(),
@@ -611,14 +711,20 @@ describe('POST /oauth/token refresh_token', () => {
     });
     clientId = (await reg.json() as { client_id: string }).client_id;
     const { challenge, verifier } = pkcePair();
+    // GET first to get request_id, then POST consent.
+    const getR = await fetch(`${baseUrl}/oauth/authorize?${new URLSearchParams({
+      response_type: 'code', client_id: clientId,
+      redirect_uri: 'https://example.com/cb',
+      code_challenge: challenge, code_challenge_method: 'S256',
+      scope: 'mcp',
+    }).toString()}`);
+    const requestId = (await getR.text()).match(/name="request_id" value="([^"]+)"/)?.[1] ?? '';
     const consent = await fetch(`${baseUrl}/oauth/authorize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        response_type: 'code', client_id: clientId,
-        redirect_uri: 'https://example.com/cb',
-        code_challenge: challenge, code_challenge_method: 'S256',
-        scope: 'mcp', decision: 'approve', admin_token: adminToken,
+        request_id: requestId,
+        decision: 'approve', admin_token: adminToken,
       }).toString(),
       redirect: 'manual',
     });

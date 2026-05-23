@@ -157,6 +157,28 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
   });
 
   // ---- Authorization endpoint -----------------------------------------
+  //
+  // CSRF + state binding: GET creates a server-side authorize-request row
+  // and renders a consent page containing only the opaque `request_id`.
+  // POST looks up that row to reconstruct redirect_uri / PKCE / scope /
+  // resource — the form body cannot influence them. This closes the
+  // attack where an attacker registers a client via DCR and tricks the
+  // operator into signing a POST with attacker-chosen `code_challenge`.
+  // The request_id is single-use (consumed on first POST) and TTL-bounded
+  // (10 min).
+  //
+  // Origin check: if the browser sent an Origin header, it MUST match the
+  // canonical publicUrl. We don't gate on cookies because the consent
+  // submission is bearer-token-based (admin_token in body), not session-
+  // cookie-based, so SameSite is meaningless here.
+
+  const publicOrigin = (() => { try { return new URL(publicUrl).origin; } catch { return null; } })();
+
+  function originOk(req: Request): boolean {
+    const origin = req.headers.origin;
+    if (!origin) return true; // not all browsers send it for same-origin POSTs
+    return publicOrigin !== null && origin === publicOrigin;
+  }
 
   app.get('/oauth/authorize', (req: Request, res: Response) => {
     const qp = req.query as Record<string, string | undefined>;
@@ -167,61 +189,97 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       res.status(400).type('text/plain').send(`OAuth error: ${err.error} — ${err.description}`);
       return;
     }
-    sendHtml(res, renderConsent(err.client_name, qp));
+    const record = oauth.createAuthorizeRequest({
+      client_id: qp.client_id!,
+      redirect_uri: qp.redirect_uri!,
+      scope: (qp.scope ?? 'mcp').trim() || 'mcp',
+      state: qp.state,
+      code_challenge: qp.code_challenge!,
+      code_challenge_method: 'S256',
+      resource: stripTrailingSlashes(qp.resource ?? resourceCanonical),
+    });
+    sendHtml(res, renderConsent({
+      request_id: record.request_id,
+      client_name: err.client_name,
+      redirect_uri: record.redirect_uri,
+      scope: record.scope,
+      resource: record.resource,
+    }));
   });
 
   app.post('/oauth/authorize', (req: Request, res: Response) => {
+    if (!originOk(req)) {
+      res.status(403).type('text/plain').send('forbidden: cross-origin POST not allowed');
+      return;
+    }
     const body = req.body as Record<string, string | undefined>;
+    const requestId = (body.request_id ?? '').trim();
+    if (!requestId) {
+      res.status(400).type('text/plain').send('request_id required');
+      return;
+    }
     const adminToken = (body.admin_token ?? '').trim();
     if (!adminToken) {
       res.status(400).type('text/plain').send('admin_token required');
       return;
     }
+
+    // Consume FIRST so a flow can't be retried with a different decision
+    // after a valid admin-token submit. Single-use is intentional.
+    const record = oauth.consumeAuthorizeRequest(requestId);
+    if (!record) {
+      res.status(400).type('text/plain').send('authorize request expired or already used; start over');
+      return;
+    }
+
     const adminRow = tokens.verify(adminToken, 'admin');
     if (!adminRow) {
-      // Re-render consent with an error.
-      const qp = req.body as Record<string, string | undefined>;
-      const errCheck = validateAuthorize(qp, oauth);
-      if ('error' in errCheck) {
-        res.status(400).type('text/plain').send(errCheck.description);
-        return;
-      }
-      // renderConsent returns a typed SafeHtml; sendHtml refuses anything
-      // that isn't pre-escaped, so a plain-string accident here fails to
-      // typecheck rather than shipping an XSS.
-      sendHtml(res, renderConsent(errCheck.client_name, qp, 'invalid admin token'), 401);
+      // Re-issue a fresh request_id so the operator can retry without
+      // restarting the whole OAuth round-trip from the client.
+      const renewed = oauth.createAuthorizeRequest({
+        client_id: record.client_id,
+        redirect_uri: record.redirect_uri,
+        scope: record.scope,
+        state: record.state,
+        code_challenge: record.code_challenge,
+        code_challenge_method: record.code_challenge_method,
+        resource: record.resource,
+      });
+      const client = oauth.getClient(record.client_id);
+      sendHtml(res, renderConsent({
+        request_id: renewed.request_id,
+        client_name: client?.client_name ?? '(unknown)',
+        redirect_uri: record.redirect_uri,
+        scope: record.scope,
+        resource: record.resource,
+      }, 'invalid admin token'), 401);
       return;
     }
-    // Re-validate from the form body (don't trust client to send same values twice).
-    const check = validateAuthorize(body, oauth);
-    if ('error' in check) {
-      res.status(400).type('text/plain').send(check.description);
-      return;
-    }
+
     const decision = (body.decision ?? '').toLowerCase();
     if (decision !== 'approve') {
-      const redirect = new URL(body.redirect_uri!);
+      const redirect = new URL(record.redirect_uri);
       redirect.searchParams.set('error', 'access_denied');
-      if (body.state) redirect.searchParams.set('state', body.state);
+      if (record.state) redirect.searchParams.set('state', record.state);
       res.redirect(302, redirect.toString());
       return;
     }
-    const resource = stripTrailingSlashes(body.resource ?? resourceCanonical);
+
     const minted = oauth.mintAuthzCode({
-      client_id: body.client_id!,
-      redirect_uri: body.redirect_uri!,
-      scope: (body.scope ?? 'mcp').trim() || 'mcp',
-      code_challenge: body.code_challenge!,
+      client_id: record.client_id,
+      redirect_uri: record.redirect_uri,
+      scope: record.scope,
+      code_challenge: record.code_challenge,
       code_challenge_method: 'S256',
-      resource,
+      resource: record.resource,
     });
-    const redirect = new URL(body.redirect_uri!);
+    const redirect = new URL(record.redirect_uri);
     redirect.searchParams.set('code', minted.code);
-    if (body.state) redirect.searchParams.set('state', body.state);
+    if (record.state) redirect.searchParams.set('state', record.state);
     logger.info('oauth.authz.granted', {
-      client_id: body.client_id,
+      client_id: record.client_id,
       admin_token_id: adminRow.id,
-      resource,
+      resource: record.resource,
     });
     res.redirect(302, redirect.toString());
   });
@@ -340,17 +398,18 @@ function validateAuthorize(qp: Record<string, string | undefined>, oauth: OAuthS
   return { client_name: client.client_name };
 }
 
-function renderConsent(
-  clientName: string,
-  qp: Record<string, string | undefined>,
-  errorMsg?: string,
-): SafeHtml {
-  // All passthrough params need to round-trip through the form so the POST
-  // can re-validate without trusting the client to re-send query string.
-  // Building each <input> via `html` returns a SafeHtml; the array then
-  // interpolates into the outer template without re-escape.
-  const fields = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'code_challenge', 'code_challenge_method', 'resource'] as const;
-  const hidden = fields.map(k => html`<input type="hidden" name="${k}" value="${qp[k] ?? ''}">`);
+interface ConsentView {
+  request_id: string;
+  client_name: string;
+  redirect_uri: string;
+  scope: string;
+  resource: string;
+}
+
+function renderConsent(view: ConsentView, errorMsg?: string): SafeHtml {
+  // Only `request_id` round-trips through the form. PKCE / redirect_uri /
+  // scope / resource are reloaded server-side by `consumeAuthorizeRequest`
+  // — the form body cannot influence the eventual mintAuthzCode call.
   const errBlock = errorMsg ? html`<div class="err">${errorMsg}</div>` : html``;
   return html`<!doctype html>
 <html><head>
@@ -381,13 +440,13 @@ function renderConsent(
   <div class="sub">A client wants to call this ritsu server's MCP tools on your behalf.</div>
   ${errBlock}
   <dl>
-    <dt>Client</dt><dd>${clientName}</dd>
-    <dt>Redirect URI</dt><dd>${qp.redirect_uri ?? ''}</dd>
-    <dt>Scope</dt><dd>${qp.scope ?? 'mcp'}</dd>
-    <dt>Resource</dt><dd>${qp.resource ?? '(default)'}</dd>
+    <dt>Client</dt><dd>${view.client_name}</dd>
+    <dt>Redirect URI</dt><dd>${view.redirect_uri}</dd>
+    <dt>Scope</dt><dd>${view.scope}</dd>
+    <dt>Resource</dt><dd>${view.resource}</dd>
   </dl>
   <form method="post" action="/oauth/authorize" autocomplete="on">
-    ${hidden}
+    <input type="hidden" name="request_id" value="${view.request_id}">
     <label for="admin-token">Admin token (to confirm it's you)</label>
     <input id="admin-token" type="password" name="admin_token" autocomplete="current-password" required>
     <div class="row">

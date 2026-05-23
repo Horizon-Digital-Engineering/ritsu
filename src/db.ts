@@ -131,6 +131,28 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   revoked_at                 INTEGER
 );
 
+-- Server-side state for an in-flight /oauth/authorize request. Issued
+-- by GET, looked up by POST. The consent page renders only request_id;
+-- the form POST cannot influence PKCE / redirect_uri / scope / resource
+-- because the server reads them from THIS row, not from the body. Single-
+-- use: consumed on the first POST (success or denial), and any unused
+-- row past expires_at is rejected.
+CREATE TABLE IF NOT EXISTS oauth_authorize_requests (
+  request_id            TEXT PRIMARY KEY,            -- random opaque token (base64url)
+  client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  redirect_uri          TEXT NOT NULL,
+  scope                 TEXT NOT NULL,
+  state                 TEXT,                         -- echoed back to client
+  code_challenge        TEXT NOT NULL,
+  code_challenge_method TEXT NOT NULL CHECK (code_challenge_method IN ('S256')),
+  resource              TEXT NOT NULL,
+  expires_at            INTEGER NOT NULL,
+  consumed_at           INTEGER,
+  created_at            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_authz_req_expiry ON oauth_authorize_requests(expires_at);
+
 CREATE TABLE IF NOT EXISTS oauth_authz_codes (
   code_hash             TEXT PRIMARY KEY,
   client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id),
