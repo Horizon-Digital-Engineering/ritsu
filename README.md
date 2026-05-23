@@ -1,6 +1,8 @@
 # ritsu
 
-> **Stop maintaining a folder of `agent.md` files.** ritsu is a self-hosted multi-agent server with a real admin UI. Click "new agent," type a prompt, hit save — it's live. Edit, reload, delete, all from the browser. No commits, no redeploys, no .md sprawl.
+### Agents as Infrastructure.
+
+> **Stop maintaining a folder of `agent.md` files.** ritsu is a self-hosted multi-agent server with a real admin UI. Click "new agent," type a prompt, hit save — it's live. Edit, reload, delete, all from the browser. No commits, no redeploys, no .md sprawl. Agents become durable infrastructure: they have configs, audits, observability — like any other service on your box.
 
 [![CI](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/ci.yml)
 [![Security](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml/badge.svg)](https://github.com/Horizon-Digital-Engineering/ritsu/actions/workflows/security.yml)
