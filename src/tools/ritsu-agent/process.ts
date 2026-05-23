@@ -14,6 +14,7 @@
 import { spawn } from 'node:child_process';
 import { readdir, stat, readFile } from 'node:fs/promises';
 import { resolve, join, relative, sep } from 'node:path';
+import { RE2 } from 're2-wasm';
 import type { Workspace } from '../../workspace-store.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse } from '../permissions.js';
@@ -104,10 +105,12 @@ function globMatch(pattern: string, path: string): boolean {
       src += ch;
     }
   }
-  // `src` is built char-by-char above from a whitelisted glob alphabet
-  // (`*`, `**`, `?`, escaped regex specials). Not user-controlled regex source.
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
-  return new RegExp(src + '$').test(path);
+  // Compile via re2 (linear-time, no backtracking) rather than the native
+  // RegExp engine: even though `src` is built from a whitelisted glob
+  // alphabet, a pathological agent-supplied pattern with many `**`/`*`
+  // segments could in theory generate a regex that backtracks on the
+  // native engine. re2 eliminates that class of risk entirely.
+  return new RE2(src + '$', 'u').test(path);
 }
 
 async function walkFiles(root: string, base: string, out: string[]): Promise<void> {
@@ -217,14 +220,13 @@ export function buildProcessTools(workspaces: Workspace[]): RaTool[] {
         if (!auth.ok) return `denied: ${auth.reason}`;
         const patternStr = asString(args.pattern);
         if (!patternStr) return 'error: pattern required';
-        let pattern: RegExp;
-        // Grep deliberately accepts an agent-supplied regex (mirrors Claude
-        // Code's Grep tool). ReDoS exposure is bounded: agents are trusted
-        // (admin-defined), the Grep tool is gated by per-workspace permission
-        // checks above, and matching runs line-by-line against bounded reads
-        // — not against arbitrary blobs.
-        // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
-        try { pattern = new RegExp(patternStr, args.ignore_case ? 'i' : ''); }
+        // Compile the agent-supplied pattern with re2-wasm, NOT the native
+        // RegExp engine. re2 is linear-time by construction (no
+        // backtracking), so a maliciously-crafted pattern can't trigger
+        // catastrophic backtracking against this server's event loop. The
+        // 'u' flag is required by the re2-wasm binding.
+        let pattern: { test(s: string): boolean };
+        try { pattern = new RE2(patternStr, args.ignore_case ? 'iu' : 'u'); }
         catch (e) { return `error: invalid regex: ${(e as Error).message}`; }
         const subdir = asString(args.path);
         const include = asString(args.include);

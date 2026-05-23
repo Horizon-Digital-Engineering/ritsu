@@ -1,7 +1,7 @@
 import express, { type Request, type Response } from 'express';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve as resolvePath, normalize as normalizePath } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../util/safe-spawn.js';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { AgentDefinitionStore } from '../agent-definition-store.js';
@@ -22,6 +22,7 @@ import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
+import { stripTrailingSlashes } from '../util/path-utils.js';
 import { TOOL_NAMES, TOOL_INFO, type AuthMode } from '../mcp-server.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -809,7 +810,7 @@ export function createAdminApp(deps: AdminDeps) {
       ? rootsRes.stdout.trim().split(/\s+/).filter(Boolean)
       : [];
     if (allowedRoots.length > 0) {
-      const inside = allowedRoots.some(r => target === r || target.startsWith(r.replace(/\/+$/, '') + '/'));
+      const inside = allowedRoots.some(r => target === r || target.startsWith(stripTrailingSlashes(r) + '/'));
       if (!inside) {
         res.status(400).json({
           error: 'path is outside the sandbox',

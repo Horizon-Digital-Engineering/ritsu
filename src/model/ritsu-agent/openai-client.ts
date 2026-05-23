@@ -11,6 +11,7 @@
  *  when the model wants to invoke functions. We translate verbatim.
  */
 import type { RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
+import { stripTrailingSlashes } from '../../util/path-utils.js';
 
 export type OpenAIProvider = 'openai' | 'openai-compat' | 'litellm';
 
@@ -65,7 +66,7 @@ export class OpenAICompatClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: OpenAIClientOpts) {
-    this.baseUrl = (opts.providerOptions?.base_url ?? DEFAULT_BASE_URLS[opts.provider]).replace(/\/+$/, '');
+    this.baseUrl = stripTrailingSlashes(opts.providerOptions?.base_url ?? DEFAULT_BASE_URLS[opts.provider]);
     this.apiKey = opts.apiKey;
     this.model = opts.model;
     this.temperature = opts.providerOptions?.temperature ?? 0.7;

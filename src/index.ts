@@ -17,6 +17,7 @@ import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { logger } from './util/log.js';
+import { stripTrailingSlashes } from './util/path-utils.js';
 
 const ADMIN_TOKEN_FILE = '/opt/ritsu/data/.admin-token';
 
@@ -56,7 +57,7 @@ const ALLOWED_HOSTS    = (process.env.RITSU_ALLOWED_HOSTS ?? '')
   .split(',').map(s => s.trim()).filter(Boolean);
 // Canonical public origin (no trailing slash). Required for OAuth.
 // e.g. https://your-host.your-tailnet.ts.net:9443
-const PUBLIC_URL       = (process.env.RITSU_PUBLIC_URL ?? '').replace(/\/+$/, '') || undefined;
+const PUBLIC_URL       = stripTrailingSlashes(process.env.RITSU_PUBLIC_URL ?? '') || undefined;
 // Single source of truth for the version: package.json. Anything that bumps
 // the npm version (npm version, manual edit) flows through to the running
 // service's /version endpoint, admin UI, and CLI `ritsu --version`.

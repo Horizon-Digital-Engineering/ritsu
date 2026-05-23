@@ -13,6 +13,7 @@ import type { OAuthStore } from './auth/oauth-store.js';
 import { mountOAuthRoutes, RESOURCE_PATH } from './auth/oauth-routes.js';
 import { metrics } from './metrics.js';
 import { logger } from './util/log.js';
+import { stripTrailingSlashes } from './util/path-utils.js';
 
 /**
  * MCP HTTP surface, built on @modelcontextprotocol/sdk.
@@ -166,7 +167,7 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
     const oauthInfo = deps.oauth.verifyAccessToken(token);
     if (oauthInfo) {
       // RFC 8707 audience validation: tokens MUST be bound to this resource.
-      if (canonicalResource && oauthInfo.resource.replace(/\/+$/, '') !== canonicalResource.replace(/\/+$/, '')) {
+      if (canonicalResource && stripTrailingSlashes(oauthInfo.resource) !== stripTrailingSlashes(canonicalResource)) {
         unauthorized(res, 'invalid_token', 'token audience mismatch');
         return;
       }

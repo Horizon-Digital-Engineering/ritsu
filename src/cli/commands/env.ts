@@ -7,7 +7,7 @@
  * sudo anyway via needsRoot=true.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { restartService } from '../systemd.js';
 

@@ -28,7 +28,15 @@ jobs:
         run: npm run test:coverage
 
       - name: SonarQube Scan
-        # The hex string below is a SHA-pinned action commit, not an API key.
+        # SHA-pinned third-party action. The hex below is a git commit SHA of
+        # SonarSource/sonarqube-scan-action that we've reviewed and trust;
+        # SHA pinning is the supply-chain control that OSSF Scorecard's
+        # `Pinned-Dependencies` check looks for (an unpinned `@v8.1.0` tag
+        # can be moved to a malicious commit by an attacker who compromises
+        # the action's repo). Semgrep's `detected-sonarqube-docs-api-key`
+        # rule pattern-matches the hex shape without context — there's no
+        # configuration that lets the rule distinguish "git commit pin" from
+        # "leaked credential," so this is the rule's limitation, not ours.
         # nosemgrep: generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
         env:

@@ -6,7 +6,7 @@
  * verification AND for `update-ritsu` to invoke automatically.
  */
 import { existsSync, statSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { SERVICE_NAME } from '../systemd.js';
 import { DEFAULT_ADMIN_TOKEN_FILE } from '../api.js';

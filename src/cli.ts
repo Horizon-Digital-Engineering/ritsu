@@ -15,7 +15,7 @@
  * Add new subcommands in src/cli/commands/<name>.ts and register them
  * in COMMANDS below.
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './util/safe-spawn.js';
 import { ALL_COMMANDS, type Command } from './cli/registry.js';
 import pkg from '../package.json' with { type: 'json' };
 

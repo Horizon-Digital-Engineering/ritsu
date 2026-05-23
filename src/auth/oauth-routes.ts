@@ -3,6 +3,8 @@ import { z } from 'zod';
 import type { OAuthStore } from './oauth-store.js';
 import type { TokenStore } from './token-store.js';
 import { logger } from '../util/log.js';
+import { stripTrailingSlashes } from '../util/path-utils.js';
+import { html, sendHtml, type SafeHtml } from '../util/safe-html.js';
 
 /**
  * OAuth 2.1 / MCP-spec endpoints. Mounted on the MCP-port app so all
@@ -165,8 +167,7 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       res.status(400).type('text/plain').send(`OAuth error: ${err.error} — ${err.description}`);
       return;
     }
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(renderConsent(err.client_name, qp));
+    sendHtml(res, renderConsent(err.client_name, qp));
   });
 
   app.post('/oauth/authorize', (req: Request, res: Response) => {
@@ -185,10 +186,10 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
         res.status(400).type('text/plain').send(errCheck.description);
         return;
       }
-      res.status(401).setHeader('Content-Type', 'text/html; charset=utf-8');
-      // renderConsent() HTML-escapes every interpolated value via escapeHtml().
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-      res.send(renderConsent(errCheck.client_name, qp, 'invalid admin token'));
+      // renderConsent returns a typed SafeHtml; sendHtml refuses anything
+      // that isn't pre-escaped, so a plain-string accident here fails to
+      // typecheck rather than shipping an XSS.
+      sendHtml(res, renderConsent(errCheck.client_name, qp, 'invalid admin token'), 401);
       return;
     }
     // Re-validate from the form body (don't trust client to send same values twice).
@@ -205,7 +206,7 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       res.redirect(302, redirect.toString());
       return;
     }
-    const resource = (body.resource ?? resourceCanonical).replace(/\/+$/, '');
+    const resource = stripTrailingSlashes(body.resource ?? resourceCanonical);
     const minted = oauth.mintAuthzCode({
       client_id: body.client_id!,
       redirect_uri: body.redirect_uri!,
@@ -264,7 +265,7 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       }
       // RFC 8707: if client sent `resource` on token request, it MUST match
       // the resource bound to the authz code.
-      if (parsed.data.resource && parsed.data.resource.replace(/\/+$/, '') !== info.resource) {
+      if (parsed.data.resource && stripTrailingSlashes(parsed.data.resource) !== info.resource) {
         res.status(400).json({ error: 'invalid_target', error_description: 'resource mismatch with authorization request' });
         return;
       }
@@ -336,27 +337,19 @@ function validateAuthorize(qp: Record<string, string | undefined>, oauth: OAuthS
   return { client_name: client.client_name };
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]!));
-}
-
 function renderConsent(
   clientName: string,
   qp: Record<string, string | undefined>,
   errorMsg?: string,
-): string {
+): SafeHtml {
   // All passthrough params need to round-trip through the form so the POST
   // can re-validate without trusting the client to re-send query string.
-  const fields = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'code_challenge', 'code_challenge_method', 'resource'];
-  const hidden = fields
-    .map(k => `<input type="hidden" name="${k}" value="${escapeHtml(qp[k] ?? '')}">`)
-    .join('\n');
-  const errBlock = errorMsg
-    ? `<div class="err">${escapeHtml(errorMsg)}</div>`
-    : '';
-  return `<!doctype html>
+  // Building each <input> via `html` returns a SafeHtml; the array then
+  // interpolates into the outer template without re-escape.
+  const fields = ['response_type', 'client_id', 'redirect_uri', 'scope', 'state', 'code_challenge', 'code_challenge_method', 'resource'] as const;
+  const hidden = fields.map(k => html`<input type="hidden" name="${k}" value="${qp[k] ?? ''}">`);
+  const errBlock = errorMsg ? html`<div class="err">${errorMsg}</div>` : html``;
+  return html`<!doctype html>
 <html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -385,10 +378,10 @@ function renderConsent(
   <div class="sub">A client wants to call this ritsu server's MCP tools on your behalf.</div>
   ${errBlock}
   <dl>
-    <dt>Client</dt><dd>${escapeHtml(clientName)}</dd>
-    <dt>Redirect URI</dt><dd>${escapeHtml(qp.redirect_uri ?? '')}</dd>
-    <dt>Scope</dt><dd>${escapeHtml(qp.scope ?? 'mcp')}</dd>
-    <dt>Resource</dt><dd>${escapeHtml(qp.resource ?? '(default)')}</dd>
+    <dt>Client</dt><dd>${clientName}</dd>
+    <dt>Redirect URI</dt><dd>${qp.redirect_uri ?? ''}</dd>
+    <dt>Scope</dt><dd>${qp.scope ?? 'mcp'}</dd>
+    <dt>Resource</dt><dd>${qp.resource ?? '(default)'}</dd>
   </dl>
   <form method="post" action="/oauth/authorize" autocomplete="on">
     ${hidden}

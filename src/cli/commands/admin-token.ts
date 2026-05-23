@@ -15,7 +15,7 @@
  * use `ritsu token mint <name> --scope admin` — those don't touch the file.
  */
 import { readFileSync, writeFileSync, existsSync, chmodSync, chownSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../../util/safe-spawn.js';
 import { createInterface } from 'node:readline/promises';
 import type { Command, CommandContext } from '../registry.js';
 import { resolveAdminToken, resolveBaseUrl, apiCall, DEFAULT_ADMIN_TOKEN_FILE } from '../api.js';

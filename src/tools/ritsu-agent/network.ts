@@ -14,6 +14,7 @@ import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
+import { stripTrailingSlashes } from '../../util/path-utils.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
 const FETCH_MAX_BYTES = 200 * 1024;     // 200KB content cap
@@ -42,7 +43,7 @@ export interface NetworkOptions {
 }
 
 export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
-  const searxngUrl = (opts.searxng_url ?? DEFAULT_SEARXNG_URL).replace(/\/+$/, '');
+  const searxngUrl = stripTrailingSlashes(opts.searxng_url ?? DEFAULT_SEARXNG_URL);
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   return [

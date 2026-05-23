@@ -9,6 +9,7 @@
  *   3. /opt/ritsu/data/.admin-token on disk (default install location)
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { stripTrailingSlashes } from '../util/path-utils.js';
 
 export const DEFAULT_ADMIN_TOKEN_FILE = '/opt/ritsu/data/.admin-token';
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:7334';
@@ -34,9 +35,9 @@ export function resolveAdminToken(flagToken: string | boolean | undefined): stri
 }
 
 export function resolveBaseUrl(flagUrl: string | boolean | undefined): string {
-  if (typeof flagUrl === 'string' && flagUrl.trim()) return flagUrl.replace(/\/+$/, '');
+  if (typeof flagUrl === 'string' && flagUrl.trim()) return stripTrailingSlashes(flagUrl);
   const env = process.env.RITSU_URL;
-  if (env && env.trim()) return env.replace(/\/+$/, '');
+  if (env && env.trim()) return stripTrailingSlashes(env);
   return DEFAULT_BASE_URL;
 }
 

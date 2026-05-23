@@ -10,9 +10,10 @@
  * Removing = same minus the path. List = print current list.
  */
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { daemonReload, restartService, mountUnitFor, SERVICE_NAME } from '../systemd.js';
+import { stripTrailingSlashes } from '../../util/path-utils.js';
 
 const LIST_FILE = '/etc/ritsu/sandbox-paths.list';
 const DROPIN_DIR = '/etc/systemd/system/ritsu.service.d';
@@ -27,7 +28,7 @@ function readList(): string[] {
 }
 
 function writeList(paths: string[]): void {
-  const dedup = [...new Set(paths.map(p => p.replace(/\/+$/, '')).filter(p => p.startsWith('/')))];
+  const dedup = [...new Set(paths.map(stripTrailingSlashes).filter(p => p.startsWith('/')))];
   const content = [
     '# Managed by `ritsu path` — modify with `ritsu path add|remove`.',
     '# One absolute path per line. Each is appended to ritsu.service\'s',
@@ -80,7 +81,7 @@ async function cmdAdd(ctx: CommandContext): Promise<number> {
   if (!target) { console.error('usage: ritsu path add <absolute-path>'); return 2; }
   if (!target.startsWith('/')) { console.error('path must be absolute'); return 2; }
   const current = readList();
-  if (current.includes(target.replace(/\/+$/, ''))) {
+  if (current.includes(stripTrailingSlashes(target))) {
     console.log(`already present: ${target}`);
     return 0;
   }
@@ -93,7 +94,7 @@ async function cmdAdd(ctx: CommandContext): Promise<number> {
 async function cmdRemove(ctx: CommandContext): Promise<number> {
   const target = ctx.positional[0];
   if (!target) { console.error('usage: ritsu path remove <absolute-path>'); return 2; }
-  const t = target.replace(/\/+$/, '');
+  const t = stripTrailingSlashes(target);
   const current = readList();
   if (!current.includes(t)) {
     console.log(`not present: ${target}`);

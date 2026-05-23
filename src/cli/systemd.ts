@@ -4,7 +4,7 @@
  * would type at the shell. All callers assume root (the CLI re-execs under
  * sudo when needed).
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from '../util/safe-spawn.js';
 
 export const SERVICE_NAME = process.env.RITSU_SERVICE ?? 'ritsu.service';
 

@@ -9,6 +9,13 @@
 // ---- helpers ---------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/** Strip every trailing `/`. Regex-free (linear-time, no backtracking) so
+ *  static analyzers don't have to reason about regex engine behaviour. */
+function stripTrailingSlashes(s) {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  return end === s.length ? s : s.slice(0, end);
+}
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 const fmtRelative = (epoch) => {
   if (!epoch) return 'never';
@@ -669,7 +676,7 @@ function updateResolvedPath() {
   const root = $('ws-root').value || '';
   const sub  = ($('ws-subpath').value || '').replace(/^\/+/, '').trim();
   const resolved = root && sub
-    ? root.replace(/\/+$/, '') + '/' + sub
+    ? stripTrailingSlashes(root) + '/' + sub
     : (root || '—');
   $('ws-resolved').textContent = resolved;
 }
