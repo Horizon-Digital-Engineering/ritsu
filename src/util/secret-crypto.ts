@@ -42,7 +42,7 @@ let cachedKey: Buffer | null = null;
 
 function loadOrBootstrapMasterKey(): Buffer {
   const envVal = process.env[ENV_KEY_VAR];
-  if (envVal && envVal.trim()) {
+  if (envVal?.trim()) {
     const raw = Buffer.from(envVal.trim(), 'base64');
     if (raw.length !== KEY_BYTES) {
       throw new Error(`${ENV_KEY_VAR} must be ${KEY_BYTES} bytes base64-encoded`);

@@ -152,7 +152,7 @@ export class TelegramChannel implements CommChannel {
       this.offset = u.update_id + 1;
       if (!this.running) return;
       const msg = u.message ?? u.edited_message;
-      if (!msg || !msg.text) continue;
+      if (!msg?.text) continue;
       await this.handleMessage(msg);
     }
   }

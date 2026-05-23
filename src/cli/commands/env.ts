@@ -43,14 +43,14 @@ async function cmdGet(ctx: CommandContext): Promise<number> {
     return 0;
   }
   const match = entries.find(e => e.kind === 'kv' && e.key === key);
-  if (!match || match.kind !== 'kv') { console.error(`${key} not set`); return 1; }
+  if (match?.kind !== 'kv') { console.error(`${key} not set`); return 1; }
   console.log(match.value);
   return 0;
 }
 
 async function cmdSet(ctx: CommandContext): Promise<number> {
   const arg = ctx.positional[0];
-  if (!arg || !arg.includes('=')) { console.error('usage: ritsu env set KEY=VALUE'); return 2; }
+  if (!arg?.includes('=')) { console.error('usage: ritsu env set KEY=VALUE'); return 2; }
   const eq = arg.indexOf('=');
   const key = arg.slice(0, eq);
   const value = arg.slice(eq + 1);

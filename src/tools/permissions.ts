@@ -54,9 +54,12 @@ export function checkToolUse(
   // target = the file_path/path arg, resolved absolute.
   const cwd = workspaces[0]?.path;
   const rawPath = (input.file_path ?? input.path) as string | undefined;
-  const target = toolName === 'Bash'
-    ? cwd
-    : rawPath ? resolve(cwd ?? process.cwd(), rawPath) : cwd;
+  // Bash always operates from cwd; file tools resolve their path argument
+  // against cwd if relative. Falls back to cwd alone when no path arg given.
+  let target: string | undefined;
+  if (toolName === 'Bash') target = cwd;
+  else if (rawPath)         target = resolve(cwd ?? process.cwd(), rawPath);
+  else                       target = cwd;
 
   if (!target) {
     return { ok: false, reason: `${toolName}: no workspace and no target path` };

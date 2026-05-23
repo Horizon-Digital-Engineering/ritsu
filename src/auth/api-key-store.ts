@@ -135,7 +135,9 @@ export class ApiKeyStore {
    */
   reveal(id: number): { plaintext: string; provider: ApiKeyProvider; name: string } | null {
     const row = this.db.prepare('SELECT * FROM api_keys WHERE id = ?').get(id) as DbRow | undefined;
-    if (!row || row.revoked_at !== null) return null;
+    // Equivalent to `if (!row || row.revoked_at !== null) return null`:
+    // when row is undefined, row?.revoked_at is undefined, undefined !== null is true.
+    if (row?.revoked_at !== null) return null;
     const plaintext = unpackKey(row.key_enc);
     this.db
       .prepare(`UPDATE api_keys SET last_used_at = strftime('%s','now'), use_count = use_count + 1 WHERE id = ?`)

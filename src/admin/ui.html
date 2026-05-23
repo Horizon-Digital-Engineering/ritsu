@@ -13,14 +13,14 @@
     <h1>ritsu <small id="version">…</small></h1>
     <span class="info" id="info-bar"></span>
   </header>
-  <nav class="tabs primary" id="nav-primary">
+  <nav class="tabs primary" id="nav-primary" aria-label="Top-level admin sections">
     <button type="button" data-action="switch-group" data-group="dashboard" class="active">Dashboard</button>
     <button type="button" data-action="switch-group" data-group="agents">Agents</button>
     <button type="button" data-action="switch-group" data-group="comms">Comms</button>
     <button type="button" data-action="switch-group" data-group="auth">Auth</button>
     <button type="button" data-action="switch-group" data-group="system">System</button>
   </nav>
-  <nav class="tabs secondary empty" id="nav-secondary"></nav>
+  <nav class="tabs secondary empty" id="nav-secondary" aria-label="Sub-tabs for the active section"></nav>
 
   <main>
     <!-- ============ TILES (dashboard) ============ -->

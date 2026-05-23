@@ -106,7 +106,10 @@ export const doctorCommand: Command = {
 
     if (ctx.flags.json) { console.log(JSON.stringify({ checks }, null, 2)); return checks.some(c => c.status === 'fail') ? 1 : 0; }
 
-    const symbol = (s: Status) => s === 'ok' ? '✓' : s === 'warn' ? '!' : '✗';
+    const symbol = (s: Status): string => {
+      if (s === 'ok') return '✓';
+      return s === 'warn' ? '!' : '✗';
+    };
     const width = Math.max(...checks.map(c => c.name.length));
     for (const c of checks) {
       console.log(`  ${symbol(c.status)}  ${c.name.padEnd(width)}  ${c.detail}`);

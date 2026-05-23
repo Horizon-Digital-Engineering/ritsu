@@ -114,12 +114,14 @@ textarea { min-height: 8rem; resize: vertical; }
 .id-cell { font-weight: 600; }
 
 /* Per-agent glyph: hash(id) → 1 of 8 unicode shapes + 1 of 8 hues.
-   Same id → same visual, everywhere it appears. No avatar upload UI. */
+   Same id → same visual, everywhere it appears. No avatar upload UI.
+   The per-hue color overrides live with the hue-stop block further down. */
 .agent-glyph {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; margin-right: 6px;
   border-radius: 3px; font-size: 0.75rem; line-height: 1;
   vertical-align: -3px;
+  border: 1px solid transparent;
 }
 
 /* Copy-to-clipboard inline buttons */
@@ -366,7 +368,8 @@ body.panel-open { overflow: hidden; touch-action: none; }
 
 .tt-none { text-transform: none; }
 
-.row         { display: flex; gap: 8px; align-items: center; }
+/* `.row` itself is already defined in the layout-primitives block earlier.
+ *  This row group only adds the variants. */
 .row-top     { display: flex; gap: 8px; align-items: flex-start; }
 .row-wrap    { display: flex; flex-wrap: wrap; gap: 6px; }
 .row-between { display: flex; justify-content: space-between; align-items: center; }
@@ -523,16 +526,17 @@ body.panel-open { overflow: hidden; touch-action: none; }
 /* Per-agent glyph hue: discrete index → discrete color set. Keeps CSS
    static (so style-src can drop unsafe-inline) while still letting each
    agent get a stable per-id color. The 8 indices match GLYPH_HUES in
-   src/admin/app.js (hue stops 200/280/140/30/0/320/240/100). */
-.agent-glyph { border: 1px solid transparent; }
-.agent-glyph[data-hue-idx="0"] { color: hsl(200, 60%, 65%); background: hsl(200, 40%, 18%); border-color: hsl(200, 30%, 28%); }
-.agent-glyph[data-hue-idx="1"] { color: hsl(280, 60%, 65%); background: hsl(280, 40%, 18%); border-color: hsl(280, 30%, 28%); }
-.agent-glyph[data-hue-idx="2"] { color: hsl(140, 60%, 65%); background: hsl(140, 40%, 18%); border-color: hsl(140, 30%, 28%); }
-.agent-glyph[data-hue-idx="3"] { color: hsl( 30, 60%, 65%); background: hsl( 30, 40%, 18%); border-color: hsl( 30, 30%, 28%); }
-.agent-glyph[data-hue-idx="4"] { color: hsl(  0, 60%, 65%); background: hsl(  0, 40%, 18%); border-color: hsl(  0, 30%, 28%); }
-.agent-glyph[data-hue-idx="5"] { color: hsl(320, 60%, 65%); background: hsl(320, 40%, 18%); border-color: hsl(320, 30%, 28%); }
-.agent-glyph[data-hue-idx="6"] { color: hsl(240, 60%, 65%); background: hsl(240, 40%, 18%); border-color: hsl(240, 30%, 28%); }
-.agent-glyph[data-hue-idx="7"] { color: hsl(100, 60%, 65%); background: hsl(100, 40%, 18%); border-color: hsl(100, 30%, 28%); }
+   src/admin/app.js (hue stops 200/280/140/30/0/320/240/100).
+   Foreground bumped to 80% lightness so every hue clears WCAG AA contrast
+   against the 18%-lightness background. */
+.agent-glyph[data-hue-idx="0"] { color: hsl(200, 70%, 80%); background: hsl(200, 40%, 18%); border-color: hsl(200, 30%, 28%); }
+.agent-glyph[data-hue-idx="1"] { color: hsl(280, 70%, 80%); background: hsl(280, 40%, 18%); border-color: hsl(280, 30%, 28%); }
+.agent-glyph[data-hue-idx="2"] { color: hsl(140, 70%, 80%); background: hsl(140, 40%, 18%); border-color: hsl(140, 30%, 28%); }
+.agent-glyph[data-hue-idx="3"] { color: hsl( 30, 70%, 80%); background: hsl( 30, 40%, 18%); border-color: hsl( 30, 30%, 28%); }
+.agent-glyph[data-hue-idx="4"] { color: hsl(  0, 70%, 80%); background: hsl(  0, 40%, 18%); border-color: hsl(  0, 30%, 28%); }
+.agent-glyph[data-hue-idx="5"] { color: hsl(320, 70%, 80%); background: hsl(320, 40%, 18%); border-color: hsl(320, 30%, 28%); }
+.agent-glyph[data-hue-idx="6"] { color: hsl(240, 70%, 80%); background: hsl(240, 40%, 18%); border-color: hsl(240, 30%, 28%); }
+.agent-glyph[data-hue-idx="7"] { color: hsl(100, 70%, 80%); background: hsl(100, 40%, 18%); border-color: hsl(100, 30%, 28%); }
 
 /* ---- Responsive ---------------------------------------------- */
 /* Tablet / small-desktop: pull padding in, let tab bar scroll

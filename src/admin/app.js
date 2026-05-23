@@ -43,7 +43,6 @@ function glyphShape(agentId) {
 function glyphFor(agentId) {
   const h = agentHash(agentId);
   const shape = GLYPH_SHAPES[h % GLYPH_SHAPES.length];
-  const hue = GLYPH_HUES[Math.floor(h / GLYPH_SHAPES.length) % GLYPH_HUES.length];
   // Discrete hue index → CSS rule keyed off data-hue-idx in app.css. The
   // CSS owns the per-index hsl() triple, so we don't need an inline style
   // attribute here (which is what lets style-src drop 'unsafe-inline').
@@ -133,7 +132,7 @@ async function api(method, path, body) {
   }
   const text = await r.text();
   const json = text ? (() => { try { return JSON.parse(text); } catch { return null; } })() : null;
-  if (!r.ok) throw new Error((json && json.error) || `${r.status}`);
+  if (!r.ok) throw new Error(json?.error || `${r.status}`);
   return json;
 }
 
@@ -477,7 +476,7 @@ async function submitAgent(method) {
     refreshAgents(); refreshInfo();
     // Re-load the form from the server response so the Revert button reflects
     // the new previous_system_prompt state.
-    if (saved && saved.id) loadAgentForm(saved);
+    if (saved?.id) loadAgentForm(saved);
   } catch (e) { toast(e.message, 'err'); }
 }
 async function toggleAgent(id, enabled) {
@@ -547,7 +546,7 @@ function buildWarningHtml(toolList, workspaces, agentId) {
   const anyFsTool = needs.read || needs.write || needs.exec;
 
   // workspaces is one of: array of workspaces, [], or {error: msg}
-  if (workspaces && workspaces.error) {
+  if (workspaces?.error) {
     return `<div class="warn-banner">⚠ <strong>Could not load workspaces for this agent</strong> — ${esc(workspaces.error)}. The tool-vs-workspace check is paused; the agent may still work if workspaces exist server-side.</div>`;
   }
   const wsList = Array.isArray(workspaces) ? workspaces : [];
@@ -761,7 +760,8 @@ function renderTiles(tiles, now) {
   // Sort: most-recently-active first; agents that never ran sink to the bottom.
   const sorted = [...tiles].sort((a, b) => (b.last_activity_ts ?? 0) - (a.last_activity_ts ?? 0));
   grid.innerHTML = sorted.map(t => {
-    const dotCls = !t.enabled ? 'off' : (t.active ? 'active' : 'idle');
+    const dotCls = tileDotClass(t);
+    const dotTitle = tileDotTitle(t);
     const lastAct = t.last_activity_ts ? fmtRelativeSeconds(now - t.last_activity_ts) : 'never';
     const snippet = t.latest_conversation?.title?.trim();
     const snippetHtml = snippet
@@ -769,7 +769,7 @@ function renderTiles(tiles, now) {
       : `<div class="tile-snippet empty">no conversations yet</div>`;
     return `<div class="tile ${t.enabled ? '' : 'disabled'}" data-action="open-agent-panel" data-agent="${esc(t.id)}">
       <div class="tile-head">
-        <span class="tile-dot ${dotCls}" title="${t.enabled ? (t.active ? 'active in last 90s' : 'idle') : 'disabled'}"></span>
+        <span class="tile-dot ${dotCls}" title="${dotTitle}"></span>
         <span class="tile-name">${esc(t.id)}</span>
       </div>
       <div class="tile-meta">${esc(t.name)} · ${esc(t.model)}</div>
@@ -780,6 +780,37 @@ function renderTiles(tiles, now) {
       </div>
     </div>`;
   }).join('');
+}
+
+/** State label for an OAuth-issued token row. */
+function oauthTokenState(t, expired) {
+  if (t.revoked_at) return 'revoked';
+  return expired ? 'expired' : 'active';
+}
+
+/** Status-palette CSS class for an OAuth token row (revoked=error, expired=warn, active=info). */
+function oauthTokenStateClass(t, expired) {
+  if (t.revoked_at) return 'level-error';
+  return expired ? 'level-warn' : 'level-info';
+}
+
+/** Map an HTTP status code to the audit-table badge palette (4xx/5xx=error, 3xx=warn, 2xx=info). */
+function statusBadgeClass(status) {
+  if (status >= 400) return 'level-error';
+  if (status >= 300) return 'level-warn';
+  return 'level-info';
+}
+
+/** CSS class for a tile's status dot — disabled / active / idle. */
+function tileDotClass(t) {
+  if (!t.enabled) return 'off';
+  return t.active ? 'active' : 'idle';
+}
+
+/** Tooltip text for a tile's status dot. */
+function tileDotTitle(t) {
+  if (!t.enabled) return 'disabled';
+  return t.active ? 'active in last 90s' : 'idle';
 }
 
 function fmtRelativeSeconds(deltaSec) {
@@ -1070,7 +1101,9 @@ async function openConversation(id, agentId, title) {
     const { messages } = await api('GET', `/admin/api/conversations/${id}`);
     openConvId = id; openConvAgent = agentId;
     $('conv-detail').classList.remove('hidden');
-    $('conv-detail-title').innerHTML = `${glyphFor(agentId)}<code>${esc(agentId)}</code> · conversation ${id} · ${messages.length} message${messages.length===1?'':'s'}${title ? ` · ${esc(title)}` : ''}`;
+    const msgWord = messages.length === 1 ? 'message' : 'messages';
+    const titleSuffix = title ? ` · ${esc(title)}` : '';
+    $('conv-detail-title').innerHTML = `${glyphFor(agentId)}<code>${esc(agentId)}</code> · conversation ${id} · ${messages.length} ${msgWord}${titleSuffix}`;
     // Byline only when the caller is another agent. admin-ui / any MCP
     // bearer token = "you" with no byline; device labels aren't useful
     // for a single-operator setup.
@@ -1567,7 +1600,7 @@ function currentBearer() {
   // the call hits the MCP surface as the operator's MCP client would.
   const store = readTokenStore();
   for (const entry of Object.values(store)) {
-    if (entry && entry.token) return entry.token;
+    if (entry?.token) return entry.token;
   }
   return null;
 }
@@ -1860,9 +1893,8 @@ async function openOAuthClientTokens(clientId) {
     const now = Date.now() / 1000;
     const rows = tokens.map(t => {
       const expired = t.expires_at < now;
-      const state = t.revoked_at ? 'revoked' : (expired ? 'expired' : 'active');
-      // Reuse the audit tab's status palette: active=info, expired=warn, revoked=error.
-      const cls = t.revoked_at ? 'level-error' : (expired ? 'level-warn' : 'level-info');
+      const state = oauthTokenState(t, expired);
+      const cls = oauthTokenStateClass(t, expired);
       return `<tr>
         <td><span class="badge">${esc(t.kind)}</span></td>
         <td><code class="fs-md">${esc(t.token_hash.slice(0, 16))}…</code></td>
@@ -1918,9 +1950,7 @@ function renderAudit() {
       ? esc(r.token_name)
       : '<em class="txt-muted">—</em>';
     // Reuse the existing log-level badge palette: 2xx=info, 3xx=warn, 4xx/5xx=error.
-    const statusCls = r.status >= 400 ? 'level-error'
-                    : r.status >= 300 ? 'level-warn'
-                    : 'level-info';
+    const statusCls = statusBadgeClass(r.status);
     const time    = fmtTime(new Date(r.ts * 1000).toISOString());
     const fullIso = new Date(r.ts * 1000).toISOString();
     const sha     = r.body_sha256 ? ` · body sha256:${r.body_sha256.slice(0, 16)}…` : '';
@@ -2038,10 +2068,12 @@ document.addEventListener('click', (e) => {
 
 // ---- bootstrap --------------------------------------------------------
 renderNav();
-loadAgentTypes().then(refreshAgents);
-loadAvailableTools();
-loadLogLevels();
-refreshInfo();
+// Kick the initial-load endpoints in parallel; top-level await unwraps the
+// promises here so SonarQube's S7785 sees plain awaits, not floating
+// promises / .then() chains. refreshAgents depends on agent-types finishing
+// first, so it's a sequential await after loadAgentTypes.
+await loadAgentTypes();
+await Promise.all([refreshAgents(), loadAvailableTools(), loadLogLevels(), refreshInfo()]);
 setInterval(refreshInfo, 5000);
 
 // Tiles is the default tab → kick its polling immediately.

@@ -17,7 +17,7 @@ export const DEFAULT_BASE_URL = 'http://127.0.0.1:7334';
 export function resolveAdminToken(flagToken: string | boolean | undefined): string {
   if (typeof flagToken === 'string' && flagToken.trim()) return flagToken.trim();
   const env = process.env.RITSU_ADMIN_TOKEN;
-  if (env && env.trim()) return env.trim();
+  if (env?.trim()) return env.trim();
   if (existsSync(DEFAULT_ADMIN_TOKEN_FILE)) {
     try {
       return readFileSync(DEFAULT_ADMIN_TOKEN_FILE, 'utf8').trim();
@@ -37,7 +37,7 @@ export function resolveAdminToken(flagToken: string | boolean | undefined): stri
 export function resolveBaseUrl(flagUrl: string | boolean | undefined): string {
   if (typeof flagUrl === 'string' && flagUrl.trim()) return stripTrailingSlashes(flagUrl);
   const env = process.env.RITSU_URL;
-  if (env && env.trim()) return stripTrailingSlashes(env);
+  if (env?.trim()) return stripTrailingSlashes(env);
   return DEFAULT_BASE_URL;
 }
 

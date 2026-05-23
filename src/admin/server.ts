@@ -150,6 +150,31 @@ function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | nu
   return parsed.data;
 }
 
+/** Validate a channel's config payload against the right schema for the kind.
+ *  Used by the create + patch endpoints; lifted out of createAdminApp so the
+ *  surrounding closure stays small. */
+function validateChannelConfig(kind: string, config: unknown): unknown {
+  switch (kind) {
+    case 'telegram': return TelegramConfigSchema.parse(config);
+    default: throw new Error(`unknown channel kind: ${kind}`);
+  }
+}
+
+/** Redact secrets before returning a channel row to the client — bot tokens
+ *  must never round-trip through the API. Pure transform; module-scope so
+ *  closure overhead doesn't compound across the channel handlers. */
+function redactChannel<T extends { config: unknown } | null>(row: T): T {
+  if (!row) return row;
+  const config = row.config && typeof row.config === 'object'
+    ? { ...(row.config as Record<string, unknown>) }
+    : row.config;
+  if (config && typeof config === 'object' && 'bot_token' in config && typeof config.bot_token === 'string') {
+    const t = config.bot_token;
+    (config as Record<string, unknown>).bot_token = t.length > 8 ? `${t.slice(0, 4)}…${t.slice(-4)}` : '…';
+  }
+  return { ...row, config };
+}
+
 /**
  * Resolve the workspace's target path from one of the two accepted body
  * shapes (legacy {path}, or new picker {root, subpath}). Returns the
@@ -1094,27 +1119,6 @@ export function createAdminApp(deps: AdminDeps) {
     config: z.unknown(),
     enabled: z.boolean().optional(),
   });
-
-  /** Validate the config payload against the right schema for the channel kind. */
-  function validateChannelConfig(kind: string, config: unknown): unknown {
-    switch (kind) {
-      case 'telegram': return TelegramConfigSchema.parse(config);
-      default: throw new Error(`unknown channel kind: ${kind}`);
-    }
-  }
-
-  /** Redact secrets before returning to the client. We never echo bot tokens. */
-  function redactChannel(row: ReturnType<typeof deps.channels.read>) {
-    if (!row) return row;
-    const config = row.config && typeof row.config === 'object'
-      ? { ...(row.config as Record<string, unknown>) }
-      : row.config;
-    if (config && typeof config === 'object' && 'bot_token' in config && typeof config.bot_token === 'string') {
-      const t = config.bot_token;
-      (config as Record<string, unknown>).bot_token = t.length > 8 ? `${t.slice(0, 4)}…${t.slice(-4)}` : '…';
-    }
-    return { ...row, config };
-  }
 
   app.get('/admin/api/channels', (_req: Request, res: Response) => {
     res.json({ channels: deps.channels.list().map(redactChannel) });
