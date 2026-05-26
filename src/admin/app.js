@@ -136,6 +136,55 @@ async function api(method, path, body) {
   return json;
 }
 
+/**
+ * Authenticated SSE consumer. Browser's EventSource can't send custom
+ * headers, so admin-gated streams have to use streaming fetch + manual
+ * parsing of the text/event-stream wire format.
+ *
+ * Caller passes an AbortController signal so they can close the stream
+ * via controller.abort(). onEvent receives the parsed JSON of each
+ * `data:` block. Comment lines (`:keepalive`) are dropped.
+ *
+ * Auto-reconnect: on transport failure, waits 2s and reopens. Caller
+ * aborts to stop the loop permanently.
+ */
+async function sseFetch(path, onEvent, signal) {
+  while (!signal.aborted) {
+    try {
+      const r = await fetch(path, {
+        headers: { 'X-Ritsu-Admin-Token': getAdminToken(), Accept: 'text/event-stream' },
+        signal,
+      });
+      if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (!signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // SSE events end with a blank line (\n\n). Split, keep the
+        // trailing partial in buf for the next chunk.
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const dataLines = raw.split('\n')
+            .filter(l => l.startsWith('data: '))
+            .map(l => l.slice(6));
+          if (!dataLines.length) continue;
+          try { onEvent(JSON.parse(dataLines.join('\n'))); }
+          catch { /* malformed payload — skip, keep stream alive */ }
+        }
+      }
+    } catch (e) {
+      if (signal.aborted) return;
+      console.warn('sse reconnect in 2s:', e?.message ?? e);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+
 function toast(msg, kind = 'ok') {
   const el = $('toast');
   el.classList.remove('hidden');
@@ -736,10 +785,10 @@ let tilesPollHandle = null;
 let panelAgentId = null;
 let panelConvoId = null;
 let panelAsking = false;
-// SSE connection that fires for EVERY conversation event in the
-// server; we filter by panelConvoId on receipt. Opened on
-// openAgentPanel, closed on closeAgentPanel.
-let panelSse = null;
+// AbortController for the conversation-events stream — fires for EVERY
+// conversation event in the server, we filter by panelConvoId on
+// receipt. Opened on openAgentPanel, aborted on closeAgentPanel.
+let panelSseAbort = null;
 // Set of conversation ids currently being processed by SOMEONE — this
 // tab, another tab, another machine, or an agent-to-agent call. Driven
 // by ask-start / ask-end SSE events. We render typing dots when our
@@ -1010,26 +1059,19 @@ function closeAgentPanel() {
   closePanelSse();
 }
 
-/** Open the conversation-events SSE if not already open. EventSource
- *  auto-reconnects on transport failure (same pattern as the logs
- *  stream) so we don't need manual retry. */
+/** Open the conversation-events stream if not already open. Uses
+ *  streaming fetch (not EventSource) so the admin token can ride in
+ *  the X-Ritsu-Admin-Token header rather than leaking into the URL. */
 function ensurePanelSse() {
-  if (panelSse) return;
-  panelSse = new EventSource('/admin/api/conversations/stream');
-  panelSse.onmessage = (e) => {
-    let ev;
-    try { ev = JSON.parse(e.data); }
-    catch { return; }
-    handlePanelSseEvent(ev);
-  };
-  // EventSource auto-reconnects on transport errors; nothing to do here.
-  panelSse.onerror = () => {};
+  if (panelSseAbort) return;
+  panelSseAbort = new AbortController();
+  sseFetch('/admin/api/conversations/stream', handlePanelSseEvent, panelSseAbort.signal);
 }
 
 function closePanelSse() {
-  if (!panelSse) return;
-  panelSse.close();
-  panelSse = null;
+  if (!panelSseAbort) return;
+  panelSseAbort.abort();
+  panelSseAbort = null;
   panelInFlight.clear();
 }
 
@@ -1733,39 +1775,28 @@ async function deleteToken(id) {
 }
 
 // ---- logs -------------------------------------------------------------
-let logSource = null;
+let logStreamAbort = null;
 let logPaused = false;
 let logBuffer = [];   // raw events seen
 const LOG_MAX = 500;
 async function openLogStream() {
-  if (logSource) return;
+  if (logStreamAbort) return;
   // Initial backfill
   try {
     const { events } = await api('GET', '/admin/api/events/recent?limit=200');
     logBuffer = events.slice(-LOG_MAX);
     renderLogs();
   } catch (e) { toast(e.message, 'err'); }
-  logSource = new EventSource('/admin/api/events/stream');
-  logSource.onmessage = (e) => {
+  logStreamAbort = new AbortController();
+  sseFetch('/admin/api/events/stream', (ev) => {
     if (logPaused) return;
-    try {
-      const ev = JSON.parse(e.data);
-      logBuffer.push(ev);
-      if (logBuffer.length > LOG_MAX) logBuffer.shift();
-      renderLogs();
-    } catch (err) {
-      // Malformed SSE event payload (truncated stream, garbage line). One
-      // bad event shouldn't break the live tail — log it and keep going.
-      console.warn('log-tail parse error', err);
-    }
-  };
-  logSource.onerror = () => {
-    // EventSource auto-reconnects on transport errors; no manual handling
-    // needed, but documenting that the empty body is deliberate.
-  };
+    logBuffer.push(ev);
+    if (logBuffer.length > LOG_MAX) logBuffer.shift();
+    renderLogs();
+  }, logStreamAbort.signal);
 }
 function closeLogStream() {
-  if (logSource) { logSource.close(); logSource = null; }
+  if (logStreamAbort) { logStreamAbort.abort(); logStreamAbort = null; }
 }
 async function loadLogLevels() {
   const { level } = await api('GET', '/admin/api/log-level');

@@ -7,7 +7,8 @@ versioning per [semver](https://semver.org/).
 ## [0.7.0] — 2026-05-26
 
 Slide-in chat panel: live conversation sync across tabs/devices, animated
-typing indicator, wider desktop layout.
+typing indicator, wider desktop layout. Plus a stealth-fix for the logs
+Live tail (silently 401-ing since admin auth tightened).
 
 ### Added
 
@@ -32,6 +33,17 @@ typing indicator, wider desktop layout.
 - **Desktop chat panel widened** from `min(440px, 100vw)` to
   `min(640px, 45vw)`. Tablet (≤900px) sits in the middle on the 45vw
   side of the clamp; mobile (≤540px) stays at 100vw.
+
+### Fixed
+
+- **Authenticated SSE streams.** Both the logs Live tail and the new
+  conversation stream now consume `text/event-stream` via streaming
+  `fetch()` + a small in-browser parser, with the admin token riding
+  in the `X-Ritsu-Admin-Token` header. The previous `new EventSource`
+  could not attach the header and was 401-ing silently (the page
+  showed only the static backfill from `/events/recent`). New helper
+  `sseFetch(path, onEvent, signal)` in `admin/app.js`; AbortController
+  for clean teardown + transparent 2s-delay auto-reconnect.
 
 ## [0.6.2] — 2026-05-23
 
