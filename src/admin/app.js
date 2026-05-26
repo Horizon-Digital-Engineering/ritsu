@@ -736,6 +736,15 @@ let tilesPollHandle = null;
 let panelAgentId = null;
 let panelConvoId = null;
 let panelAsking = false;
+// SSE connection that fires for EVERY conversation event in the
+// server; we filter by panelConvoId on receipt. Opened on
+// openAgentPanel, closed on closeAgentPanel.
+let panelSse = null;
+// Set of conversation ids currently being processed by SOMEONE — this
+// tab, another tab, another machine, or an agent-to-agent call. Driven
+// by ask-start / ask-end SSE events. We render typing dots when our
+// panelConvoId is in this set.
+const panelInFlight = new Set();
 
 function startTilesPolling() {
   refreshTiles();
@@ -844,6 +853,7 @@ async function openAgentPanel(agentId) {
   setPanelReadOnly(false);  // fresh open is always editable
   // Schedule a transcript-padding sync once the panel finishes animating in.
   requestAnimationFrame(syncTranscriptPadding);
+  ensurePanelSse();
   $('ap-id').textContent = agentId;
   $('ap-sub').textContent = 'loading…';
   $('ap-transcript').innerHTML = '<div class="ap-empty">loading…</div>';
@@ -898,31 +908,56 @@ function renderTranscript(messages) {
   const visible = messages.filter(m => m.role !== 'system');
   if (!visible.length) {
     t.innerHTML = '<div class="ap-empty">no messages yet — send something below.</div>';
-    return;
+  } else {
+    // Byline only when the caller is another *agent*. Everything else
+    // (admin-ui, any MCP bearer token, etc.) is "you" — device doesn't
+    // matter; the operator is one person.
+    const agentIds = new Set((agentCache || []).map(a => a.id));
+    t.innerHTML = visible.map(m => {
+      const showByline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label);
+      const byline = showByline
+        ? `<div class="transcript-byline">${esc(m.caller_label)}</div>`
+        : '';
+      return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}</div>`;
+    }).join('');
   }
-  // Byline only when the caller is another *agent*. Everything else
-  // (admin-ui, any MCP bearer token, etc.) is "you" — device doesn't
-  // matter; the operator is one person.
-  const agentIds = new Set((agentCache || []).map(a => a.id));
-  t.innerHTML = visible.map(m => {
-    const showByline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label);
-    const byline = showByline
-      ? `<div class="transcript-byline">${esc(m.caller_label)}</div>`
-      : '';
-    return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}</div>`;
-  }).join('');
+  // If a turn is currently in flight (here or in another tab), keep the
+  // typing-dot bubble at the bottom of the transcript after every render.
+  if (panelConvoId !== null && panelInFlight.has(panelConvoId)) {
+    ensurePendingBubble();
+  }
   t.scrollTop = t.scrollHeight;
 }
 
-function appendTranscript(role, content, pending = false) {
+function appendTranscript(role, content) {
   const t = $('ap-transcript');
   if (t.querySelector('.ap-empty')) t.innerHTML = '';
   const div = document.createElement('div');
-  div.className = `ap-msg ${role}${pending ? ' pending' : ''}`;
+  div.className = `ap-msg ${role}`;
   div.textContent = content;
   t.appendChild(div);
   t.scrollTop = t.scrollHeight;
   return div;
+}
+
+/** Ensure the bottom of the transcript shows a typing-dots bubble.
+ *  Idempotent — multiple ask-start events for the same convo only ever
+ *  produce one bubble. */
+function ensurePendingBubble() {
+  const t = $('ap-transcript');
+  if (t.querySelector('.ap-msg.pending')) return;
+  if (t.querySelector('.ap-empty')) t.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'ap-msg assistant pending';
+  div.innerHTML = '<span class="ap-typing"><span></span><span></span><span></span></span>';
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+}
+
+function removePendingBubble() {
+  const t = $('ap-transcript');
+  const pending = t.querySelector('.ap-msg.pending');
+  if (pending) pending.remove();
 }
 
 async function sendPanelAsk() {
@@ -932,15 +967,17 @@ async function sendPanelAsk() {
   panelAsking = true;
   $('ap-send').disabled = true;
   $('ap-input').value = '';
+  // Optimistic user bubble so the operator sees their input land
+  // instantly; the SSE 'message' event will reload the transcript
+  // shortly with the canonical row. Typing dots are driven by the
+  // server's ask-start SSE event (also covers other-tab + agent-to-
+  // agent + telegram-bot callers).
   appendTranscript('user', msg);
-  const pendingNode = appendTranscript('assistant', '…', true);
   try {
     const body = { message: msg };
     if (panelConvoId) body.conversation_id = panelConvoId;
     const resp = await api('POST', `/admin/agents/${panelAgentId}/ask`, body);
     panelConvoId = resp.conversation_id;
-    pendingNode.classList.remove('pending');
-    pendingNode.textContent = resp.reply ?? '(empty reply)';
     // If the trigger label was "(empty)" before the first turn, refresh
     // it now that the convo has a first user message to title with.
     if ($('ap-meta').textContent === '(empty)') {
@@ -948,9 +985,11 @@ async function sendPanelAsk() {
       updateMetaFromMessages(messages);
     }
   } catch (e) {
-    pendingNode.classList.remove('pending', 'assistant');
-    pendingNode.classList.add('system');
-    pendingNode.textContent = `error: ${e.message}`;
+    removePendingBubble();
+    const errNode = document.createElement('div');
+    errNode.className = 'ap-msg system';
+    errNode.textContent = `error: ${e.message}`;
+    $('ap-transcript').appendChild(errNode);
     toast(e.message, 'err');
   } finally {
     panelAsking = false;
@@ -968,6 +1007,55 @@ function closeAgentPanel() {
   setPanelReadOnly(false);
   panelAgentId = null;
   panelConvoId = null;
+  closePanelSse();
+}
+
+/** Open the conversation-events SSE if not already open. EventSource
+ *  auto-reconnects on transport failure (same pattern as the logs
+ *  stream) so we don't need manual retry. */
+function ensurePanelSse() {
+  if (panelSse) return;
+  panelSse = new EventSource('/admin/api/conversations/stream');
+  panelSse.onmessage = (e) => {
+    let ev;
+    try { ev = JSON.parse(e.data); }
+    catch { return; }
+    handlePanelSseEvent(ev);
+  };
+  // EventSource auto-reconnects on transport errors; nothing to do here.
+  panelSse.onerror = () => {};
+}
+
+function closePanelSse() {
+  if (!panelSse) return;
+  panelSse.close();
+  panelSse = null;
+  panelInFlight.clear();
+}
+
+/** Apply a server-sent conversation event to the panel state. Most
+ *  events are irrelevant (other agent's conversations, other threads
+ *  with our agent); only ones matching panelConvoId reach the DOM. */
+function handlePanelSseEvent(ev) {
+  if (!panelAgentId) return;
+  if (ev.conversation_id !== panelConvoId) return;
+  if (ev.kind === 'message') {
+    // Authoritative re-render from server state. Wipes any optimistic
+    // bubbles + applies any out-of-band turns (telegram bot, MCP
+    // caller, agent-to-agent, second browser tab).
+    loadPanelTranscript();
+  } else if (ev.kind === 'ask-start') {
+    panelInFlight.add(ev.conversation_id);
+    ensurePendingBubble();
+  } else if (ev.kind === 'ask-end') {
+    panelInFlight.delete(ev.conversation_id);
+    // The matching 'message' event from the assistant turn already
+    // re-rendered the transcript and dropped the pending bubble. If
+    // ask-end arrived first (race), the upcoming message event will
+    // clean it up; meanwhile remove the bubble eagerly so the dots
+    // don't linger forever on errors.
+    removePendingBubble();
+  }
 }
 
 // ---- Conversation picker (slide-in chat panel) ------------------------

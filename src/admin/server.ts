@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { AgentDefinitionSchema, AgentDefinitionPatchSchema } from './schema.js';
 import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
+import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
@@ -672,6 +673,30 @@ export function createAdminApp(deps: AdminDeps) {
     });
   });
 
+  // Live conversation events — message appends + ask-start/ask-end typing
+  // signals. The slide-in chat panel subscribes when open so messages sent
+  // from another tab / phone / MCP caller / agent-to-agent flow appear
+  // without a manual refresh, and the typing indicator follows whoever is
+  // currently asking (even if that's another session).
+  app.get('/admin/api/conversations/stream', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const onEvent = (ev: ConversationEvent): void => {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    };
+    conversationBus.on('event', onEvent);
+    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
+
+    req.on('close', () => {
+      clearInterval(ping);
+      conversationBus.off('event', onEvent);
+    });
+  });
+
   // ---- agents ------------------------------------------------------------
 
   app.get('/admin/agents/types', (_req: Request, res: Response) => {
@@ -805,16 +830,34 @@ export function createAdminApp(deps: AdminDeps) {
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
     const { message, conversation_id } = ask;
+    // Resolve the conversation up-front so the typing-dot SSE events
+    // carry the same id as the message events that follow. If the
+    // caller didn't supply one, this is the canonical human thread the
+    // agent will use anyway (see SqliteConversationStore.findOrStart…).
+    const resolvedConvoId = conversation_id ?? conversations.findOrStartHumanThread(def.id);
+    conversationBus.publish({
+      kind: 'ask-start',
+      conversation_id: resolvedConvoId,
+      agent_id: def.id,
+      ts: Math.floor(Date.now() / 1000),
+    });
     try {
       const t0 = Date.now();
       // Admin calls always come from "the user" — there's one operator and no
       // need to differentiate which device/token. The UI hides the byline
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
-      const r = await host.get(def.id).onMessage({ message, conversation_id, caller_label: 'admin-ui' });
+      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui' });
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    } finally {
+      conversationBus.publish({
+        kind: 'ask-end',
+        conversation_id: resolvedConvoId,
+        agent_id: def.id,
+        ts: Math.floor(Date.now() / 1000),
+      });
     }
   });
 

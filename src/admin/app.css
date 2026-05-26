@@ -229,7 +229,11 @@ textarea { min-height: 8rem; resize: vertical; }
   position: fixed; right: 0;
   top: var(--vvtop, 0px);
   height: var(--vvh, 100dvh);
-  width: min(440px, 100vw);
+  /* Desktop: wide enough to actually read a transcript without the
+     sentence-per-line squish. The 45vw clamp keeps it from dominating
+     ultra-wide monitors. Mobile/tablet overrides below take this to
+     100vw or the 440px tablet width. */
+  width: min(640px, 45vw);
   background: var(--panel); border-left: 1px solid var(--line);
   display: flex; flex-direction: column;
   transform: translateX(100%); transition: transform 0.18s ease-out;
@@ -283,7 +287,24 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .ap-msg.user { background: var(--panel-2); align-self: flex-end; max-width: 88%; }
 .ap-msg.assistant { background: #1b2533; align-self: flex-start; max-width: 92%; }
 .ap-msg.system { background: transparent; color: var(--muted); font-style: italic; font-size: 0.78rem; }
-.ap-msg.pending { opacity: 0.6; }
+.ap-msg.pending { opacity: 0.85; padding: 10px 14px; }
+
+/* Three bouncing dots in the pending assistant bubble — replaces the
+   static '…' so the user can tell the request is alive rather than
+   silently hung. Animation runs forever; the bubble is removed when
+   the real reply arrives (or when ask-end fires from SSE). */
+.ap-typing { display: inline-flex; gap: 4px; align-items: center; height: 1em; }
+.ap-typing > span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+  animation: ap-typing-bounce 1.2s infinite ease-in-out;
+}
+.ap-typing > span:nth-child(2) { animation-delay: 0.15s; }
+.ap-typing > span:nth-child(3) { animation-delay: 0.30s; }
+@keyframes ap-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30%           { transform: translateY(-4px); opacity: 1; }
+}
 .ap-empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 0.85rem; }
 .ap-ask {
   /* Float above the scrolling transcript so the input is always visible.

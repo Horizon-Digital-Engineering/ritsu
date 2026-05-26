@@ -1,3 +1,4 @@
+import { conversationBus } from './conversation-bus.js';
 import type { Db } from './db.js';
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -78,6 +79,20 @@ export class SqliteConversationStore implements ConversationStore {
     const r = this.db
       .prepare('INSERT INTO messages (conversation_id, role, content, caller_label) VALUES (?, ?, ?, ?)')
       .run(conversation_id, role, content, caller_label ?? null);
+    // Look up agent_id once so SSE subscribers can scope by agent without
+    // a second round-trip. Cheap (indexed lookup on the row we just touched).
+    const row = this.db
+      .prepare('SELECT agent_id FROM conversations WHERE id = ?')
+      .get(conversation_id) as { agent_id: string } | undefined;
+    conversationBus.publish({
+      kind: 'message',
+      conversation_id,
+      agent_id: row?.agent_id ?? '',
+      role,
+      content,
+      caller_label: caller_label ?? null,
+      ts: Math.floor(Date.now() / 1000),
+    });
     return Number(r.lastInsertRowid);
   }
 

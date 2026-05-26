@@ -4,6 +4,35 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.7.0] — 2026-05-26
+
+Slide-in chat panel: live conversation sync across tabs/devices, animated
+typing indicator, wider desktop layout.
+
+### Added
+
+- **Live conversation sync.** New `/admin/api/conversations/stream` SSE
+  endpoint backed by `src/conversation-bus.ts` (singleton EventEmitter).
+  `SqliteConversationStore.append()` publishes a `message` event on
+  every turn so any tab with the slide-in chat panel open re-renders
+  the transcript without a manual refresh. Covers cross-tab,
+  cross-device, agent-to-agent, and channel-bot (telegram)
+  message-source paths.
+- **Animated typing indicator.** The pending assistant bubble now
+  renders three CSS-animated bouncing dots. Driven by `ask-start` /
+  `ask-end` events from the same bus, so the indicator follows the
+  *caller* — open the panel on your desktop while your phone is
+  asking the agent, you see the dots.
+- **Test (`src/__tests__/conversation-bus.test.ts`)** covering
+  message-event publish on append, ask-start/end round-trip, and
+  null caller_label default.
+
+### Changed
+
+- **Desktop chat panel widened** from `min(440px, 100vw)` to
+  `min(640px, 45vw)`. Tablet (≤900px) sits in the middle on the 45vw
+  side of the clamp; mobile (≤540px) stays at 100vw.
+
 ## [0.6.2] — 2026-05-23
 
 Patch release for an admin-UI regression that 0.6.1 was carrying
