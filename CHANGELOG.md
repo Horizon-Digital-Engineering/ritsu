@@ -4,6 +4,27 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.7.1] — 2026-05-26
+
+Chat panel resume-from-background polish — primarily for iOS Safari.
+
+### Fixed
+
+- **"Load failed" on resume.** When iOS suspended a backgrounded tab
+  with the chat panel open, in-flight `/ask` fetches died with
+  `TypeError: Load failed` and the user's typed message vanished
+  into the error bubble. Send-failure path now restores the
+  optimistic user bubble out of the transcript, puts the message
+  text back in the input, and renders a friendlier "connection
+  dropped — tap Send to retry" instead of the raw browser error.
+- **Stale transcript after backgrounding.** Added a
+  `visibilitychange` handler that, on every transition back to
+  `visible` with the panel open, force-reconnects the SSE stream
+  (Safari sometimes leaves the socket in a delivers-nothing zombie
+  state) and reloads the transcript so any messages that landed
+  while the tab was asleep show up immediately. No more hard-refresh
+  needed.
+
 ## [0.7.0] — 2026-05-26
 
 Slide-in chat panel: live conversation sync across tabs/devices, animated

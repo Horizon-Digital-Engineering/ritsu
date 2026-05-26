@@ -1021,7 +1021,7 @@ async function sendPanelAsk() {
   // shortly with the canonical row. Typing dots are driven by the
   // server's ask-start SSE event (also covers other-tab + agent-to-
   // agent + telegram-bot callers).
-  appendTranscript('user', msg);
+  const optimisticBubble = appendTranscript('user', msg);
   try {
     const body = { message: msg };
     if (panelConvoId) body.conversation_id = panelConvoId;
@@ -1034,12 +1034,22 @@ async function sendPanelAsk() {
       updateMetaFromMessages(messages);
     }
   } catch (e) {
+    // Send failed (typically: iOS Safari suspended the tab and killed
+    // the in-flight fetch with TypeError: Load failed). Pull the
+    // optimistic bubble + pending dots off, put the operator's text
+    // back in the box so they can just tap Send again — losing their
+    // message into the void is the worst failure mode here.
+    optimisticBubble.remove();
     removePendingBubble();
+    $('ap-input').value = msg;
+    const friendly = /load failed|networkerror|failed to fetch/i.test(e.message)
+      ? 'connection dropped — tap Send to retry'
+      : `error: ${e.message}`;
     const errNode = document.createElement('div');
     errNode.className = 'ap-msg system';
-    errNode.textContent = `error: ${e.message}`;
+    errNode.textContent = friendly;
     $('ap-transcript').appendChild(errNode);
-    toast(e.message, 'err');
+    toast(friendly, 'err');
   } finally {
     panelAsking = false;
     $('ap-send').disabled = false;
@@ -1067,6 +1077,22 @@ function ensurePanelSse() {
   panelSseAbort = new AbortController();
   sseFetch('/admin/api/conversations/stream', handlePanelSseEvent, panelSseAbort.signal);
 }
+
+// Resume handler: iOS Safari (and to a lesser extent desktop browsers
+// after a long sleep) suspends backgrounded tabs aggressively. In-flight
+// fetches die with TypeError: Load failed; the streaming SSE connection
+// either errors or, worse, sits there silently delivering no bytes. On
+// every transition back to 'visible' with the panel open we (a) force-
+// reconnect the SSE so we don't drift behind, and (b) reload the
+// transcript so any out-of-band messages that landed while suspended
+// (telegram, another tab, an agent-to-agent call) show up immediately.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!panelAgentId) return;
+  closePanelSse();
+  ensurePanelSse();
+  loadPanelTranscript();
+});
 
 function closePanelSse() {
   if (!panelSseAbort) return;
