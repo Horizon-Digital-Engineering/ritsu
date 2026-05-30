@@ -85,6 +85,13 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts);
     const { mcpServers, allowedTools } = buildMcpServers(this.opts);
 
+    // Cache the most recent non-empty text from any 'assistant' event as the
+    // stream flows by. When the agent's final action is a tool_use (e.g.
+    // mcp__memory__update_memory) without a follow-up text turn, the SDK's
+    // terminal result message has `result: ""` and the user sees a blank
+    // reply. The last cached assistant text is the right thing to return in
+    // that case — it's the model's most recent words to the user.
+    let lastAssistantText = '';
     for await (const event of query({
       prompt: userPrompt,
       options: {
@@ -97,8 +104,19 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         ...(canUseTool ? { canUseTool } : {}),
       },
     })) {
+      const text = extractAssistantText(event);
+      if (text) lastAssistantText = text;
       const result = extractResult(event, model);
-      if (result) return result;
+      if (result) {
+        if (!result.content && lastAssistantText) {
+          logger.debug('claude-direct.result-fallback', {
+            reason: 'empty-result-using-last-assistant-text',
+            len: lastAssistantText.length,
+          });
+          return { ...result, content: lastAssistantText };
+        }
+        return result;
+      }
     }
 
     throw new Error('Claude SDK stream ended without a result message');
@@ -186,6 +204,30 @@ function buildMcpServers(opts: ClaudeDirectOpts): {
     allowedTools.push(...MONITOR_TOOL_NAMES);
   }
   return { mcpServers, allowedTools };
+}
+
+/**
+ * Pull joined plain-text from an 'assistant' SDK event's content blocks.
+ * The model emits a `BetaMessage` per assistant turn whose `content` is an
+ * array of typed blocks; we join every `{ type: 'text', text }` block and
+ * drop the rest (tool_use, thinking, etc.). Returns '' for non-assistant
+ * events, malformed shapes, or turns that contained no text blocks.
+ */
+export function extractAssistantText(event: unknown): string {
+  if (!event || typeof event !== 'object') return '';
+  const e = event as { type?: string; message?: { content?: unknown } };
+  if (e.type !== 'assistant') return '';
+  const blocks = e.message?.content;
+  if (!Array.isArray(blocks)) return '';
+  return blocks
+    .filter((b): b is { type: string; text: string } =>
+      typeof b === 'object' && b !== null
+      && (b as { type?: unknown }).type === 'text'
+      && typeof (b as { text?: unknown }).text === 'string',
+    )
+    .map(b => b.text)
+    .join('')
+    .trim();
 }
 
 /**

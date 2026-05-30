@@ -4,6 +4,31 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.7.2] — 2026-05-30
+
+Empty-reply fix when the agent's final action is a tool call.
+
+### Fixed
+
+- **Agents returning empty text after a `mcp__memory__update_memory`
+  (or any tool) as their last turn.** The claude-direct dispatcher
+  only watched the SDK's terminal `result` message and pulled
+  `event.result`, which is `""` whenever the model ends on a
+  tool_use block without a follow-up text turn. The telegram channel
+  surfaced this as `telegram sendMessage: Bad Request: message text
+  is empty`; the admin chat panel surfaced it as `(empty reply)`.
+
+  Fix: cache the most recent non-empty text content from each
+  `assistant` event as the stream flows by, and use it as the
+  fallback when the result message has an empty `result` field.
+  New helper `extractAssistantText(event)` walks `BetaMessage.content`
+  blocks, joins every `{ type: 'text' }` block and drops the rest.
+
+- **Test (`src/__tests__/claude-direct-dispatcher.test.ts`)** —
+  5 cases covering the text-only happy path, mixed
+  text+thinking+tool_use, tool-only (the regression), non-assistant
+  events, and malformed shapes.
+
 ## [0.7.1] — 2026-05-26
 
 Chat panel resume-from-background polish — primarily for iOS Safari.
