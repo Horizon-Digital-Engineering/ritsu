@@ -161,7 +161,7 @@ export abstract class AgentBase {
       model: dispatcher.defaultModel,
     });
 
-    const resp = await dispatcher.chat({ messages } satisfies ChatRequest);
+    const resp = await dispatcher.chat({ messages, conversation_id: conversationId } satisfies ChatRequest);
 
     this.deps.conversations.append(conversationId, 'assistant', resp.content);
     const written = await this.persistAfterTurn(req.message, resp.content);

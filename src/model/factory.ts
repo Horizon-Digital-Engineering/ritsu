@@ -11,6 +11,7 @@ import type { ApiKeyStore } from '../auth/api-key-store.js';
 import type { AgentCommsDeps } from '../tools/mcp-internal/agent-comms.js';
 import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
 import type { AgentMonitorDeps } from '../tools/mcp-internal/agent-monitor.js';
+import type { ApprovalStore } from '../approval-store.js';
 
 /**
  * Per-agent dispatcher options. claude-direct consumes the SDK opts;
@@ -43,6 +44,12 @@ export interface DispatcherOpts {
    * the agent's `capabilities` include 'monitor_agents'.
    */
   monitor?: { callerAgentId: string; deps: AgentMonitorDeps };
+  /**
+   * Human-in-the-loop approval gate. gatedTools is the agent's approval_tools
+   * list; when non-empty, the dispatcher blocks on operator approval before
+   * each listed tool runs. Currently honored by the claude-direct dispatcher.
+   */
+  approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
   /**
    * Ritsu-agent runtime config (Phase B). When present + kind is
    * 'ritsu-agent', the dispatcher uses its own tool-calling loop against
@@ -86,6 +93,7 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.comms      !== undefined) out.comms      = opts.comms;
   if (opts.admin      !== undefined) out.admin      = opts.admin;
   if (opts.monitor    !== undefined) out.monitor    = opts.monitor;
+  if (opts.approval   !== undefined) out.approval   = opts.approval;
   return out;
 }
 

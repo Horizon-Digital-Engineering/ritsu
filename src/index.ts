@@ -7,6 +7,7 @@ import { SqliteMemoryStore } from './memory-store.js';
 import { SqliteConversationStore } from './conversation-store.js';
 import { SqliteAgentDefinitionStore, seedIfEmpty } from './agent-definition-store.js';
 import { WorkspaceStore } from './workspace-store.js';
+import { ApprovalStore } from './approval-store.js';
 import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
 import { OAuthStore } from './auth/oauth-store.js';
@@ -36,11 +37,15 @@ async function main(): Promise<void> {
   const apiKeys = new ApiKeyStore(db);
   const oauth = new OAuthStore(db);
   const workspaces = new WorkspaceStore(db);
+  const approvals = new ApprovalStore(db);
+  // Close out any approvals left pending by a prior process — their agent
+  // turns died with that process and can never resume.
+  approvals.reconcileOnBoot();
 
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
 
-  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys);
+  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals);
   await host.loadAll();
 
   // Comm channels (Telegram + future Discord/Slack). Each enabled row in
@@ -72,6 +77,7 @@ async function main(): Promise<void> {
     workspaces,
     memory,
     conversations,
+    approvals,
     channels: channelStore,
     channelRegistry: channels,
     oauth,

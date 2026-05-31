@@ -373,6 +373,8 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         provider_options: z.record(z.string(), z.unknown()).default({}).describe('Phase A: provider-specific options (temperature, max_tokens, etc).'),
         capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([])
           .describe('Per-agent capabilities. Empty by default.'),
+        approval_tools: z.array(z.string()).default([])
+          .describe('Tool names that require operator approval before each use (e.g. ["Bash","Write"]). Empty = no gating.'),
         enabled: z.boolean().default(true).describe('Whether the agent is callable.'),
       },
     },

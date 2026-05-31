@@ -6,6 +6,7 @@ import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
 import { WorkspaceStore } from '../workspace-store.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
+import { ApprovalStore } from '../approval-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
 
@@ -25,6 +26,7 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     api_key_ref: null,
     provider_options: {},
     capabilities: [],
+    approval_tools: [],
     enabled: true,
     ...overrides,
   };
@@ -64,7 +66,8 @@ describe('AgentHost', () => {
     // ApiKeyStore is a real instance — empty until a test exercises a
     // ritsu-agent. claude-direct paths don't touch it.
     const apiKeys = new ApiKeyStore(db);
-    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, stub.factory);
+    const approvals = new ApprovalStore(db);
+    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, stub.factory);
   });
 
   it('loadAll wires every enabled definition', async () => {

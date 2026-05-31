@@ -9,6 +9,10 @@ export interface ChatRequest {
   model?: string;
   temperature?: number;
   max_tokens?: number;
+  /** The conversation this turn belongs to. Used to scope human-in-the-loop
+   *  approval cards to the right thread (so they render inline in the chat
+   *  panel). Undefined for callers that don't track a conversation. */
+  conversation_id?: number;
 }
 
 export interface ChatResponse {

@@ -28,6 +28,7 @@ function def(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     api_key_ref: null,
     provider_options: {},
     capabilities: [],
+    approval_tools: [],
     enabled: true,
     ...overrides,
   };

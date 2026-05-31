@@ -29,6 +29,10 @@ export const AgentDefinitionSchema = z.object({
    *  inspection across the whole swarm (conversations, messages, memories,
    *  state). Empty default — every agent stays scoped to its own surface. */
   capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([]),
+  /** Tool names this agent must get operator approval for before each use
+   *  (e.g. ['Bash','Write']). The agent's turn blocks on a pending approval
+   *  until the operator approves or rejects. Empty = no gating. */
+  approval_tools: z.array(z.string()).default([]),
   enabled: z.boolean().default(true),
   created_at: z.number().int().optional(),
   updated_at: z.number().int().optional(),

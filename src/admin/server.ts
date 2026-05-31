@@ -12,6 +12,7 @@ import { API_KEY_PROVIDERS } from '../auth/api-key-store.js';
 import type { WorkspaceStore, Permission } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
+import type { ApprovalStore } from '../approval-store.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
@@ -21,6 +22,7 @@ import { AgentDefinitionSchema, AgentDefinitionPatchSchema } from './schema.js';
 import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
 import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
+import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
@@ -46,6 +48,7 @@ export interface AdminDeps {
   workspaces: WorkspaceStore;
   memory: MemoryStore;
   conversations: ConversationStore;
+  approvals: ApprovalStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
   oauth: OAuthStore;
@@ -135,6 +138,13 @@ const ChannelPatchBody = z.object({
 
 const BindChatBody = z.object({
   chat_id: z.number().int(),
+});
+
+const ApprovalDecideBody = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  // Operator's optional note. On reject it's fed back to the model as the
+  // tool-denial reason so it can adapt; on approve it's just an audit note.
+  reason: z.string().trim().max(2000).optional(),
 });
 
 /** Test-pane body. Mirrors the agent-edit form's draft state — never
@@ -321,7 +331,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, memory, conversations } = deps;
+  const { defStore, host, tokens, workspaces, memory, conversations, approvals } = deps;
   const app = express();
   app.disable('x-powered-by');
 
@@ -695,6 +705,70 @@ export function createAdminApp(deps: AdminDeps) {
       clearInterval(ping);
       conversationBus.off('event', onEvent);
     });
+  });
+
+  // ---- approvals (human-in-the-loop) -------------------------------------
+  // A gated tool call blocks the agent's turn on a pending row here; the
+  // operator approves/rejects from the Approvals tab or an inline card in
+  // the chat panel. Both surfaces share these endpoints + the SSE feed.
+
+  // ?state=pending (default) | decided | all. Pending is sorted oldest-first
+  // (work queue); decided is newest-first (recent history).
+  app.get('/admin/api/approvals', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 200), 1000);
+    const state = typeof req.query.state === 'string' ? req.query.state : 'pending';
+    const convo = req.query.conversation_id !== undefined ? Number(req.query.conversation_id) : undefined;
+    if (convo !== undefined) {
+      if (!Number.isInteger(convo)) { res.status(400).json({ error: 'conversation_id must be integer' }); return; }
+      res.json({ approvals: approvals.listPendingForConversation(convo) });
+      return;
+    }
+    if (state === 'decided') { res.json({ approvals: approvals.listDecided(limit) }); return; }
+    if (state === 'all') {
+      res.json({ approvals: [...approvals.listPending(limit), ...approvals.listDecided(limit)] });
+      return;
+    }
+    res.json({ approvals: approvals.listPending(limit) });
+  });
+
+  // Lightweight count for the nav badge. Cheap COUNT(*); polled as a fallback
+  // when SSE isn't connected.
+  app.get('/admin/api/approvals/count', (_req: Request, res: Response) => {
+    res.json({ pending: approvals.pendingCount() });
+  });
+
+  app.get('/admin/api/approvals/stream', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const onEvent = (ev: ApprovalEvent): void => {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    };
+    approvalBus.on('event', onEvent);
+    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
+
+    req.on('close', () => {
+      clearInterval(ping);
+      approvalBus.off('event', onEvent);
+    });
+  });
+
+  app.post('/admin/api/approvals/:id/decide', (req: Request, res: Response) => {
+    const id = Number(param(req.params.id));
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'id must be integer' }); return; }
+    const body = parseBody(req, res, ApprovalDecideBody);
+    if (!body) return;
+    const decided = approvals.decide(id, body.decision, body.reason ?? null, 'admin-ui');
+    if (!decided) {
+      // Either unknown id or already decided (double-click / race). 409 so the
+      // UI can refetch + show the now-final state rather than treat as success.
+      res.status(409).json({ error: 'approval not found or already decided' });
+      return;
+    }
+    res.json({ approval: decided });
   });
 
   // ---- agents ------------------------------------------------------------

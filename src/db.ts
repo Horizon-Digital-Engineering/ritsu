@@ -194,6 +194,30 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_client ON oauth_refresh_tokens(client_id);
+
+-- Human-in-the-loop approvals. A row is created when an agent tries to use
+-- a tool that its definition lists in approval_tools; the agent's turn
+-- blocks until the operator approves or rejects. agent_id / conversation_id
+-- are plain strings/ids (no FK) so a row survives agent or conversation
+-- deletion for audit. args_json is the tool input the model proposed —
+-- shown verbatim on the approval card. reason is the operator's optional
+-- note on reject, fed back to the model as the tool-denial message.
+CREATE TABLE IF NOT EXISTS tool_approvals (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id        TEXT NOT NULL,
+  conversation_id INTEGER,
+  tool_name       TEXT NOT NULL,
+  args_json       TEXT NOT NULL DEFAULT '{}',
+  state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','approved','rejected')),
+  reason          TEXT,
+  decided_by      TEXT,
+  requested_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  decided_at      INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_pending ON tool_approvals(requested_at DESC) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_convo ON tool_approvals(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_decided ON tool_approvals(decided_at DESC) WHERE state <> 'pending';
 `;
 
 /**
@@ -355,6 +379,10 @@ function migrate(db: Db): void {
   // 'monitor_agents' (read-only swarm inspection). Empty = the safe
   // default; existing agents stay where they are.
   addColumnIfMissing(db, 'agent_definitions', 'capabilities', "TEXT NOT NULL DEFAULT '[]'");
+  // Human-in-the-loop: JSON array of tool names this agent must get operator
+  // approval for before each use (e.g. ["Bash","Write"]). Empty = no gating
+  // (current behavior for every existing agent).
+  addColumnIfMissing(db, 'agent_definitions', 'approval_tools', "TEXT NOT NULL DEFAULT '[]'");
 }
 
 /** API keys for the ritsu-agent runtime (Phase B). Stored AES-256-GCM

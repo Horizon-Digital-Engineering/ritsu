@@ -2,6 +2,7 @@ import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
+import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import { buildAgentMemoryMcp, MEMORY_TOOL_NAMES, MEMORY_MCP_NAME } from '../tools/mcp-internal/memory.js';
 import {
@@ -59,6 +60,14 @@ export interface ClaudeDirectOpts {
    * the agent's `capabilities` include 'monitor_agents'.
    */
   monitor?: { callerAgentId: string; deps: AgentMonitorDeps };
+  /**
+   * Human-in-the-loop approval gate. When a tool the model wants to call is
+   * in `gatedTools`, the dispatcher writes a pending approval and blocks the
+   * turn until the operator approves (→ allow) or rejects (→ deny, with the
+   * operator's reason fed back to the model). `agentId` attributes the
+   * request; `store` is the shared ApprovalStore. Omit to disable gating.
+   */
+  approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
 }
 
 export class ClaudeDirectDispatcher implements ModelDispatcher {
@@ -82,7 +91,7 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    const canUseTool = buildCanUseToolCallback(workspaces, this.opts);
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
     const { mcpServers, allowedTools } = buildMcpServers(this.opts);
 
     // Cache the most recent non-empty text from any 'assistant' event as the
@@ -150,17 +159,24 @@ const IN_PROCESS_MCP_TOOLS = new Set<string>([
 ]);
 
 /**
- * Build the SDK's `canUseTool` callback. Returns undefined when no permission
- * gate is needed (no workspaces AND no in-process MCP servers wired). The
- * callback allows in-process MCP tools unconditionally (their handlers do
- * their own allowlist + loop-guard checks) and routes everything else through
- * checkToolUse which enforces workspace permissions on built-in FS tools.
+ * Build the SDK's `canUseTool` callback. Returns undefined when no gate is
+ * needed at all (no workspaces, no in-process MCP servers, no approval gating).
+ * The callback:
+ *   1. allows in-process MCP tools unconditionally (their handlers do their
+ *      own allowlist + loop-guard checks),
+ *   2. enforces workspace permissions on built-in FS/exec/net tools via
+ *      checkToolUse,
+ *   3. and finally, for tools listed in the agent's approval_tools, blocks on
+ *      operator approval — a reject denies the call with the operator's reason
+ *      so the model sees why and can adapt.
  */
 function buildCanUseToolCallback(
   workspaces: Workspace[],
   opts: ClaudeDirectOpts,
+  conversationId: number | null,
 ): CanUseTool | undefined {
-  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor) {
+  const gating = opts.approval && opts.approval.gatedTools.length > 0 ? opts.approval : undefined;
+  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor && !gating) {
     return undefined;
   }
   return async (toolName, input) => {
@@ -168,9 +184,27 @@ function buildCanUseToolCallback(
       return { behavior: 'allow' as const, updatedInput: input };
     }
     const result = checkToolUse(toolName, input, workspaces);
-    if (result.ok) return { behavior: 'allow' as const, updatedInput: input };
-    logger.warn('tool.denied', { tool: toolName, reason: result.reason });
-    return { behavior: 'deny' as const, message: result.reason };
+    if (!result.ok) {
+      logger.warn('tool.denied', { tool: toolName, reason: result.reason });
+      return { behavior: 'deny' as const, message: result.reason };
+    }
+    if (gating && gating.gatedTools.includes(toolName)) {
+      logger.info('approval.gate', { agent_id: gating.agentId, tool: toolName, conversation_id: conversationId });
+      const decision = await gating.store.request({
+        agentId: gating.agentId,
+        conversationId,
+        toolName,
+        args: input,
+      });
+      if (decision.state === 'rejected') {
+        const why = decision.reason?.trim()
+          ? `Operator rejected this ${toolName} call: ${decision.reason.trim()}`
+          : `Operator rejected this ${toolName} call.`;
+        return { behavior: 'deny' as const, message: why };
+      }
+      return { behavior: 'allow' as const, updatedInput: input };
+    }
+    return { behavior: 'allow' as const, updatedInput: input };
   };
 }
 

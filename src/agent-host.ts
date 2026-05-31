@@ -7,6 +7,7 @@ import type { ModelDispatcher } from './model/dispatcher.js';
 import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
+import type { ApprovalStore } from './approval-store.js';
 import type { Db } from './db.js';
 import { logger } from './util/log.js';
 
@@ -34,6 +35,7 @@ export class AgentHost {
     private readonly defStore: AgentDefinitionStore,
     private readonly workspaces: WorkspaceStore,
     private readonly apiKeys: import('./auth/api-key-store.js').ApiKeyStore,
+    private readonly approvals: ApprovalStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
         // ritsu-agent runtime overrides def.dispatcher when both provider +
@@ -134,6 +136,17 @@ export class AgentHost {
             conversations: this.conversations,
             memory,
           },
+        },
+      } : {}),
+      // Human-in-the-loop: tools this agent must get operator approval for.
+      // Only wired when the list is non-empty so unconfigured agents pay
+      // nothing. Re-read fresh on every addOrReplace, so editing
+      // approval_tools in the admin UI takes effect on the next reload.
+      ...(def.approval_tools.length > 0 ? {
+        approval: {
+          agentId: def.id,
+          store: this.approvals,
+          gatedTools: def.approval_tools,
         },
       } : {}),
       // Phase B: ritsu-agent runtime config. Only consumed when the
