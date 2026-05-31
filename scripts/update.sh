@@ -3,6 +3,16 @@
 #
 # Idempotent + safe: aborts on uncommitted changes, only restarts if
 # the build succeeded, prints status at the end.
+#
+# Usage:
+#   update-ritsu                       # deploy origin/main (default)
+#   update-ritsu --branch feat/x       # deploy origin/feat/x (test a PR branch)
+#   update-ritsu -b feat/x             # short form
+#   update-ritsu --branch feat/x --force   # discard local changes on the box first
+#
+# Branch mode hard-syncs the install to origin/<branch> (the deploy box
+# is a mirror of origin, never a place to edit). Switching back is just
+# `update-ritsu` with no flag — it returns to origin/main.
 
 set -euo pipefail
 
@@ -10,12 +20,42 @@ INSTALL_DIR="${RITSU_INSTALL_DIR:-/opt/ritsu}"
 SERVICE_USER="${RITSU_USER:-ritsu}"
 SERVICE_NAME="${RITSU_SERVICE:-ritsu.service}"
 
+BRANCH="main"
+FORCE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
+    --force)     FORCE=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 note() { printf '\033[2m  %s\033[0m\n' "$*"; }
 
-bold "==> Pull"
-sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" pull --ff-only
-note "now at $(sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
+as_svc() { sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" "$@"; }
+
+bold "==> Sync to origin/${BRANCH}"
+# Refuse to clobber local edits unless --force — mirrors the old
+# `pull --ff-only` safety, but the message points at the real options.
+if [[ -n "$(as_svc status --porcelain)" ]]; then
+  if [[ "${FORCE}" -eq 1 ]]; then
+    note "working tree dirty — --force given, discarding local changes"
+    as_svc reset --hard
+    as_svc clean -fd
+  else
+    echo "working tree at ${INSTALL_DIR} is dirty — aborting." >&2
+    echo "commit/stash on the box, or re-run with --force to discard." >&2
+    exit 1
+  fi
+fi
+as_svc fetch origin --prune
+# checkout -B creates-or-moves the local branch onto origin/<branch> and
+# checks it out; the follow-up reset --hard guarantees an exact mirror
+# even if the local branch already existed and had diverged.
+as_svc checkout -B "${BRANCH}" "origin/${BRANCH}"
+as_svc reset --hard "origin/${BRANCH}"
+note "now at ${BRANCH} @ $(as_svc rev-parse --short HEAD)"
 
 bold "==> Install + build"
 sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
