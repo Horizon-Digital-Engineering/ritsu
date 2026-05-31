@@ -202,6 +202,9 @@ const NAV_GROUPS = [
   { id: 'dashboard', label: 'Dashboard', tabs: [
     { id: 'tiles', label: 'Dashboard' },
   ] },
+  { id: 'approvals', label: 'Approvals', tabs: [
+    { id: 'approvals', label: 'Approvals' },
+  ] },
   { id: 'agents', label: 'Agents', tabs: [
     { id: 'agents',        label: 'Agents' },
     { id: 'workspaces',    label: 'Workspaces' },
@@ -266,6 +269,7 @@ function switchTab(name) {
   renderNav();
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
+  if (name === 'approvals') loadApprovalsTab();
   if (name === 'mcp') loadMcpTools();
   else if (name === 'tokens') refreshTokens();
   else if (name === 'api-keys') refreshApiKeys();
@@ -327,6 +331,7 @@ async function loadAvailableTools() {
     const { tools } = await api('GET', '/admin/api/tools/available');
     availableTools = tools;
     renderToolCheckboxes([]);
+    renderApprovalToolsCheckboxes([]);
   } catch (e) { toast(e.message, 'err'); }
 }
 function renderToolCheckboxes(selected) {
@@ -337,6 +342,15 @@ function renderToolCheckboxes(selected) {
 }
 function readToolsAllowlist() {
   return [...$('f-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
+}
+function renderApprovalToolsCheckboxes(selected) {
+  const set = new Set(selected || []);
+  $('f-approval-tools').innerHTML = availableTools.map(t =>
+    `<label class="row fs-md1"><input type="checkbox" value="${esc(t)}" ${set.has(t) ? 'checked' : ''} class="input-auto" /> ${esc(t)}</label>`,
+  ).join('');
+}
+function readApprovalTools() {
+  return [...$('f-approval-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
 }
 function renderCanCallCheckboxes(selected) {
   const set = new Set(selected || []);
@@ -460,6 +474,7 @@ function loadAgentForm(a) {
     : '';
   refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); });
   renderToolCheckboxes(a.tools_allowlist || []);
+  renderApprovalToolsCheckboxes(a.approval_tools || []);
   renderCanCallCheckboxes(a.can_call || []);
   const caps = new Set(a.capabilities || []);
   $('f-cap-manage').checked = caps.has('manage_agents');
@@ -489,6 +504,7 @@ function clearForm() {
   renderApiKeyDropdown(null);
   refreshApiKeyDropdown();
   renderToolCheckboxes([]);
+  renderApprovalToolsCheckboxes([]);
   renderCanCallCheckboxes([]);
   $('f-cap-manage').checked = false;
   $('f-cap-monitor').checked = false;
@@ -514,6 +530,7 @@ async function submitAgent(method) {
     model: $('f-model').value, memory_backend: $('f-memory-backend').value,
     enabled: $('f-enabled').checked, system_prompt: $('f-system-prompt').value,
     tools_allowlist: readToolsAllowlist(),
+    approval_tools: readApprovalTools(),
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
@@ -903,6 +920,7 @@ async function openAgentPanel(agentId) {
   // Schedule a transcript-padding sync once the panel finishes animating in.
   requestAnimationFrame(syncTranscriptPadding);
   ensurePanelSse();
+  ensurePanelApprovalSse();
   $('ap-id').textContent = agentId;
   $('ap-sub').textContent = 'loading…';
   $('ap-transcript').innerHTML = '<div class="ap-empty">loading…</div>';
@@ -935,10 +953,54 @@ async function loadPanelTranscript() {
     const { messages } = await api('GET', `/admin/api/conversations/${panelConvoId}`);
     renderTranscript(messages);
     updateMetaFromMessages(messages);
+    await appendInlineApprovals();
   } catch (e) {
     t.innerHTML = `<div class="txt-err">${esc(e.message)}</div>`;
   }
 }
+
+// ---- inline approval cards in the chat panel --------------------------
+// The chat panel opens its own approvals stream (filtered to the open
+// thread) so a gated tool call the agent is waiting on shows up as a card
+// right in the transcript — approve/reject without leaving the chat.
+let panelApprovalAbort = null;
+function ensurePanelApprovalSse() {
+  if (panelApprovalAbort) return;
+  panelApprovalAbort = new AbortController();
+  sseFetch('/admin/api/approvals/stream', handlePanelApprovalEvent, panelApprovalAbort.signal);
+}
+function closePanelApprovalSse() {
+  if (!panelApprovalAbort) return;
+  panelApprovalAbort.abort();
+  panelApprovalAbort = null;
+}
+function handlePanelApprovalEvent(ev) {
+  const a = ev?.approval;
+  if (!a || a.conversation_id !== panelConvoId) return;
+  if (ev.kind === 'requested') {
+    appendInlineApprovals();
+  } else if (ev.kind === 'decided') {
+    // Flip the inline card to a stamp in place; it clears on the next full
+    // transcript reload when the agent's follow-up message arrives.
+    const card = $('ap-transcript').querySelector(`.approval-card[data-approval-id="${a.id}"]`);
+    if (card) card.outerHTML = approvalStampHtml(a);
+  }
+}
+/** Refresh the inline pending-approval cards for the open thread. Cards live
+ *  at the bottom of the transcript (the agent is blocked waiting on them). */
+async function appendInlineApprovals() {
+  if (!panelConvoId) return;
+  const t = $('ap-transcript');
+  t.querySelectorAll('.approval-card.inline').forEach(el => el.remove());
+  try {
+    const { approvals } = await api('GET', `/admin/api/approvals?conversation_id=${panelConvoId}`);
+    for (const a of approvals) {
+      t.insertAdjacentHTML('beforeend', approvalCardHtml(a, true));
+    }
+    t.scrollTop = t.scrollHeight;
+  } catch { /* best-effort — the Approvals tab is the durable surface */ }
+}
+
 /** Derive a short, one-line title from the first user turn and stuff it
  *  into the trigger button. Falls back gracefully when the convo is empty. */
 function computeConvoTitle(messages) {
@@ -1067,6 +1129,7 @@ function closeAgentPanel() {
   panelAgentId = null;
   panelConvoId = null;
   closePanelSse();
+  closePanelApprovalSse();
 }
 
 /** Open the conversation-events stream if not already open. Uses
@@ -2130,6 +2193,201 @@ function renderAudit() {
   }).join('');
 }
 
+// ---- approvals (human-in-the-loop) ------------------------------------
+// A gated tool call blocks the agent's turn on a pending row server-side.
+// The operator approves/rejects here (the Approvals tab) or inline in the
+// chat panel — both share the same endpoints + the /approvals/stream SSE.
+// The nav badge stays live on EVERY tab via a global stream opened at boot.
+let approvalsSubtab = 'pending';
+let approvalsSseAbort = null;
+
+/** Open the global approvals stream once. Keeps the nav badge + (if shown)
+ *  the Approvals list live regardless of which tab is active. */
+function ensureApprovalsSse() {
+  if (approvalsSseAbort) return;
+  approvalsSseAbort = new AbortController();
+  sseFetch('/admin/api/approvals/stream', handleApprovalsSseEvent, approvalsSseAbort.signal);
+}
+
+function handleApprovalsSseEvent(ev) {
+  refreshApprovalBadge();
+  if (activeTab === 'approvals') loadApprovalsList();
+  // The chat panel handles its own inline copy via the same stream
+  // (handlePanelApprovalEvent) when it's open.
+}
+
+async function refreshApprovalBadge() {
+  try {
+    const { pending } = await api('GET', '/admin/api/approvals/count');
+    setApprovalBadge(pending);
+  } catch { /* badge is best-effort */ }
+}
+
+function setApprovalBadge(n) {
+  const el = $('nav-approvals-badge');
+  if (!el) return;
+  el.textContent = String(n);
+  el.classList.toggle('hidden', !n);
+}
+
+function loadApprovalsTab() {
+  ensureApprovalsSse();
+  loadApprovalsList();
+}
+
+function setApprovalsSubtab(sub) {
+  approvalsSubtab = sub;
+  document.querySelectorAll('#approvals-subtabs .conv-kind-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.sub === sub));
+  loadApprovalsList();
+}
+
+async function loadApprovalsList() {
+  const target = $('approvals-list');
+  if (!target) return;
+  try {
+    const { approvals } = await api('GET', `/admin/api/approvals?state=${approvalsSubtab}&limit=200`);
+    renderApprovalsList(approvals);
+    if (approvalsSubtab === 'pending') {
+      setApprovalBadge(approvals.length);
+      $('approvals-summary').textContent = approvals.length
+        ? `${approvals.length} tool call${approvals.length === 1 ? '' : 's'} waiting on your sign-off.`
+        : 'Nothing waiting — every agent is unblocked.';
+    } else {
+      $('approvals-summary').textContent = 'Recently approved / rejected.';
+    }
+  } catch (e) {
+    target.innerHTML = `<div class="txt-err">${esc(e.message)}</div>`;
+  }
+}
+
+function renderApprovalsList(list) {
+  const target = $('approvals-list');
+  if (!list.length) {
+    target.innerHTML = approvalsSubtab === 'pending'
+      ? '<div class="ap-empty">No pending approvals — nothing needs you right now.</div>'
+      : '<div class="ap-empty">No decisions yet.</div>';
+    return;
+  }
+  target.innerHTML = list.map(a => a.state === 'pending'
+    ? approvalCardHtml(a)
+    : approvalStampHtml(a)).join('');
+}
+
+/** Glyph for an approval, by tool name — quick visual recognition. */
+function approvalToolIcon(tool) {
+  const t = (tool || '').toLowerCase();
+  if (t.includes('bash') || t.includes('exec')) return '⌘';      // ⌘
+  if (t.includes('write') || t.includes('edit')) return '✎';     // ✎
+  if (t.includes('web') || t.includes('fetch') || t.includes('search')) return '🌐'; // 🌐
+  if (t.includes('mail') || t.includes('email')) return '✉️'; // ✉️
+  return '⚙️'; // ⚙️
+}
+
+/** Staleness class — drives the row tint. No auto-reject; visibility scales
+ *  with neglect (see operations/ritsu/approval-system.md). */
+function approvalStaleClass(a) {
+  const age = Math.floor(Date.now() / 1000) - a.requested_at;
+  if (age > 7 * 86400) return 'stale-7d';
+  if (age > 86400) return 'stale-24h';
+  if (age > 4 * 3600) return 'stale-4h';
+  return '';
+}
+
+function approvalAgo(ts) {
+  return fmtRelativeSeconds(Math.max(0, Math.floor(Date.now() / 1000) - ts));
+}
+
+function approvalArgsPreview(argsJson) {
+  try {
+    return esc(JSON.stringify(JSON.parse(argsJson), null, 2));
+  } catch {
+    return esc(String(argsJson));
+  }
+}
+
+/** A pending approval card. Used on the Approvals page AND inline in the
+ *  chat panel — handlers find their card via closest('.approval-card') so
+ *  there are no duplicate-id collisions when the same approval shows in
+ *  both places. */
+function approvalCardHtml(a, inline = false) {
+  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}" data-approval-id="${a.id}">
+    <div class="approval-main">
+      <span class="approval-icon">${approvalToolIcon(a.tool_name)}</span>
+      <div class="approval-body">
+        <div class="approval-title">${esc(a.tool_name)}</div>
+        <div class="approval-meta">${esc(a.agent_id)} · ${approvalAgo(a.requested_at)}</div>
+        <button type="button" class="approval-detail-toggle" data-action="toggle-approval-detail">▸ show details</button>
+        <pre class="approval-detail hidden">${approvalArgsPreview(a.args_json)}</pre>
+        <textarea class="approval-reason hidden" placeholder="reason (optional — sent to the agent on reject)" rows="2"></textarea>
+      </div>
+    </div>
+    <div class="approval-actions">
+      <button type="button" class="primary" data-action="approve-approval">Approve</button>
+      <button type="button" class="danger" data-action="reject-approval">Reject</button>
+    </div>
+  </div>`;
+}
+
+/** A decided approval — compact audit stamp. */
+function approvalStampHtml(a) {
+  const ok = a.state === 'approved';
+  const reason = a.reason ? ` · “${esc(a.reason)}”` : '';
+  return `<div class="approval-stamp ${ok ? 'ok' : 'rej'}">
+    <span class="approval-stamp-mark">${ok ? '✓ approved' : '✗ rejected'}</span>
+    <span class="approval-stamp-body">${esc(a.tool_name)} · ${esc(a.agent_id)}${reason}</span>
+    <span class="approval-when">${approvalAgo(a.decided_at || a.requested_at)}</span>
+  </div>`;
+}
+
+/** Approve (one click) or reject (two-step: first click reveals the reason
+ *  box + relabels, second click submits). cardEl scopes the lookups. */
+function approveApprovalClick(cardEl) {
+  const id = Number(cardEl?.dataset.approvalId);
+  if (!id) return;
+  decideApproval(id, 'approved', '', cardEl);
+}
+function rejectApprovalClick(cardEl) {
+  const id = Number(cardEl?.dataset.approvalId);
+  if (!id) return;
+  if (!cardEl.classList.contains('rejecting')) {
+    cardEl.classList.add('rejecting');
+    const r = cardEl.querySelector('.approval-reason');
+    if (r) { r.classList.remove('hidden'); r.focus(); }
+    const btn = cardEl.querySelector('[data-action="reject-approval"]');
+    if (btn) btn.textContent = 'Confirm reject';
+    return;
+  }
+  const reason = cardEl.querySelector('.approval-reason')?.value.trim() || '';
+  decideApproval(id, 'rejected', reason, cardEl);
+}
+
+async function decideApproval(id, decision, reason, cardEl) {
+  // Lock the card's buttons so a double-tap can't double-submit.
+  cardEl?.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  try {
+    const body = { decision };
+    if (reason) body.reason = reason;
+    await api('POST', `/admin/api/approvals/${id}/decide`, body);
+    toast(decision === 'approved' ? 'approved' : 'rejected', decision === 'approved' ? 'ok' : 'err');
+  } catch (e) {
+    toast(e.message, 'err');           // 409 = already decided (race)
+    cardEl?.querySelectorAll('button').forEach(b => { b.disabled = false; });
+  }
+  // SSE drives the authoritative refresh (badge, list, inline flip). Nudge
+  // the badge immediately for snappiness in case SSE is mid-reconnect.
+  refreshApprovalBadge();
+}
+
+function toggleApprovalDetail(cardEl) {
+  const pre = cardEl?.querySelector('.approval-detail');
+  const btn = cardEl?.querySelector('.approval-detail-toggle');
+  if (!pre || !btn) return;
+  const show = pre.classList.contains('hidden');
+  pre.classList.toggle('hidden', !show);
+  btn.textContent = show ? '▾ hide details' : '▸ show details';
+}
+
 // ---- event delegation -------------------------------------------------
 // One document-level click listener routes every data-action attribute to
 // the handler in ACTIONS. This is what lets script-src drop 'unsafe-inline':
@@ -2217,6 +2475,13 @@ const ACTIONS = {
   // audit tab
   'audit-refresh':          () => loadAuditTab(),
 
+  // approvals tab + inline cards
+  'approvals-refresh':      () => loadApprovalsList(),
+  'approvals-subtab':       (el) => setApprovalsSubtab(el.dataset.sub),
+  'approve-approval':       (el) => approveApprovalClick(el.closest('.approval-card')),
+  'reject-approval':        (el) => rejectApprovalClick(el.closest('.approval-card')),
+  'toggle-approval-detail': (el) => toggleApprovalDetail(el.closest('.approval-card')),
+
   // oauth clients tab
   'oauth-client-tokens':    (el) => openOAuthClientTokens(el.dataset.client),
   'revoke-oauth-client':    (el) => revokeOAuthClient(el.dataset.client, el.dataset.name),
@@ -2239,6 +2504,11 @@ renderNav();
 await loadAgentTypes();
 await Promise.all([refreshAgents(), loadAvailableTools(), loadLogLevels(), refreshInfo()]);
 setInterval(refreshInfo, 5000);
+
+// Approvals: open the live stream + seed the nav badge so a pending
+// approval is visible from any tab, not just when the Approvals tab is open.
+ensureApprovalsSse();
+refreshApprovalBadge();
 
 // Tiles is the default tab → kick its polling immediately.
 startTilesPolling();

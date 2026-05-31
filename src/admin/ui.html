@@ -15,6 +15,7 @@
   </header>
   <nav class="tabs primary" id="nav-primary" aria-label="Top-level admin sections">
     <button type="button" data-action="switch-group" data-group="dashboard" class="active">Dashboard</button>
+    <button type="button" data-action="switch-group" data-group="approvals">Approvals<span id="nav-approvals-badge" class="nav-badge hidden">0</span></button>
     <button type="button" data-action="switch-group" data-group="agents">Agents</button>
     <button type="button" data-action="switch-group" data-group="comms">Comms</button>
     <button type="button" data-action="switch-group" data-group="auth">Auth</button>
@@ -60,6 +61,24 @@
         </div>
       </form>
     </aside>
+
+    <!-- ============ APPROVALS ============ -->
+    <section id="pane-approvals" class="pane">
+      <div class="panel">
+        <div class="approvals-head">
+          <div>
+            <h2 class="m0">Approvals</h2>
+            <p id="approvals-summary" class="tile-header-meta">Tool calls waiting on your sign-off.</p>
+          </div>
+          <button id="approvals-refresh" data-action="approvals-refresh" title="refresh now">↻</button>
+        </div>
+        <div class="conv-kind-tabs" id="approvals-subtabs">
+          <button type="button" class="conv-kind-tab active" data-action="approvals-subtab" data-sub="pending">Pending</button>
+          <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="decided">Decided</button>
+        </div>
+        <div id="approvals-list">loading…</div>
+      </div>
+    </section>
 
     <!-- ============ AGENTS ============ -->
     <section id="pane-agents" class="pane">
@@ -165,6 +184,16 @@
               <code>manage_agents</code>: agent can mint &amp; edit other agents via <code>mcp__agent_admin__*</code>.
               <code>monitor_agents</code>: read-only swarm inspection via <code>mcp__agent_monitor__*</code>.
               Keep both empty for normal agents.
+            </div>
+          </div>
+
+          <label for="f-approval-tools">require approval</label>
+          <div>
+            <div id="f-approval-tools" class="row-wrap"></div>
+            <div class="form-hint">
+              Tools this agent must get <strong>your approval</strong> for before each use.
+              The agent's turn pauses on a card in the Approvals tab until you approve or reject.
+              Empty = no gating.
             </div>
           </div>
 

@@ -559,6 +559,75 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .agent-glyph[data-hue-idx="6"] { color: hsl(240, 70%, 80%); background: hsl(240, 40%, 18%); border-color: hsl(240, 30%, 28%); }
 .agent-glyph[data-hue-idx="7"] { color: hsl(100, 70%, 80%); background: hsl(100, 40%, 18%); border-color: hsl(100, 30%, 28%); }
 
+/* ---- Approvals (human-in-the-loop) --------------------------- */
+/* Nav badge — the pending count riding on the primary "Approvals" tab. */
+.nav-badge {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px;
+  font-size: 0.72rem; font-weight: 700; line-height: 18px; text-align: center;
+  border-radius: 999px; background: var(--accent); color: var(--bg);
+  vertical-align: middle;
+}
+.nav-badge.hidden { display: none; }
+
+.approvals-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+
+.approval-card {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 12px 14px; margin-bottom: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 6px;
+}
+/* Staleness ladder — no auto-reject; the tint just gets louder the longer
+   a decision sits (see operations/ritsu/approval-system.md). */
+.approval-card.stale-4h  { border-left-color: hsl(48, 80%, 55%); }
+.approval-card.stale-24h { border-left-color: hsl(30, 85%, 55%); }
+.approval-card.stale-7d  { border-left-color: hsl(0, 80%, 58%); }
+.approval-main { display: flex; gap: 10px; align-items: flex-start; min-width: 0; flex: 1; }
+.approval-icon { font-size: 1.1rem; line-height: 1.3; flex: 0 0 auto; }
+.approval-body { min-width: 0; flex: 1; }
+.approval-title { font-weight: 600; word-break: break-word; }
+.approval-meta { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+.approval-detail-toggle {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  font: inherit; font-size: 0.78rem; padding: 4px 0; margin-top: 4px;
+}
+.approval-detail-toggle:hover { color: var(--fg); }
+.approval-detail {
+  margin: 6px 0 0; padding: 8px 10px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px;
+  font-size: 0.78rem; white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto;
+}
+.approval-reason {
+  display: block; width: 100%; margin-top: 6px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
+  padding: 6px 8px; border-radius: 4px; font: inherit; font-size: 0.82rem; resize: vertical;
+}
+.approval-actions { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.approval-actions button { white-space: nowrap; }
+.approval-detail.hidden, .approval-reason.hidden { display: none; }
+
+/* Inline variant inside the chat-panel transcript: full width, no side-by-side
+   action column (stacks under the body) so it fits the narrow panel. */
+.approval-card.inline { flex-direction: column; align-self: stretch; max-width: 100%; }
+.approval-card.inline .approval-actions { flex-direction: row; }
+.approval-card.inline .approval-actions button { flex: 1; }
+
+/* Decided — compact audit stamp (Approvals "Decided" tab + transient inline). */
+.approval-stamp {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 7px 12px; margin-bottom: 6px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+.approval-stamp.ok  { border-left: 3px solid hsl(140, 60%, 45%); }
+.approval-stamp.rej { border-left: 3px solid hsl(0, 70%, 55%); }
+.approval-stamp-mark { font-weight: 700; }
+.approval-stamp.ok  .approval-stamp-mark { color: hsl(140, 60%, 65%); }
+.approval-stamp.rej .approval-stamp-mark { color: hsl(0, 75%, 70%); }
+.approval-stamp-body { color: var(--fg); min-width: 0; word-break: break-word; }
+.approval-when { color: var(--muted); font-size: 0.74rem; margin-left: auto; }
+
 /* ---- Responsive ---------------------------------------------- */
 /* Tablet / small-desktop: pull padding in, let tab bar scroll
    horizontally so it never wraps awkwardly. */
