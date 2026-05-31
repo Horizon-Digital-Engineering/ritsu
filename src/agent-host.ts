@@ -174,6 +174,7 @@ export class AgentHost {
       workspace: cwd ?? null,
       tools_count: def.tools_allowlist.length,
       capabilities: def.capabilities,
+      approval_tools: def.approval_tools,
     });
   }
 

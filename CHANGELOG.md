@@ -4,6 +4,54 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.8.0] — 2026-05-30
+
+Human-in-the-loop approvals — the first core capability of the plugin
+era (core slot 5; see operations/ritsu/approval-system.md). Plus a
+deploy-script change to test PR branches on the box.
+
+### Added
+
+- **Approval gate.** An agent definition can list tools in a new
+  `approval_tools` field (e.g. `["Bash","Write"]`). When the agent tries
+  to use a gated tool, its turn blocks on a pending approval until the
+  operator approves (the call proceeds) or rejects (the call is denied
+  and the operator's reason is fed back to the model). Honored by the
+  claude-direct dispatcher's `canUseTool`, after the workspace-permission
+  check. No timeout — agents have no deadline; staleness is surfaced in
+  the UI instead.
+- **Approvals admin tab** with a live pending-count badge (updates on
+  every tab via a global SSE subscription). Pending / Decided sub-tabs.
+  Pending cards: tool glyph, agent + age, expandable args, one-click
+  Approve, two-step Reject with an optional reason. Staleness ladder
+  tints the card border at 4h / 24h / 7d. Decided cards are ✓/✗ stamps.
+- **Inline approval cards** in the slide-in chat panel — a gated call the
+  open thread is waiting on appears right in the transcript; approve or
+  reject without leaving the chat.
+- **Agent form** gains a "require approval" multi-select writing
+  `approval_tools`. The MCP `create_agent` tool accepts it too.
+- New `tool_approvals` table; `approval-bus.ts` + `approval-store.ts`
+  (request/decide with an in-memory resolver map, `reconcileOnBoot()` to
+  close orphaned pendings from a prior process). Endpoints:
+  `GET /admin/api/approvals`, `/approvals/count`, `/approvals/stream`
+  (SSE), `POST /approvals/:id/decide`.
+- 9-case `approval-store.test.ts` (request→resolve, reject-reason
+  feedback, idempotent decide, ordering, per-conversation scope,
+  reconcile-orphans, bus events). 312 tests green.
+
+### Deploy
+
+- **`update-ritsu --branch <name>`** mirrors the install to
+  origin/&lt;branch&gt; (fetch + checkout -B + reset --hard) so a PR
+  branch can be deployed + tested on adjutant without merging to main.
+  `--force` discards local box edits; no flag = back to origin/main.
+
+### Known gaps
+
+- The ritsu-agent dispatcher does not honor `approval_tools` yet — only
+  claude-direct (the deployed path). In-process MCP tools (memory, comms,
+  admin, monitor) are intentionally never gated.
+
 ## [0.7.2] — 2026-05-30
 
 Empty-reply fix when the agent's final action is a tool call.
