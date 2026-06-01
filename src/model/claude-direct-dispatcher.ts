@@ -183,6 +183,14 @@ function buildCanUseToolCallback(
     if (IN_PROCESS_MCP_TOOLS.has(toolName)) {
       return { behavior: 'allow' as const, updatedInput: input };
     }
+    // Observability: every built-in tool call (Bash/Read/Write/Web*) that
+    // routes through permission. Tells us whether the model is actually
+    // invoking a tool vs answering from memory — and whether a gated tool
+    // is being recognized as gated.
+    logger.info('tool.check', {
+      tool: toolName,
+      gated: !!(gating && gating.gatedTools.includes(toolName)),
+    });
     const result = checkToolUse(toolName, input, workspaces);
     if (!result.ok) {
       logger.warn('tool.denied', { tool: toolName, reason: result.reason });
