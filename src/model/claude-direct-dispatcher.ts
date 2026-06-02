@@ -131,6 +131,14 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         // unaffected. (Agents define their own system_prompt, so dropping
         // CLAUDE.md loading here costs us nothing.)
         settingSources: [],
+        // Per Anthropic's permission docs, the eval order is:
+        //   hooks -> deny rules -> PERMISSION MODE -> allow rules -> canUseTool
+        // The session's inherited 'auto' mode (a model classifier) resolves at
+        // the permission-mode step, three steps BEFORE canUseTool — so our hook
+        // never runs. Forcing 'default' makes unmatched tools "fall through" to
+        // canUseTool, which is the documented interactive-approval path. Paired
+        // with settingSources:[] so the session's 'auto' can't override it.
+        permissionMode: 'default',
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
