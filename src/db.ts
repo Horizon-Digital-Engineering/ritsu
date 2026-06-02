@@ -218,6 +218,26 @@ CREATE TABLE IF NOT EXISTS tool_approvals (
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_pending ON tool_approvals(requested_at DESC) WHERE state = 'pending';
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_convo ON tool_approvals(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_decided ON tool_approvals(decided_at DESC) WHERE state <> 'pending';
+
+-- Plugin secret store. Credentials for CRM/email/social and any other plugin
+-- that talks to an external service: an IMAP password, an SMTP login, an API
+-- token. Encrypted at rest (AES-256-GCM with row-context AAD via
+-- secret-crypto, same as api_keys/channels). The decrypt path is reachable
+-- ONLY from tool/plugin handlers — there is deliberately NO agent-callable
+-- "get_secret" tool, so the plaintext never enters an LLM's context. Agents
+-- pass opaque references (e.g. account name) and the handler resolves the
+-- secret internally. namespace groups a connector's secrets (e.g. 'email').
+CREATE TABLE IF NOT EXISTS plugin_secrets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace   TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  value_enc   TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_secrets_ns ON plugin_secrets(namespace);
 `;
 
 /**
