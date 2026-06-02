@@ -94,6 +94,18 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
     const { mcpServers, allowedTools } = buildMcpServers(this.opts);
 
+    // DEBUG: confirm the permission hook is actually wired + what we're
+    // handing the SDK. If canUseTool_wired is true but tool.check never
+    // logs, the SDK is running tools without consulting us at all.
+    logger.info('dispatch.debug.options', {
+      canUseTool_wired: !!canUseTool,
+      has_approval: !!this.opts.approval,
+      gated_tools: this.opts.approval?.gatedTools ?? [],
+      builtin_tools: this.opts.tools ?? [],
+      allowed_mcp: allowedTools,
+      workspaces: workspaces.map(w => `${w.path}:${w.permissions.join('')}`),
+    });
+
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
     // mcp__memory__update_memory) without a follow-up text turn, the SDK's
@@ -125,6 +137,21 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         ...(canUseTool ? { canUseTool } : {}),
       },
     })) {
+      // DEBUG: dump every SDK event so we can see the real tool-call flow —
+      // whether a tool_use block appears, and whether ANY permission /
+      // can_use_tool control event happens before the tool runs.
+      const ev = event as { type?: string; subtype?: string; message?: { content?: unknown } };
+      let toolNames: string[] = [];
+      if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
+        toolNames = (ev.message.content as Array<{ type?: string; name?: string }>)
+          .filter(b => b?.type === 'tool_use')
+          .map(b => b.name ?? '?');
+      }
+      logger.info('dispatch.debug.event', {
+        type: ev.type,
+        ...(ev.subtype ? { subtype: ev.subtype } : {}),
+        ...(toolNames.length ? { tool_use: toolNames } : {}),
+      });
       const text = extractAssistantText(event);
       if (text) lastAssistantText = text;
       const result = extractResult(event, model);
