@@ -95,18 +95,6 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
     const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
 
-    // DEBUG: confirm the permission hook is actually wired + what we're
-    // handing the SDK. If canUseTool_wired is true but tool.check never
-    // logs, the SDK is running tools without consulting us at all.
-    logger.info('dispatch.debug.options', {
-      canUseTool_wired: !!canUseTool,
-      has_approval: !!this.opts.approval,
-      gated_tools: this.opts.approval?.gatedTools ?? [],
-      builtin_tools: this.opts.tools ?? [],
-      allowed_mcp: allowedTools,
-      workspaces: workspaces.map(w => `${w.path}:${w.permissions.join('')}`),
-    });
-
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
     // mcp__memory__update_memory) without a follow-up text turn, the SDK's
@@ -119,25 +107,24 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
       options: {
         systemPrompt: systemMsg,
         model,
-        // SDK isolation mode. Without this, the SDK loads the service
-        // account's ~/.claude/settings.json (settingSources defaults to
-        // loading user/project/local), which on our box carries
-        // `defaultMode: "auto"`. That puts the spawned agent in 'auto'
-        // permission mode — a model classifier auto-approves tool calls —
-        // so our canUseTool hook is never consulted and BOTH the workspace
-        // sandbox (checkToolUse) and the approval gate are silently
-        // bypassed. `[]` keeps OUR canUseTool the sole authority. OAuth
-        // credentials load independently of settings, so $0 Max dispatch is
-        // unaffected. (Agents define their own system_prompt, so dropping
-        // CLAUDE.md loading here costs us nothing.)
+        // Explicit-safe permission baseline. settingSources:[] stops the SDK
+        // loading the service account's ~/.claude/settings.json (whose
+        // `defaultMode: "auto"` would put the agent in classifier-auto mode);
+        // permissionMode:'default' is the documented interactive-approval
+        // mode. OAuth credentials load independently of settings, so $0 Max
+        // dispatch is unaffected, and agents carry their own system_prompt so
+        // dropping CLAUDE.md costs nothing.
+        //
+        // CAVEAT (learned the hard way): on the Max-plan session path the
+        // spawned `claude` subprocess runs its BUILT-IN tools itself and does
+        // NOT route them through canUseTool regardless of these options —
+        // proven by tracing the event stream. So built-in Bash/Read/Write are
+        // ungovernable here. We therefore gate at the layer we DO own: the
+        // in-process MCP tool handlers (see approval-gate.ts), and we hand
+        // governed agents OUR MCP-wrapped tools instead of the SDK's built-ins.
+        // The ritsu-agent runtime (our own loop) gates reliably and is the
+        // home for agents that need hard tool approval.
         settingSources: [],
-        // Per Anthropic's permission docs, the eval order is:
-        //   hooks -> deny rules -> PERMISSION MODE -> allow rules -> canUseTool
-        // The session's inherited 'auto' mode (a model classifier) resolves at
-        // the permission-mode step, three steps BEFORE canUseTool — so our hook
-        // never runs. Forcing 'default' makes unmatched tools "fall through" to
-        // canUseTool, which is the documented interactive-approval path. Paired
-        // with settingSources:[] so the session's 'auto' can't override it.
         permissionMode: 'default',
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
@@ -146,21 +133,6 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         ...(canUseTool ? { canUseTool } : {}),
       },
     })) {
-      // DEBUG: dump every SDK event so we can see the real tool-call flow —
-      // whether a tool_use block appears, and whether ANY permission /
-      // can_use_tool control event happens before the tool runs.
-      const ev = event as { type?: string; subtype?: string; message?: { content?: unknown } };
-      let toolNames: string[] = [];
-      if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
-        toolNames = (ev.message.content as Array<{ type?: string; name?: string }>)
-          .filter(b => b?.type === 'tool_use')
-          .map(b => b.name ?? '?');
-      }
-      logger.info('dispatch.debug.event', {
-        type: ev.type,
-        ...(ev.subtype ? { subtype: ev.subtype } : {}),
-        ...(toolNames.length ? { tool_use: toolNames } : {}),
-      });
       const text = extractAssistantText(event);
       if (text) lastAssistantText = text;
       const result = extractResult(event, model);

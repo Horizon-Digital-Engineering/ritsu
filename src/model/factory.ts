@@ -110,5 +110,8 @@ function ritsuAgentOptsFrom(opts: DispatcherOpts, defaultModel: string) {
     defaultModel,
     providerOptions: opts.ritsuAgent.providerOptions,
     toolDeps: opts.ritsuAgent.toolDeps,
+    // Same approval gate the claude-direct path gets — but here it's the
+    // reliable enforcement point (our own loop, no SDK to bypass it).
+    ...(opts.approval ? { approval: opts.approval } : {}),
   };
 }

@@ -14,6 +14,7 @@
  */
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../dispatcher.js';
 import type { ApiKeyStore } from '../../auth/api-key-store.js';
+import type { ApprovalStore } from '../../approval-store.js';
 import { OpenAICompatClient, type OpenAIProvider } from './openai-client.js';
 import { buildBuiltinTools, type RaToolDeps } from '../../tools/ritsu-agent/builtin.js';
 import type { RaMessage, RaTool, RaToolCall, RaProviderOptions } from './types.js';
@@ -37,6 +38,15 @@ export interface RitsuAgentDispatcherOpts {
   /** Built-in tool wiring (memory + agent-comms). Pass null to disable
    *  (e.g. a bare-bones agent with no built-ins). */
   toolDeps: RaToolDeps | null;
+  /**
+   * Human-in-the-loop approval gate. When a tool the model wants to run is
+   * in `gatedTools`, we BLOCK the loop on operator approval before executing
+   * it. This is the reliable enforcement point for open models: we own the
+   * loop, so there's no SDK and no tool timeout to bypass us — the await
+   * just waits. On reject, the operator's reason is returned to the model as
+   * the tool result so it can adapt. Omit to disable gating.
+   */
+  approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
   /** Injected by tests. */
   fetchImpl?: typeof fetch;
 }
@@ -104,7 +114,7 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
 
       // Execute each tool, append result.
       for (const call of completion.tool_calls) {
-        const result = await this.runTool(call, toolsByName);
+        const result = await this.runTool(call, toolsByName, req.conversation_id ?? null);
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
     }
@@ -122,7 +132,7 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
 
   /** Resolve, parse args, invoke handler. Errors are caught + stringified
    *  so the model can react instead of crashing the loop. */
-  private async runTool(call: RaToolCall, byName: Map<string, RaTool>): Promise<string> {
+  private async runTool(call: RaToolCall, byName: Map<string, RaTool>, conversationId: number | null): Promise<string> {
     const tool = byName.get(call.function.name);
     if (!tool) return `error: tool "${call.function.name}" not available`;
     let args: Record<string, unknown>;
@@ -132,6 +142,24 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
         : {};
     } catch (err) {
       return `error: invalid tool arguments JSON: ${(err as Error).message}`;
+    }
+    // Human-in-the-loop gate. We own this loop, so blocking here is reliable:
+    // the tool does NOT run until the operator approves. On reject, the reason
+    // goes back to the model as the tool result. No SDK / timeout to bypass us.
+    const gate = this.opts.approval;
+    if (gate && gate.gatedTools.includes(call.function.name)) {
+      logger.info('ra.approval.gate', { agent_id: gate.agentId, tool: call.function.name, conversation_id: conversationId });
+      const decision = await gate.store.request({
+        agentId: gate.agentId,
+        conversationId,
+        toolName: call.function.name,
+        args,
+      });
+      if (decision.state === 'rejected') {
+        return decision.reason?.trim()
+          ? `Operator rejected this ${call.function.name} call: ${decision.reason.trim()}`
+          : `Operator rejected this ${call.function.name} call.`;
+      }
     }
     try {
       return await tool.handler(args);

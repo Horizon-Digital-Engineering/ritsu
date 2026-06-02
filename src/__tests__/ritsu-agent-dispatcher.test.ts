@@ -4,7 +4,28 @@ import { randomBytes } from 'node:crypto';
 import { openDatabase } from '../db.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
 import { RitsuAgentDispatcher } from '../model/ritsu-agent/dispatcher.js';
+import { ApprovalStore } from '../approval-store.js';
+import { SqliteMemoryStore } from '../memory-store.js';
+import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
+import { SqliteConversationStore } from '../conversation-store.js';
 import { _resetKeyCacheForTests } from '../util/secret-crypto.js';
+
+/** Minimal RaToolDeps wiring the memory + comms built-ins against one DB. */
+function makeToolDeps(db: ReturnType<typeof openDatabase>, agentId = 'a') {
+  return {
+    agentId,
+    memory: new SqliteMemoryStore(db),
+    defStore: new SqliteAgentDefinitionStore(db),
+    conversations: new SqliteConversationStore(db),
+    host: { get: () => ({ onMessage: async () => ({ reply: '', conversation_id: 0 }) }) },
+  };
+}
+
+/** Spin until the predicate holds or we give up (the gated chat() runs
+ *  concurrently; the pending approval appears a few microtasks in). */
+async function waitFor(pred: () => boolean, tries = 100): Promise<void> {
+  for (let i = 0; i < tries && !pred(); i++) await new Promise(r => setTimeout(r, 5));
+}
 
 /** Build a fake fetch that returns a queued series of OpenAI-shape
  *  responses. Each call dequeues one. */
@@ -156,5 +177,57 @@ describe('RitsuAgentDispatcher', () => {
     });
     const r = await d.chat({ messages: [{ role: 'user', content: 'loop' }] });
     assert.match(r.content, /tool-call loop exceeded/);
+  });
+
+  it('approval gate: a gated tool BLOCKS until approved, then runs', async () => {
+    const db = openDatabase(':memory:');
+    const deps = makeToolDeps(db);
+    const approvals = new ApprovalStore(db);
+    const d = new RitsuAgentDispatcher({
+      provider: 'openai', apiKeyRef: keyId, apiKeys, defaultModel: 'gpt-test',
+      toolDeps: deps,
+      approval: { agentId: 'a', store: approvals, gatedTools: ['memory_remember'] },
+      fetchImpl: makeFetchQueue([
+        toolCalls([{ id: 'c1', name: 'memory_remember', args: { content: 'a gated fact' } }]),
+        textOnly('saved it'),
+      ]),
+    });
+    // Run the turn concurrently — it will block inside runTool on the gate.
+    const chatP = d.chat({ messages: [{ role: 'user', content: 'remember a gated fact' }], conversation_id: 7 });
+    await waitFor(() => approvals.pendingCount() === 1);
+    assert.equal(approvals.pendingCount(), 1);
+    const pending = approvals.listPending()[0];
+    assert.equal(pending.tool_name, 'memory_remember');
+    assert.equal(pending.conversation_id, 7);
+    // The tool has NOT run yet — nothing written while blocked.
+    assert.equal((await deps.memory.list('a', 10)).length, 0);
+    // Approve → the turn resumes and the tool finally executes.
+    approvals.decide(pending.id, 'approved', null, 'test');
+    const r = await chatP;
+    assert.equal(r.content, 'saved it');
+    assert.equal((await deps.memory.list('a', 10)).length, 1);
+  });
+
+  it('approval gate: reject returns the reason to the model + the tool never runs', async () => {
+    const db = openDatabase(':memory:');
+    const deps = makeToolDeps(db);
+    const approvals = new ApprovalStore(db);
+    const d = new RitsuAgentDispatcher({
+      provider: 'openai', apiKeyRef: keyId, apiKeys, defaultModel: 'gpt-test',
+      toolDeps: deps,
+      approval: { agentId: 'a', store: approvals, gatedTools: ['memory_remember'] },
+      fetchImpl: makeFetchQueue([
+        toolCalls([{ id: 'c1', name: 'memory_remember', args: { content: 'should not persist' } }]),
+        textOnly('understood, skipping'),
+      ]),
+    });
+    const chatP = d.chat({ messages: [{ role: 'user', content: 'remember something' }], conversation_id: 9 });
+    await waitFor(() => approvals.pendingCount() === 1);
+    const pending = approvals.listPending()[0];
+    approvals.decide(pending.id, 'rejected', 'not allowed', 'test');
+    const r = await chatP;
+    assert.equal(r.content, 'understood, skipping');
+    // The tool did NOT run — memory stays empty even though the model asked.
+    assert.equal((await deps.memory.list('a', 10)).length, 0);
   });
 });
