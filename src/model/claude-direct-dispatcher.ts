@@ -5,6 +5,7 @@ import type { MemoryStore } from '../memory-store.js';
 import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import { buildAgentMemoryMcp, MEMORY_TOOL_NAMES, MEMORY_MCP_NAME } from '../tools/mcp-internal/memory.js';
+import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
 import {
   buildAgentCommsMcp, COMMS_TOOL_NAMES, COMMS_MCP_NAME,
   type AgentCommsDeps,
@@ -92,7 +93,7 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
     const workspaces = this.opts.workspaces ?? [];
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
-    const { mcpServers, allowedTools } = buildMcpServers(this.opts);
+    const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
 
     // DEBUG: confirm the permission hook is actually wired + what we're
     // handing the SDK. If canUseTool_wired is true but tool.check never
@@ -262,14 +263,25 @@ function buildCanUseToolCallback(
  * name or the SDK strips them from the model's toolbelt even when the server
  * is registered.
  */
-function buildMcpServers(opts: ClaudeDirectOpts): {
+function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null): {
   mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>>;
   allowedTools: string[];
 } {
   const mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>> = {};
   const allowedTools: string[] = [];
+  // Approval gate context for in-process MCP tools — enforced INSIDE the
+  // handler (the SDK can't bypass that, unlike canUseTool). Null when the
+  // agent gates nothing.
+  const gate: McpGateContext | null = opts.approval && opts.approval.gatedTools.length > 0
+    ? {
+        agentId: opts.approval.agentId,
+        conversationId,
+        gatedTools: opts.approval.gatedTools,
+        approvals: opts.approval.store,
+      }
+    : null;
   if (opts.memory) {
-    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store);
+    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store, gate);
     allowedTools.push(...MEMORY_TOOL_NAMES);
   }
   if (opts.comms) {

@@ -19,6 +19,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { MemoryStore } from '../../memory-store.js';
 import { logger } from '../../util/log.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 
 export const MEMORY_MCP_NAME = 'memory';
 
@@ -29,7 +30,7 @@ export const MEMORY_TOOL_NAMES = [
   `mcp__${MEMORY_MCP_NAME}__list_memories`,
 ] as const;
 
-export function buildAgentMemoryMcp(agentId: string, store: MemoryStore) {
+export function buildAgentMemoryMcp(agentId: string, store: MemoryStore, gate: McpGateContext | null = null) {
   return createSdkMcpServer({
     name: MEMORY_MCP_NAME,
     version: '0.1.0',
@@ -43,11 +44,11 @@ export function buildAgentMemoryMcp(agentId: string, store: MemoryStore) {
           content: z.string().min(1).max(4000)
             .describe('The fact to remember. One self-contained sentence is ideal.'),
         },
-        async ({ content }) => {
+        async ({ content }) => gateMcpTool(gate, MEMORY_TOOL_NAMES[0], { content }, async () => {
           const id = await store.write({ agent_id: agentId, content });
           logger.info('memory.remember', { agent_id: agentId, id, content_len: content.length });
           return { content: [{ type: 'text', text: `remembered (id=${id})` }] };
-        },
+        }),
       ),
       tool(
         'update_memory',
@@ -57,11 +58,11 @@ export function buildAgentMemoryMcp(agentId: string, store: MemoryStore) {
           id: z.number().int().positive().describe('id of the memory to supersede'),
           content: z.string().min(1).max(4000).describe('the new content'),
         },
-        async ({ id, content }) => {
+        async ({ id, content }) => gateMcpTool(gate, MEMORY_TOOL_NAMES[1], { id, content }, async () => {
           const newId = await store.write({ agent_id: agentId, content, supersedes: id });
           logger.info('memory.update', { agent_id: agentId, old_id: id, new_id: newId });
           return { content: [{ type: 'text', text: `updated (old id=${id}, new id=${newId})` }] };
-        },
+        }),
       ),
       tool(
         'forget',
@@ -70,13 +71,13 @@ export function buildAgentMemoryMcp(agentId: string, store: MemoryStore) {
         {
           id: z.number().int().positive().describe('id of the memory to forget'),
         },
-        async ({ id }) => {
+        async ({ id }) => gateMcpTool(gate, MEMORY_TOOL_NAMES[2], { id }, async () => {
           const ok = await store.delete(id);
           logger.info('memory.forget', { agent_id: agentId, id, ok });
           return {
             content: [{ type: 'text', text: ok ? `forgotten (id=${id})` : `nothing to forget (id=${id} not active)` }],
           };
-        },
+        }),
       ),
       tool(
         'list_memories',
