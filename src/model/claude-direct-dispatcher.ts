@@ -118,6 +118,12 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         // unaffected. (Agents define their own system_prompt, so dropping
         // CLAUDE.md loading here costs us nothing.)
         settingSources: [],
+        // Force the permission mode that routes tool calls through our
+        // canUseTool hook. The SDK's default is now 'auto' (a model
+        // classifier auto-approves), which skips canUseTool entirely — so
+        // neither the sandbox nor the approval gate ever runs. 'default' =
+        // "prompts for dangerous operations", i.e. consults canUseTool.
+        permissionMode: 'default',
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
