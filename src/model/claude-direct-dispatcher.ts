@@ -106,6 +106,18 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
       options: {
         systemPrompt: systemMsg,
         model,
+        // SDK isolation mode. Without this, the SDK loads the service
+        // account's ~/.claude/settings.json (settingSources defaults to
+        // loading user/project/local), which on our box carries
+        // `defaultMode: "auto"`. That puts the spawned agent in 'auto'
+        // permission mode — a model classifier auto-approves tool calls —
+        // so our canUseTool hook is never consulted and BOTH the workspace
+        // sandbox (checkToolUse) and the approval gate are silently
+        // bypassed. `[]` keeps OUR canUseTool the sole authority. OAuth
+        // credentials load independently of settings, so $0 Max dispatch is
+        // unaffected. (Agents define their own system_prompt, so dropping
+        // CLAUDE.md loading here costs us nothing.)
+        settingSources: [],
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
