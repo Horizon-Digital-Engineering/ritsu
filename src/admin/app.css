@@ -628,6 +628,10 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .approval-stamp-body { color: var(--fg); min-width: 0; word-break: break-word; }
 .approval-when { color: var(--muted); font-size: 0.74rem; margin-left: auto; }
 
+/* Extensions: an input whose secret is already stored gets a subtle
+   left accent so the operator sees what's configured without the value. */
+.field-set { border-left: 3px solid hsl(140, 50%, 45%); }
+
 /* ---- Responsive ---------------------------------------------- */
 /* Tablet / small-desktop: pull padding in, let tab bar scroll
    horizontally so it never wraps awkwardly. */

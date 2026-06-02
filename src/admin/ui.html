@@ -80,6 +80,38 @@
       </div>
     </section>
 
+    <!-- ============ EXTENSIONS ============ -->
+    <section id="pane-extensions" class="pane">
+      <div class="panel">
+        <h2 class="m0">Extensions</h2>
+        <p class="tile-header-meta">Connectors that give agents new jobs. Credentials are encrypted at rest and never shown to a model — agents act through them without ever seeing the secret. Turn an extension on for an agent with its capability checkbox (Agents tab).</p>
+      </div>
+      <div class="panel">
+        <h2>✉️ Email <span id="ext-email-status" class="chip">—</span></h2>
+        <p class="form-hint">IMAP (inbox) + SMTP (outbox) for any provider. Give an agent the <code>crm</code> capability and it can read the inbox and draft replies; <strong>sending always pauses for your approval</strong>. user/pass are shared between IMAP and SMTP.</p>
+        <form class="grid" id="ext-email-form">
+          <label for="se-imap_host">imap host</label>
+          <input id="se-imap_host" placeholder="imap.gmail.com" />
+          <label for="se-imap_port">imap port</label>
+          <input id="se-imap_port" placeholder="993" />
+          <label for="se-smtp_host">smtp host</label>
+          <input id="se-smtp_host" placeholder="smtp.gmail.com" />
+          <label for="se-smtp_port">smtp port</label>
+          <input id="se-smtp_port" placeholder="587" />
+          <label for="se-user">user</label>
+          <input id="se-user" placeholder="you@example.com" autocomplete="off" />
+          <label for="se-pass">password</label>
+          <input id="se-pass" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="se-from_address">from address</label>
+          <input id="se-from_address" placeholder="You &lt;you@example.com&gt;" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-email-ext">Save</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
     <!-- ============ AGENTS ============ -->
     <section id="pane-agents" class="pane">
       <div class="panel">
@@ -179,11 +211,14 @@
             <div id="f-capabilities" class="row-wrap">
               <label><input type="checkbox" id="f-cap-manage" value="manage_agents" /> manage_agents</label>
               <label><input type="checkbox" id="f-cap-monitor" value="monitor_agents" /> monitor_agents</label>
+              <label><input type="checkbox" id="f-cap-crm" value="crm" /> crm (email)</label>
             </div>
             <div class="form-hint">
               <code>manage_agents</code>: agent can mint &amp; edit other agents via <code>mcp__agent_admin__*</code>.
               <code>monitor_agents</code>: read-only swarm inspection via <code>mcp__agent_monitor__*</code>.
-              Keep both empty for normal agents.
+              <code>crm</code>: email manager — read inbox + send (sending always needs your approval).
+              Configure the mailbox in the <strong>Extensions</strong> tab.
+              Keep empty for normal agents.
             </div>
           </div>
 

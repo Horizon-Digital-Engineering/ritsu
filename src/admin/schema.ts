@@ -27,8 +27,10 @@ export const AgentDefinitionSchema = z.object({
   /** Per-agent capabilities. 'manage_agents' unlocks agent-admin MCP tools
    *  (create/update/reload other agents). 'monitor_agents' unlocks read-only
    *  inspection across the whole swarm (conversations, messages, memories,
-   *  state). Empty default — every agent stays scoped to its own surface. */
-  capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([]),
+   *  state). 'crm' unlocks the email tools (read_inbox/read_email/send_email,
+   *  send always approval-gated). Empty default — every agent stays scoped to
+   *  its own surface. */
+  capabilities: z.array(z.enum(['manage_agents', 'monitor_agents', 'crm'])).default([]),
   /** Tool names this agent must get operator approval for before each use
    *  (e.g. ['Bash','Write']). The agent's turn blocks on a pending approval
    *  until the operator approves or rejects. Empty = no gating. */

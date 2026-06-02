@@ -50,6 +50,8 @@ export interface DispatcherOpts {
    * each listed tool runs. Currently honored by the claude-direct dispatcher.
    */
   approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
+  /** CRM email tools — wired when the agent has the 'crm' capability. */
+  email?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
   /**
    * Ritsu-agent runtime config (Phase B). When present + kind is
    * 'ritsu-agent', the dispatcher uses its own tool-calling loop against
@@ -94,6 +96,7 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.admin      !== undefined) out.admin      = opts.admin;
   if (opts.monitor    !== undefined) out.monitor    = opts.monitor;
   if (opts.approval   !== undefined) out.approval   = opts.approval;
+  if (opts.email      !== undefined) out.email      = opts.email;
   return out;
 }
 

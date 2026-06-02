@@ -8,6 +8,7 @@ import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ApprovalStore } from './approval-store.js';
+import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import { logger } from './util/log.js';
 
@@ -36,6 +37,7 @@ export class AgentHost {
     private readonly workspaces: WorkspaceStore,
     private readonly apiKeys: import('./auth/api-key-store.js').ApiKeyStore,
     private readonly approvals: ApprovalStore,
+    private readonly secrets: SecretStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
         // ritsu-agent runtime overrides def.dispatcher when both provider +
@@ -66,6 +68,7 @@ export class AgentHost {
     const cwd = workspaces[0]?.path;
     const canManage = def.capabilities.includes('manage_agents');
     const canMonitor = def.capabilities.includes('monitor_agents');
+    const canCrm = def.capabilities.includes('crm');
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -147,6 +150,17 @@ export class AgentHost {
           agentId: def.id,
           store: this.approvals,
           gatedTools: def.approval_tools,
+        },
+      } : {}),
+      // CRM email extension — only when the agent has the 'crm' capability.
+      // send_email always blocks on approval, so the gate store rides along
+      // independent of approval_tools. Credentials are resolved from the
+      // SecretStore inside the tool handlers, never exposed to the model.
+      ...(canCrm ? {
+        email: {
+          agentId: def.id,
+          secrets: this.secrets,
+          approvals: this.approvals,
         },
       } : {}),
       // Phase B: ritsu-agent runtime config. Only consumed when the

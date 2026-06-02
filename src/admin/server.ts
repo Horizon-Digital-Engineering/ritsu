@@ -13,6 +13,8 @@ import type { WorkspaceStore, Permission } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
 import type { ApprovalStore } from '../approval-store.js';
+import type { SecretStore } from '../auth/secret-store.js';
+import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
@@ -49,6 +51,7 @@ export interface AdminDeps {
   memory: MemoryStore;
   conversations: ConversationStore;
   approvals: ApprovalStore;
+  secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
   oauth: OAuthStore;
@@ -145,6 +148,12 @@ const ApprovalDecideBody = z.object({
   // Operator's optional note. On reject it's fed back to the model as the
   // tool-denial reason so it can adapt; on approve it's just an audit note.
   reason: z.string().trim().max(2000).optional(),
+});
+
+const SecretSetBody = z.object({
+  namespace: z.string().trim().min(1).max(64),
+  name:      z.string().trim().min(1).max(64),
+  value:     z.string().min(1).max(8192),
 });
 
 /** Test-pane body. Mirrors the agent-edit form's draft state — never
@@ -331,7 +340,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, memory, conversations, approvals } = deps;
+  const { defStore, host, tokens, workspaces, memory, conversations, approvals, secrets } = deps;
   const app = express();
   app.disable('x-powered-by');
 
@@ -769,6 +778,40 @@ export function createAdminApp(deps: AdminDeps) {
       return;
     }
     res.json({ approval: decided });
+  });
+
+  // ---- secrets (extension credentials) -----------------------------------
+  // Operator-only. Values are encrypted at rest and NEVER returned by the API
+  // — list shows metadata + which fields are set, set/delete mutate. The
+  // email extension reads these in-process; the model never sees them.
+
+  app.get('/admin/api/secrets', (_req: Request, res: Response) => {
+    // Group metadata by namespace + advertise the expected keys per known
+    // connector so the UI can render a form that shows what's set vs missing.
+    const all = secrets.list();
+    const setKeys = new Set(all.map(s => `${s.namespace}:${s.name}`));
+    res.json({
+      secrets: all,
+      connectors: [
+        {
+          namespace: EMAIL_NS,
+          label: 'Email (IMAP + SMTP)',
+          keys: EMAIL_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${EMAIL_NS}:${k}`) })),
+        },
+      ],
+    });
+  });
+
+  app.post('/admin/api/secrets', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SecretSetBody);
+    if (!body) return;
+    secrets.set(body.namespace, body.name, body.value);
+    res.json({ ok: true, namespace: body.namespace, name: body.name });
+  });
+
+  app.delete('/admin/api/secrets/:namespace/:name', (req: Request, res: Response) => {
+    const removed = secrets.delete(param(req.params.namespace), param(req.params.name));
+    res.status(removed ? 204 : 404).end();
   });
 
   // ---- agents ------------------------------------------------------------

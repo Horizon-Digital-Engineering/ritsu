@@ -216,6 +216,9 @@ const NAV_GROUPS = [
     { id: 'channels', label: 'Channels' },
     { id: 'mcp',      label: 'MCP' },
   ] },
+  { id: 'extensions', label: 'Extensions', tabs: [
+    { id: 'extensions', label: 'Extensions' },
+  ] },
   { id: 'auth', label: 'Auth', tabs: [
     { id: 'tokens',        label: 'Tokens' },
     { id: 'api-keys',      label: 'API Keys' },
@@ -270,6 +273,7 @@ function switchTab(name) {
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
   if (name === 'approvals') loadApprovalsTab();
+  if (name === 'extensions') loadExtensionsTab();
   if (name === 'mcp') loadMcpTools();
   else if (name === 'tokens') refreshTokens();
   else if (name === 'api-keys') refreshApiKeys();
@@ -479,6 +483,7 @@ function loadAgentForm(a) {
   const caps = new Set(a.capabilities || []);
   $('f-cap-manage').checked = caps.has('manage_agents');
   $('f-cap-monitor').checked = caps.has('monitor_agents');
+  $('f-cap-crm').checked = caps.has('crm');
   // Show Revert only when there's a previous prompt to swap to.
   const revertBtn = $('f-revert');
   if (a.previous_system_prompt) {
@@ -508,6 +513,7 @@ function clearForm() {
   renderCanCallCheckboxes([]);
   $('f-cap-manage').checked = false;
   $('f-cap-monitor').checked = false;
+  $('f-cap-crm').checked = false;
   $('f-revert').classList.add('hidden');
   $('test-pane').classList.remove('hidden'); // available for drafts too
   $('test-reply').classList.add('hidden');
@@ -535,6 +541,7 @@ async function submitAgent(method) {
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
       ...($('f-cap-monitor').checked ? ['monitor_agents'] : []),
+      ...($('f-cap-crm').checked ? ['crm'] : []),
     ],
     provider,
     api_key_ref: apiKeyRef,
@@ -1940,6 +1947,7 @@ const MCP_TOOL_MAP = {
   agent_comms: ['ask_agent', 'list_agents'],
   agent_admin: ['create_agent', 'update_agent', 'reload_agent'],
   agent_monitor: ['list_agents', 'list_conversations', 'read_conversation', 'read_memory'],
+  email: ['read_inbox', 'read_email', 'send_email'],
 };
 
 function deriveAgentTools(agent) {
@@ -1964,6 +1972,9 @@ function deriveAgentTools(agent) {
       : []),
     ...(caps.has('monitor_agents')
       ? [{ server: 'agent_monitor', tools: MCP_TOOL_MAP.agent_monitor, note: 'capability: monitor_agents' }]
+      : []),
+    ...(caps.has('crm')
+      ? [{ server: 'email', tools: MCP_TOOL_MAP.email, note: 'capability: crm — send_email always needs approval' }]
       : []),
   ];
   return { builtin: agent.tools_allowlist || [], mcp };
@@ -2388,6 +2399,57 @@ function toggleApprovalDetail(cardEl) {
   btn.textContent = show ? '▾ hide details' : '▸ show details';
 }
 
+// ---- extensions (connectors) ------------------------------------------
+// Each extension is a connector that gives agents a new job. The operator
+// configures credentials here (encrypted server-side, never returned); the
+// per-agent on/off is the capability checkbox on the Agents tab.
+const EMAIL_FIELDS = ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'user', 'pass', 'from_address'];
+
+async function loadExtensionsTab() {
+  try {
+    const { connectors } = await api('GET', '/admin/api/secrets');
+    const email = (connectors || []).find(c => c.namespace === 'email');
+    const keys = new Map((email?.keys || []).map(k => [k.name, k.set]));
+    // Mark which fields already have a value (so the operator sees what's
+    // configured) without ever pulling the secret itself.
+    for (const f of EMAIL_FIELDS) {
+      const el = $(`se-${f}`);
+      if (!el) continue;
+      if (keys.get(f)) {
+        el.classList.add('field-set');
+        if (f === 'pass') el.placeholder = '•••••• (set — blank keeps it)';
+        else if (!el.value) el.placeholder = '(set — blank keeps it)';
+      } else {
+        el.classList.remove('field-set');
+      }
+    }
+    const allCore = ['imap_host', 'smtp_host', 'user', 'pass', 'from_address'].every(k => keys.get(k));
+    const badge = $('ext-email-status');
+    if (badge) {
+      badge.textContent = allCore ? 'configured' : 'not configured';
+      badge.className = `chip ${allCore ? 'ok' : 'warn'}`;
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function saveEmailExt() {
+  // POST each field that the operator actually typed. Blank = leave as-is
+  // (so they don't have to re-enter the password to change the host).
+  let wrote = 0;
+  try {
+    for (const f of EMAIL_FIELDS) {
+      const el = $(`se-${f}`);
+      const value = (el?.value || '').trim();
+      if (!value) continue;
+      await api('POST', '/admin/api/secrets', { namespace: 'email', name: f, value });
+      wrote++;
+      if (f === 'pass') el.value = ''; // never keep the typed password in the DOM
+    }
+    toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'}` : 'nothing to save');
+    loadExtensionsTab();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 // ---- event delegation -------------------------------------------------
 // One document-level click listener routes every data-action attribute to
 // the handler in ACTIONS. This is what lets script-src drop 'unsafe-inline':
@@ -2474,6 +2536,9 @@ const ACTIONS = {
 
   // audit tab
   'audit-refresh':          () => loadAuditTab(),
+
+  // extensions tab
+  'save-email-ext':         () => saveEmailExt(),
 
   // approvals tab + inline cards
   'approvals-refresh':      () => loadApprovalsList(),
