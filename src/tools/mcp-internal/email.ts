@@ -20,6 +20,7 @@ import type { SecretStore } from '../../auth/secret-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
 import { loadEmailConfig, readInbox, readMessage, sendEmail } from '../../connectors/email.js';
 import { scrubSecrets } from '../../util/scrub.js';
+import { fenceUntrusted } from '../../util/untrusted.js';
 import { logger } from '../../util/log.js';
 
 export const EMAIL_MCP_NAME = 'email';
@@ -63,7 +64,8 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             const body = msgs
               .map(m => `[uid ${m.uid}]${m.seen ? '' : ' •'} ${m.date.slice(0, 16)}  ${m.from}\n    ${m.subject}`)
               .join('\n');
-            return { content: [{ type: 'text', text: body }] };
+            // From/subject are attacker-controlled — fence them.
+            return { content: [{ type: 'text', text: fenceUntrusted('inbox listing', body) }] };
           } catch (e) {
             logger.warn('email.read_inbox.error', { agent_id: agentId, err: (e as Error).message });
             return { content: [{ type: 'text', text: `error reading inbox: ${scrubSecrets((e as Error).message)}` }] };
@@ -81,7 +83,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             const m = await readMessage(cfg, uid);
             if (!m) return { content: [{ type: 'text', text: `no message with uid ${uid}` }] };
             const text = `From: ${m.from}\nTo: ${m.to}\nDate: ${m.date}\nSubject: ${m.subject}\n\n${m.text}`;
-            return { content: [{ type: 'text', text }] };
+            return { content: [{ type: 'text', text: fenceUntrusted(`email from ${m.from}`, text) }] };
           } catch (e) {
             logger.warn('email.read_email.error', { agent_id: agentId, err: (e as Error).message });
             return { content: [{ type: 'text', text: `error reading message: ${scrubSecrets((e as Error).message)}` }] };

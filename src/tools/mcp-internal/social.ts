@@ -19,6 +19,7 @@ import type { ApprovalStore } from '../../approval-store.js';
 import { loadTwitterConfig, getMentions, getMyTweets, postTweet } from '../../connectors/twitter.js';
 import { loadLinkedInConfig, publishPost } from '../../connectors/linkedin.js';
 import { scrubSecrets } from '../../util/scrub.js';
+import { fenceUntrusted } from '../../util/untrusted.js';
 import { logger } from '../../util/log.js';
 
 export const SOCIAL_MCP_NAME = 'social';
@@ -68,7 +69,8 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
             const ms = await getMentions(cfg, limit ?? 10);
             if (ms.length === 0) return { content: [{ type: 'text', text: '(no recent mentions)' }] };
             const body = ms.map(m => `[${m.id}] ${m.created_at?.slice(0, 16) ?? ''}\n    ${m.text}`).join('\n');
-            return { content: [{ type: 'text', text: body }] };
+            // Mentions are written by third parties — fence them.
+            return { content: [{ type: 'text', text: fenceUntrusted('X/Twitter mentions', body) }] };
           } catch (e) {
             logger.warn('social.read_mentions.error', { agent_id: agentId, err: (e as Error).message });
             return err('error reading mentions', e);
