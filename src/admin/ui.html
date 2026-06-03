@@ -128,6 +128,22 @@
           </div>
         </form>
       </div>
+      <div class="panel">
+        <h2>in LinkedIn <span id="ext-linkedin-status" class="chip">—</span></h2>
+        <p class="form-hint">Publish-only (LinkedIn gives apps no feed read). Paste an OAuth 2.0 access token (scope <code>w_member_social</code>) and your author URN — <code>urn:li:person:…</code> for your profile or <code>urn:li:organization:…</code> for a company page. Shared <code>social</code> capability; <strong>posting always needs your approval</strong>.</p>
+        <form class="grid" id="ext-linkedin-form">
+          <label for="sl-access_token">access token</label>
+          <input id="sl-access_token" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="sl-author_urn">author urn</label>
+          <input id="sl-author_urn" placeholder="urn:li:person:xxxx or urn:li:organization:xxxx" autocomplete="off" />
+          <label for="sl-api_version">api version</label>
+          <input id="sl-api_version" placeholder="202401 (YYYYMM — bump if posts 426)" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-linkedin-ext">Save</button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <!-- ============ AGENTS ============ -->

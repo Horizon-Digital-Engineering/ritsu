@@ -16,6 +16,7 @@ import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
+import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
@@ -803,6 +804,11 @@ export function createAdminApp(deps: AdminDeps) {
           namespace: TWITTER_NS,
           label: 'X / Twitter (OAuth 1.0a)',
           keys: TWITTER_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${TWITTER_NS}:${k}`) })),
+        },
+        {
+          namespace: LINKEDIN_NS,
+          label: 'LinkedIn (OAuth 2.0, publish-only)',
+          keys: LINKEDIN_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${LINKEDIN_NS}:${k}`) })),
         },
       ],
     });

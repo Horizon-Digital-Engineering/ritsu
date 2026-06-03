@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { SecretStore } from '../../auth/secret-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
 import { loadTwitterConfig, getMentions, getMyTweets, postTweet } from '../../connectors/twitter.js';
+import { loadLinkedInConfig, publishPost } from '../../connectors/linkedin.js';
 import { logger } from '../../util/log.js';
 
 export const SOCIAL_MCP_NAME = 'social';
@@ -25,9 +26,11 @@ export const SOCIAL_TOOL_NAMES = [
   `mcp__${SOCIAL_MCP_NAME}__read_mentions`,
   `mcp__${SOCIAL_MCP_NAME}__read_my_posts`,
   `mcp__${SOCIAL_MCP_NAME}__post_tweet`,
+  `mcp__${SOCIAL_MCP_NAME}__post_linkedin`,
 ] as const;
 
 const POST_TOOL = SOCIAL_TOOL_NAMES[2];
+const LINKEDIN_TOOL = SOCIAL_TOOL_NAMES[3];
 
 export interface SocialMcpDeps {
   agentId: string;
@@ -123,6 +126,41 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
             return { content: [{ type: 'text', text: `posted: ${url}` }] };
           } catch (e) {
             logger.error('social.post.error', { agent_id: agentId, err: (e as Error).message });
+            return err('approved, but posting failed', e);
+          }
+        },
+      ),
+      tool(
+        'post_linkedin',
+        'Publish a text post to LinkedIn (to the configured person or company page). This ALWAYS requires ' +
+          'operator approval before it goes live. LinkedIn is publish-only here (no feed reading). On rejection ' +
+          'you receive the reason.',
+        { text: z.string().min(1).max(3000).describe('the post text (<=3000 chars)') },
+        async ({ text }) => {
+          logger.info('social.linkedin.gate', { agent_id: agentId, len: text.length, conversation_id: conversationId });
+          const decision = await approvals.request({
+            agentId,
+            conversationId,
+            toolName: LINKEDIN_TOOL,
+            args: { text },
+          });
+          if (decision.state === 'rejected') {
+            return {
+              content: [{
+                type: 'text',
+                text: decision.reason?.trim()
+                  ? `Operator rejected this LinkedIn post: ${decision.reason.trim()}`
+                  : 'Operator rejected this LinkedIn post.',
+              }],
+            };
+          }
+          const cfg = loadLinkedInConfig(secrets);
+          if (!cfg) return { content: [{ type: 'text', text: 'LinkedIn is not configured. Ask the operator to set the credentials in the Extensions tab.' }] };
+          try {
+            const { url } = await publishPost(cfg, text);
+            return { content: [{ type: 'text', text: `posted to LinkedIn: ${url}` }] };
+          } catch (e) {
+            logger.error('social.linkedin.error', { agent_id: agentId, err: (e as Error).message });
             return err('approved, but posting failed', e);
           }
         },

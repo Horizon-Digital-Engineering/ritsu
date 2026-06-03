@@ -1951,7 +1951,7 @@ const MCP_TOOL_MAP = {
   agent_admin: ['create_agent', 'update_agent', 'reload_agent'],
   agent_monitor: ['list_agents', 'list_conversations', 'read_conversation', 'read_memory'],
   email: ['read_inbox', 'read_email', 'send_email'],
-  social: ['read_mentions', 'read_my_posts', 'post_tweet'],
+  social: ['read_mentions', 'read_my_posts', 'post_tweet', 'post_linkedin'],
 };
 
 function deriveAgentTools(agent) {
@@ -2421,6 +2421,10 @@ const EXT_CONNECTORS = [
     fields: ['api_key', 'api_secret', 'access_token', 'access_secret'],
     core: ['api_key', 'api_secret', 'access_token', 'access_secret'],
     secretFields: ['api_secret', 'access_secret'] },
+  { ns: 'linkedin', prefix: 'sl', badge: 'ext-linkedin-status',
+    fields: ['access_token', 'author_urn', 'api_version'],
+    core: ['access_token', 'author_urn'],
+    secretFields: ['access_token'] },
 ];
 
 async function loadExtensionsTab() {
@@ -2558,6 +2562,7 @@ const ACTIONS = {
   // extensions tab
   'save-email-ext':         () => saveConnectorExt('email'),
   'save-twitter-ext':       () => saveConnectorExt('twitter'),
+  'save-linkedin-ext':      () => saveConnectorExt('linkedin'),
 
   // approvals tab + inline cards
   'approvals-refresh':      () => loadApprovalsList(),
