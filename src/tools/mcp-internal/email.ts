@@ -19,6 +19,7 @@ import { z } from 'zod';
 import type { SecretStore } from '../../auth/secret-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
 import { loadEmailConfig, readInbox, readMessage, sendEmail } from '../../connectors/email.js';
+import { scrubSecrets } from '../../util/scrub.js';
 import { logger } from '../../util/log.js';
 
 export const EMAIL_MCP_NAME = 'email';
@@ -65,7 +66,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             return { content: [{ type: 'text', text: body }] };
           } catch (e) {
             logger.warn('email.read_inbox.error', { agent_id: agentId, err: (e as Error).message });
-            return { content: [{ type: 'text', text: `error reading inbox: ${(e as Error).message}` }] };
+            return { content: [{ type: 'text', text: `error reading inbox: ${scrubSecrets((e as Error).message)}` }] };
           }
         },
       ),
@@ -83,7 +84,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             return { content: [{ type: 'text', text }] };
           } catch (e) {
             logger.warn('email.read_email.error', { agent_id: agentId, err: (e as Error).message });
-            return { content: [{ type: 'text', text: `error reading message: ${(e as Error).message}` }] };
+            return { content: [{ type: 'text', text: `error reading message: ${scrubSecrets((e as Error).message)}` }] };
           }
         },
       ),
@@ -92,10 +93,14 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
         'Send an email. This ALWAYS requires operator approval before it is sent — compose the full message, ' +
           'call this, and it will pause until the operator approves or rejects. On rejection you receive the reason.',
         {
-          to: z.string().min(3).describe('recipient address'),
-          subject: z.string().min(1).describe('subject line'),
-          body: z.string().min(1).describe('plain-text body of the email'),
-          in_reply_to: z.string().optional().describe('optional Message-ID this replies to (threads it)'),
+          // CRLF is rejected on every header-bound field so a model can't
+          // inject extra headers (Bcc:, etc.); `to` must contain an @ and no
+          // line breaks (allows "Name <a@b.com>"). Bounds cap the DB row +
+          // the approval-card payload.
+          to: z.string().min(3).max(320).regex(/^[^\r\n]*@[^\r\n]*$/, 'must be an email address with no line breaks').describe('recipient address'),
+          subject: z.string().min(1).max(998).regex(/^[^\r\n]*$/, 'subject must not contain line breaks').describe('subject line'),
+          body: z.string().min(1).max(100_000).describe('plain-text body of the email'),
+          in_reply_to: z.string().max(998).regex(/^[^\r\n]*$/, 'no line breaks').optional().describe('optional Message-ID this replies to (threads it)'),
         },
         async ({ to, subject, body, in_reply_to }) => {
           // ALWAYS gate — sending mail is the elevated action. Block here
@@ -124,7 +129,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             return { content: [{ type: 'text', text: `sent to ${to} (message-id ${messageId})` }] };
           } catch (e) {
             logger.error('email.send.error', { agent_id: agentId, err: (e as Error).message });
-            return { content: [{ type: 'text', text: `approved, but sending failed: ${(e as Error).message}` }] };
+            return { content: [{ type: 'text', text: `approved, but sending failed: ${scrubSecrets((e as Error).message)}` }] };
           }
         },
       ),

@@ -18,6 +18,7 @@ import type { SecretStore } from '../../auth/secret-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
 import { loadTwitterConfig, getMentions, getMyTweets, postTweet } from '../../connectors/twitter.js';
 import { loadLinkedInConfig, publishPost } from '../../connectors/linkedin.js';
+import { scrubSecrets } from '../../util/scrub.js';
 import { logger } from '../../util/log.js';
 
 export const SOCIAL_MCP_NAME = 'social';
@@ -44,7 +45,9 @@ function notConfigured() {
 }
 
 function err(prefix: string, e: unknown) {
-  return { content: [{ type: 'text' as const, text: `${prefix}: ${(e as Error).message}` }] };
+  // Scrub before the error reaches the model — message only, never the whole
+  // error object (twitter-api-v2's error exposes the outgoing auth header).
+  return { content: [{ type: 'text' as const, text: `${prefix}: ${scrubSecrets((e as Error).message)}` }] };
 }
 
 export function buildAgentSocialMcp(deps: SocialMcpDeps) {

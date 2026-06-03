@@ -4,7 +4,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { AgentDefinitionSchema, AgentDefinitionPatchSchema, DispatcherKindSchema, MemoryBackendSchema } from './admin/schema.js';
+import { AgentDefinitionSchema, AgentDefinitionPatchSchema, DispatcherKindSchema, MemoryBackendSchema, assertGrantableCapabilities } from './admin/schema.js';
 import type { AgentHost } from './agent-host.js';
 import type { MemoryStore } from './memory-store.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
@@ -383,6 +383,7 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
       a => a.id,
       async (args) => {
         const validated = AgentDefinitionSchema.parse(args);
+        assertGrantableCapabilities(validated.capabilities); // crm/social are operator-API-only
         const existing = await deps.defStore.read(validated.id);
         if (existing) throw new Error(`agent ${validated.id} already exists; use update_agent`);
         const saved = await deps.defStore.upsert(validated);
@@ -421,6 +422,7 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         const current = await deps.defStore.read(args.agent_id);
         if (!current) throw new Error(`agent ${args.agent_id} not found`);
         const patch = AgentDefinitionPatchSchema.parse(args.patch);
+        assertGrantableCapabilities(patch.capabilities); // crm/social are operator-API-only
         const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id });
         const saved = await deps.defStore.upsert(merged);
         deps.host.addOrReplace(saved);

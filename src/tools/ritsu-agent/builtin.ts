@@ -21,6 +21,7 @@ import type { Workspace } from '../../workspace-store.js';
 import {
   AgentDefinitionSchema,
   AgentDefinitionPatchSchema,
+  assertGrantableCapabilities,
   type AgentDefinition,
 } from '../../admin/schema.js';
 import {
@@ -290,6 +291,10 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
             ...args,
           };
           const validated = AgentDefinitionSchema.parse(withDefaults);
+          // runTool does not validate args against the JSON-schema enum, so
+          // AgentDefinitionSchema (which permits crm/social) is the only gate
+          // here — enforce the operator-only capabilities explicitly.
+          assertGrantableCapabilities(validated.capabilities);
           const existing = await defStore.read(validated.id);
           if (existing) return `error: agent ${validated.id} already exists; use agent_admin_update_agent`;
           const saved = await defStore.upsert(validated);
@@ -318,9 +323,14 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
         try {
           const id = asString(args.agent_id);
           if (!id) return 'error: agent_id required';
+          // Self-modification via agent-admin is operator-only — otherwise an
+          // agent could strip its own approval_tools / grant itself tools.
+          if (id === agentId) return 'error: an agent cannot modify itself via agent-admin (operator-only)';
           const current = await defStore.read(id);
           if (!current) return `error: agent ${id} not found`;
           const validPatch = AgentDefinitionPatchSchema.parse(args.patch ?? {});
+          // crm/social are operator-only; an agent cannot grant them here.
+          assertGrantableCapabilities(validPatch.capabilities);
           const merged = AgentDefinitionSchema.parse({ ...current, ...validPatch, id: current.id });
           const saved = await defStore.upsert(merged);
           adminHost.addOrReplace(saved);

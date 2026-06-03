@@ -46,6 +46,23 @@ export const AgentDefinitionSchema = z.object({
 
 export type AgentDefinition = z.infer<typeof AgentDefinitionSchema>;
 
+/** Capabilities an AGENT may grant another agent via the agent-admin tools.
+ *  'crm' and 'social' unlock external-world access + stored credentials
+ *  (mailbox, social accounts), so they are OPERATOR-ONLY — settable only via
+ *  the admin API, never agent-to-agent. Otherwise a `manage_agents` agent
+ *  could self-grant inbox access (read_inbox is ungated) with no approval. */
+export const AGENT_GRANTABLE_CAPABILITIES = ['manage_agents', 'monitor_agents'] as const;
+
+/** Throw if a capability list (from an agent-initiated create/update) includes
+ *  an operator-only capability. Call from every agent-admin write surface. */
+export function assertGrantableCapabilities(caps: readonly string[] | undefined): void {
+  if (!caps) return;
+  const forbidden = caps.filter(c => !(AGENT_GRANTABLE_CAPABILITIES as readonly string[]).includes(c));
+  if (forbidden.length) {
+    throw new Error(`capabilities [${forbidden.join(', ')}] are operator-only and cannot be granted by an agent`);
+  }
+}
+
 export const AgentDefinitionPatchSchema = AgentDefinitionSchema.partial().omit({
   id: true,
   created_at: true,

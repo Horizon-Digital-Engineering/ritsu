@@ -80,10 +80,16 @@ export function loadEmailConfig(secrets: SecretStore): EmailConfig | null {
 /** Build an ImapFlow client. secure=true for 993 (implicit TLS); STARTTLS is
  *  negotiated automatically for 143. logger off so creds never hit our logs. */
 function imapClient(cfg: EmailConfig): ImapFlow {
+  const secure = cfg.imap.port === 993;
   return new ImapFlow({
     host: cfg.imap.host,
     port: cfg.imap.port,
-    secure: cfg.imap.port === 993,
+    secure,
+    // SECURITY: on a non-993 port, REQUIRE a STARTTLS upgrade. imapflow's
+    // default is opportunistic (falls back to plaintext LOGIN if STARTTLS is
+    // absent — a downgrade-attack vector that would send the password in the
+    // clear). doSTARTTLS:true aborts instead of authenticating unencrypted.
+    ...(secure ? {} : { doSTARTTLS: true }),
     auth: { user: cfg.imap.user, pass: cfg.imap.pass },
     logger: false,
   });
@@ -146,6 +152,12 @@ export async function sendEmail(cfg: EmailConfig, input: SendEmailInput): Promis
     host: cfg.smtp.host,
     port: cfg.smtp.port,
     secure: cfg.smtp.port === 465, // implicit TLS on 465; STARTTLS on 587
+    // SECURITY: require encryption before AUTH. Without requireTLS, nodemailer
+    // will fall back to plaintext AUTH PLAIN if the server's EHLO omits
+    // STARTTLS (MITM strip / misconfig) — leaking the password on the wire.
+    // requireTLS aborts instead. Pin a modern TLS floor too.
+    requireTLS: true,
+    tls: { minVersion: 'TLSv1.2' },
     auth: { user: cfg.smtp.user, pass: cfg.smtp.pass },
   });
   const info = await transporter.sendMail({
