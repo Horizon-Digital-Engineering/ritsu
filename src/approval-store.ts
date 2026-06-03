@@ -4,6 +4,10 @@ import { logger } from './util/log.js';
 
 export type ApprovalState = 'pending' | 'approved' | 'rejected';
 
+/** Max pending approvals one agent may have outstanding. Beyond this, request()
+ *  returns a synthetic rejection rather than minting another row. */
+const MAX_PENDING_PER_AGENT = 8;
+
 /** Resolution returned to the blocked agent turn. On reject, `reason` is fed
  *  back to the model as the tool-denial message so it can adapt. */
 export interface ApprovalDecision {
@@ -43,6 +47,17 @@ export class ApprovalStore {
    * operator decides. The caller (dispatcher canUseTool) awaits it.
    */
   request(req: ApprovalRequest): Promise<ApprovalDecision> {
+    // Per-agent in-flight cap. Without it a prompt-injected agent could mint
+    // unbounded pending rows + resolvers (memory/DB DoS + an undrainable
+    // approval queue). Mirrors the agent-comms in-flight guard. Returns a
+    // synthetic rejection so the model gets a clear signal and the loop ends.
+    if (this.pendingCountForAgent(req.agentId) >= MAX_PENDING_PER_AGENT) {
+      logger.warn('approval.inflight-cap', { agent_id: req.agentId, tool: req.toolName, max: MAX_PENDING_PER_AGENT });
+      return Promise.resolve({
+        state: 'rejected',
+        reason: `too many pending approvals for this agent (max ${MAX_PENDING_PER_AGENT}) — wait for the operator to clear some before requesting more`,
+      });
+    }
     const argsJson = safeStringify(req.args);
     const r = this.db
       .prepare(
@@ -116,6 +131,34 @@ export class ApprovalStore {
   pendingCount(): number {
     const r = this.db.prepare(`SELECT COUNT(*) AS n FROM tool_approvals WHERE state = 'pending'`).get() as { n: number };
     return r.n;
+  }
+
+  pendingCountForAgent(agentId: string): number {
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM tool_approvals WHERE state = 'pending' AND agent_id = ?`)
+      .get(agentId) as { n: number };
+    return r.n;
+  }
+
+  /**
+   * Reject pending approvals older than maxAgeSeconds and resolve their
+   * waiting turns. Closes the leak where an abandoned turn (SDK tool-timeout,
+   * dropped HTTP socket, errored frame) leaves its pending row + in-memory
+   * resolver alive forever — reconcileOnBoot only runs at startup, so a
+   * long-lived process needs a periodic sweep. Returns the number reaped.
+   */
+  sweepStale(maxAgeSeconds: number): number {
+    const cutoff = Math.floor(Date.now() / 1000) - maxAgeSeconds;
+    const stale = this.db
+      .prepare(`SELECT id FROM tool_approvals WHERE state = 'pending' AND requested_at < ?`)
+      .all(cutoff) as Array<{ id: number }>;
+    if (stale.length === 0) return 0;
+    for (const { id } of stale) {
+      // decide() updates the row + resolves & removes the resolver in one path.
+      this.decide(id, 'rejected', `expired — no operator decision within ${maxAgeSeconds}s`, 'system');
+    }
+    logger.warn('approval.sweep-stale', { count: stale.length, max_age_s: maxAgeSeconds });
+    return stale.length;
   }
 
   /**

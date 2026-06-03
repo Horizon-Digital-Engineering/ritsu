@@ -35,9 +35,13 @@ interface DbRow {
 
 /** AAD binds the ciphertext to its (namespace, name) — both stable for the
  *  row's life — so a value can't be lifted into a different secret slot and
- *  decrypted there. Same string must be used at encrypt + decrypt. */
+ *  decrypted there. JSON-encode the components: a delimiter-based format
+ *  (`ns=…:name=…`) collides for free-text inputs (namespace="a:name=x",
+ *  name="b" vs namespace="a", name="x:name=b"), which would let a value be
+ *  decrypted in the wrong slot. JSON.stringify escapes embedded quotes/
+ *  brackets so two distinct pairs can never produce the same AAD. */
 function aadFor(namespace: string, name: string): string {
-  return `secret:ns=${namespace}:name=${name}`;
+  return 'secret:' + JSON.stringify([namespace, name]);
 }
 
 export class SecretStore {
@@ -66,18 +70,22 @@ export class SecretStore {
    * single decrypt path and it is never exposed as an agent tool.
    */
   get(namespace: string, name: string): string | null {
+    // Trim to match set() (which stores trimmed keys) — otherwise a caller
+    // passing a stray-whitespace key silently misses + builds a mismatched AAD.
+    const ns = namespace.trim();
+    const nm = name.trim();
     const row = this.db
       .prepare('SELECT value_enc FROM plugin_secrets WHERE namespace = ? AND name = ?')
-      .get(namespace, name) as { value_enc: string } | undefined;
+      .get(ns, nm) as { value_enc: string } | undefined;
     if (!row) return null;
-    return decryptSecret(row.value_enc, aadFor(namespace, name));
+    return decryptSecret(row.value_enc, aadFor(ns, nm));
   }
 
   /** Presence check without decrypting — safe to expose more freely. */
   has(namespace: string, name: string): boolean {
     return !!this.db
       .prepare('SELECT 1 FROM plugin_secrets WHERE namespace = ? AND name = ?')
-      .get(namespace, name);
+      .get(namespace.trim(), name.trim());
   }
 
   /** Metadata listing — namespace/name/timestamps, NEVER values. For the
@@ -101,10 +109,12 @@ export class SecretStore {
   }
 
   delete(namespace: string, name: string): boolean {
+    const ns = namespace.trim();
+    const nm = name.trim();
     const r = this.db
       .prepare('DELETE FROM plugin_secrets WHERE namespace = ? AND name = ?')
-      .run(namespace, name);
-    if (r.changes > 0) logger.info('secret.delete', { namespace, name });
+      .run(ns, nm);
+    if (r.changes > 0) logger.info('secret.delete', { namespace: ns, name: nm });
     return r.changes > 0;
   }
 }

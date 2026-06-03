@@ -70,6 +70,34 @@ export class AgentHost {
     const canMonitor = def.capabilities.includes('monitor_agents');
     const canCrm = def.capabilities.includes('crm');
     const canSocial = def.capabilities.includes('social');
+    const isRitsuAgent = !!(def.provider && def.api_key_ref);
+
+    // SECURITY: an agent that reads untrusted content (email bodies, social
+    // mentions) must not have an UNGATED egress/persistence path, or a
+    // prompt-injected message could exfiltrate or self-persist with no
+    // operator approval. So for crm/social agents we auto-gate memory writes
+    // and the shell/web tools. On claude-direct the built-in egress tools
+    // (Bash/WebFetch/WebSearch) are NOT gateable — the SDK runs them and never
+    // consults our hook — so we STRIP them instead of pretending to gate them;
+    // an operator who wants gated shell+email uses the ritsu-agent runtime.
+    const readsUntrusted = canCrm || canSocial;
+    const UNGATEABLE_BUILTIN_EGRESS = ['Bash', 'WebFetch', 'WebSearch'];
+    let effectiveTools = def.tools_allowlist;
+    const autoGated: string[] = [];
+    if (readsUntrusted) {
+      if (isRitsuAgent) {
+        // Our own loop gates these reliably — require approval, don't strip.
+        autoGated.push('memory_remember', 'memory_update_memory', ...UNGATEABLE_BUILTIN_EGRESS);
+      } else {
+        autoGated.push('mcp__memory__remember', 'mcp__memory__update_memory');
+        const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
+        if (stripped.length) {
+          effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.includes(t));
+          logger.warn('agent.crm-egress-stripped', { id: def.id, stripped });
+        }
+      }
+    }
+    const gatedTools = [...new Set([...def.approval_tools, ...autoGated])];
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -100,8 +128,9 @@ export class AgentHost {
       cwd,
       // tools_allowlist on the definition IS the list of SDK tool names
       // exposed to claude-direct (e.g. ['Read', 'Bash']). Empty array =
-      // no tools (the safe default).
-      tools: def.tools_allowlist,
+      // no tools (the safe default). effectiveTools drops ungate-able egress
+      // for content-reading agents (see SECURITY note above).
+      tools: effectiveTools,
       // Full workspace list (with per-path permissions) is consumed by the
       // dispatcher's canUseTool hook for per-call permission enforcement.
       workspaces,
@@ -146,11 +175,11 @@ export class AgentHost {
       // Only wired when the list is non-empty so unconfigured agents pay
       // nothing. Re-read fresh on every addOrReplace, so editing
       // approval_tools in the admin UI takes effect on the next reload.
-      ...(def.approval_tools.length > 0 ? {
+      ...(gatedTools.length > 0 ? {
         approval: {
           agentId: def.id,
           store: this.approvals,
-          gatedTools: def.approval_tools,
+          gatedTools,
         },
       } : {}),
       // CRM email extension — only when the agent has the 'crm' capability.
@@ -197,9 +226,9 @@ export class AgentHost {
       provider: def.provider ?? null,
       memory_backend: def.memory_backend,
       workspace: cwd ?? null,
-      tools_count: def.tools_allowlist.length,
+      tools_count: effectiveTools.length,
       capabilities: def.capabilities,
-      approval_tools: def.approval_tools,
+      gated_tools: gatedTools,
     });
   }
 

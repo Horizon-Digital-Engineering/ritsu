@@ -542,11 +542,13 @@ export function createAdminApp(deps: AdminDeps) {
 
   // ---- admin action audit ------------------------------------------------
   // Runs after the auth middleware (so we have the token id) and only for
-  // mutating verbs on /admin/api/* (GETs are read-only — noisy without value).
-  // Writes a row to admin_audit on response finish.
+  // mutating verbs. Mounted on BOTH /admin/api AND /admin/agents — the
+  // agent-lifecycle routes (create/delete/update/reload/ask, workspace
+  // create/delete) live under /admin/agents and are the highest-impact admin
+  // actions, so they must be in the audit trail too. Writes on response finish.
   type DbHandle = { prepare(s: string): { run(...a: unknown[]): unknown; all(...a: unknown[]): unknown[] } };
   const auditDb = (deps.host as unknown as { db: DbHandle }).db;
-  app.use('/admin/api', (req, res, next) => {
+  const auditMiddleware = (req: Request, res: Response, next: () => void): void => {
     const method = req.method.toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') { next(); return; }
     const t0 = Date.now();
@@ -560,18 +562,22 @@ export function createAdminApp(deps: AdminDeps) {
       const bodyText = req.body ? JSON.stringify(req.body) : '';
       if (bodyText) bodySha256 = createHash('sha256').update(bodyText).digest('hex');
     } catch { /* swallow — audit must never break the request */ }
+    // originalUrl gives the full path; req.path is relative to the mount.
+    const auditedPath = req.originalUrl.split('?')[0];
     res.on('finish', () => {
       try {
         auditDb.prepare(
           `INSERT INTO admin_audit (token_id, ip, method, path, status, body_sha256, duration_ms)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(tokenId, ip, method, req.path, res.statusCode, bodySha256, Date.now() - t0);
+        ).run(tokenId, ip, method, auditedPath, res.statusCode, bodySha256, Date.now() - t0);
       } catch (err) {
         logger.warn('admin.audit.write-failed', { err: (err as Error).message });
       }
     });
     next();
-  });
+  };
+  app.use('/admin/api', auditMiddleware);
+  app.use('/admin/agents', auditMiddleware);
 
   // List recent admin actions. Read-only.
   app.get('/admin/api/audit', (req: Request, res: Response) => {

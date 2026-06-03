@@ -42,6 +42,15 @@ async function main(): Promise<void> {
   // Close out any approvals left pending by a prior process — their agent
   // turns died with that process and can never resume.
   approvals.reconcileOnBoot();
+  // Periodic sweep: reap pending approvals whose turn was abandoned mid-await
+  // (SDK tool-timeout, dropped socket) so the resolver map + the rows don't
+  // grow unbounded between restarts. 24h matches "agents can hang a while".
+  const APPROVAL_TTL_S = Number(process.env.RITSU_APPROVAL_TTL_S ?? 86400) || 86400;
+  const approvalSweep = setInterval(() => {
+    try { approvals.sweepStale(APPROVAL_TTL_S); }
+    catch (err) { logger.warn('approval.sweep-error', { err: (err as Error).message }); }
+  }, 3_600_000); // hourly
+  approvalSweep.unref();
   const secrets = new SecretStore(db);
 
   bootstrapAdminToken(tokens, cfg);
@@ -119,6 +128,16 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // Survive a stray rejection. A long-lived multi-agent server must not die
+  // because one floating promise (a channel poll, a connector call) rejected
+  // without a local catch — log it and keep serving.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('unhandledRejection', { reason: reason instanceof Error ? reason.message : String(reason) });
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error('uncaughtException', { err: err.message });
+  });
 }
 
 try {

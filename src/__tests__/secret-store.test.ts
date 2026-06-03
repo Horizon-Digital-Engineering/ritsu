@@ -62,6 +62,28 @@ describe('SecretStore', () => {
     assert.equal(store.delete('email', 'x'), false); // idempotent
   });
 
+  it('AAD is collision-resistant — values stay bound to their exact slot', () => {
+    // These two (namespace,name) pairs collide under a naive ns=..:name=.. AAD.
+    store.set('a', 'x:name=b', 'value-A');
+    store.set('a:name=x', 'b', 'value-B');
+    assert.equal(store.get('a', 'x:name=b'), 'value-A');
+    assert.equal(store.get('a:name=x', 'b'), 'value-B');
+    // Swapping the ciphertext between the two slots must fail the GCM tag,
+    // because the JSON-encoded AAD differs per slot.
+    const db = store['db'];
+    const encB = (db.prepare("SELECT value_enc AS v FROM plugin_secrets WHERE namespace='a:name=x' AND name='b'").get() as { v: string }).v;
+    db.prepare("UPDATE plugin_secrets SET value_enc=? WHERE namespace='a' AND name='x:name=b'").run(encB);
+    assert.throws(() => store.get('a', 'x:name=b'));
+  });
+
+  it('get/has/delete trim keys to match set()', () => {
+    store.set('email', 'user', 'me@x.com');
+    assert.equal(store.get(' email ', ' user '), 'me@x.com');
+    assert.equal(store.has(' email ', ' user '), true);
+    assert.equal(store.delete(' email ', ' user '), true);
+    assert.equal(store.get('email', 'user'), null);
+  });
+
   it('ciphertext at rest is not the plaintext', () => {
     store.set('email', 'smtp_password', 'plaintext-here');
     // Reach into the raw row (private db, bracket access in tests) — the

@@ -97,6 +97,36 @@ describe('ApprovalStore', () => {
     assert.equal(fresh.listDecided().length, 1);
   });
 
+  it('per-agent in-flight cap rejects beyond the limit (DoS guard)', async () => {
+    // Cap is 8. Fill it, then the 9th is a synthetic rejection (no new row).
+    for (let i = 0; i < 8; i++) void store.request({ agentId: 'a', conversationId: 1, toolName: 'T', args: {} });
+    assert.equal(store.pendingCountForAgent('a'), 8);
+    const over = await store.request({ agentId: 'a', conversationId: 1, toolName: 'T', args: {} });
+    assert.equal(over.state, 'rejected');
+    assert.match(over.reason ?? '', /too many pending/);
+    assert.equal(store.pendingCountForAgent('a'), 8); // no extra row minted
+    // A different agent is unaffected.
+    void store.request({ agentId: 'b', conversationId: 1, toolName: 'T', args: {} });
+    assert.equal(store.pendingCountForAgent('b'), 1);
+  });
+
+  it('sweepStale reaps abandoned pendings + resolves their waiting turns', async () => {
+    const db = openDatabase(':memory:');
+    const store2 = new ApprovalStore(db);
+    const p = store2.request({ agentId: 'a', conversationId: 1, toolName: 'T', args: {} });
+    const id = store2.listPending()[0].id;
+    // Backdate the row to 2h ago, then sweep with a 1h TTL.
+    db.prepare("UPDATE tool_approvals SET requested_at = strftime('%s','now') - 7200 WHERE id = ?").run(id);
+    assert.equal(store2.sweepStale(3600), 1);
+    assert.equal(store2.pendingCount(), 0);
+    const decision = await p; // the awaiting turn unblocks, rejected
+    assert.equal(decision.state, 'rejected');
+    assert.match(decision.reason ?? '', /expired/);
+    // A fresh pending is NOT reaped.
+    void store2.request({ agentId: 'a', conversationId: 1, toolName: 'T2', args: {} });
+    assert.equal(store2.sweepStale(3600), 0);
+  });
+
   it('publishes requested + decided events on the approval bus', () => {
     const events: ApprovalEvent[] = [];
     const handler = (e: ApprovalEvent) => events.push(e);
