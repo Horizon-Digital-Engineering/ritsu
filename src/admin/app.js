@@ -484,6 +484,7 @@ function loadAgentForm(a) {
   $('f-cap-manage').checked = caps.has('manage_agents');
   $('f-cap-monitor').checked = caps.has('monitor_agents');
   $('f-cap-crm').checked = caps.has('crm');
+  $('f-cap-social').checked = caps.has('social');
   // Show Revert only when there's a previous prompt to swap to.
   const revertBtn = $('f-revert');
   if (a.previous_system_prompt) {
@@ -514,6 +515,7 @@ function clearForm() {
   $('f-cap-manage').checked = false;
   $('f-cap-monitor').checked = false;
   $('f-cap-crm').checked = false;
+  $('f-cap-social').checked = false;
   $('f-revert').classList.add('hidden');
   $('test-pane').classList.remove('hidden'); // available for drafts too
   $('test-reply').classList.add('hidden');
@@ -542,6 +544,7 @@ async function submitAgent(method) {
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
       ...($('f-cap-monitor').checked ? ['monitor_agents'] : []),
       ...($('f-cap-crm').checked ? ['crm'] : []),
+      ...($('f-cap-social').checked ? ['social'] : []),
     ],
     provider,
     api_key_ref: apiKeyRef,
@@ -1948,6 +1951,7 @@ const MCP_TOOL_MAP = {
   agent_admin: ['create_agent', 'update_agent', 'reload_agent'],
   agent_monitor: ['list_agents', 'list_conversations', 'read_conversation', 'read_memory'],
   email: ['read_inbox', 'read_email', 'send_email'],
+  social: ['read_mentions', 'read_my_posts', 'post_tweet'],
 };
 
 function deriveAgentTools(agent) {
@@ -1975,6 +1979,9 @@ function deriveAgentTools(agent) {
       : []),
     ...(caps.has('crm')
       ? [{ server: 'email', tools: MCP_TOOL_MAP.email, note: 'capability: crm — send_email always needs approval' }]
+      : []),
+    ...(caps.has('social')
+      ? [{ server: 'social', tools: MCP_TOOL_MAP.social, note: 'capability: social — post_tweet always needs approval' }]
       : []),
   ];
   return { builtin: agent.tools_allowlist || [], mcp };
@@ -2403,47 +2410,58 @@ function toggleApprovalDetail(cardEl) {
 // Each extension is a connector that gives agents a new job. The operator
 // configures credentials here (encrypted server-side, never returned); the
 // per-agent on/off is the capability checkbox on the Agents tab.
-const EMAIL_FIELDS = ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'user', 'pass', 'from_address'];
+// Each connector: its secret field ids in the form (prefix), namespace, the
+// fields that count as "fully configured", and a status badge id.
+const EXT_CONNECTORS = [
+  { ns: 'email',   prefix: 'se', badge: 'ext-email-status',
+    fields: ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'user', 'pass', 'from_address'],
+    core: ['imap_host', 'smtp_host', 'user', 'pass', 'from_address'],
+    secretFields: ['pass'] },
+  { ns: 'twitter', prefix: 'st', badge: 'ext-twitter-status',
+    fields: ['api_key', 'api_secret', 'access_token', 'access_secret'],
+    core: ['api_key', 'api_secret', 'access_token', 'access_secret'],
+    secretFields: ['api_secret', 'access_secret'] },
+];
 
 async function loadExtensionsTab() {
   try {
     const { connectors } = await api('GET', '/admin/api/secrets');
-    const email = (connectors || []).find(c => c.namespace === 'email');
-    const keys = new Map((email?.keys || []).map(k => [k.name, k.set]));
-    // Mark which fields already have a value (so the operator sees what's
-    // configured) without ever pulling the secret itself.
-    for (const f of EMAIL_FIELDS) {
-      const el = $(`se-${f}`);
-      if (!el) continue;
-      if (keys.get(f)) {
-        el.classList.add('field-set');
-        if (f === 'pass') el.placeholder = '•••••• (set — blank keeps it)';
-        else if (!el.value) el.placeholder = '(set — blank keeps it)';
-      } else {
-        el.classList.remove('field-set');
+    for (const conn of EXT_CONNECTORS) {
+      const remote = (connectors || []).find(c => c.namespace === conn.ns);
+      const keys = new Map((remote?.keys || []).map(k => [k.name, k.set]));
+      for (const f of conn.fields) {
+        const el = $(`${conn.prefix}-${f}`);
+        if (!el) continue;
+        if (keys.get(f)) {
+          el.classList.add('field-set');
+          if (conn.secretFields.includes(f)) el.placeholder = '•••••• (set — blank keeps it)';
+          else if (!el.value) el.placeholder = '(set — blank keeps it)';
+        } else {
+          el.classList.remove('field-set');
+        }
       }
-    }
-    const allCore = ['imap_host', 'smtp_host', 'user', 'pass', 'from_address'].every(k => keys.get(k));
-    const badge = $('ext-email-status');
-    if (badge) {
-      badge.textContent = allCore ? 'configured' : 'not configured';
-      badge.className = `chip ${allCore ? 'ok' : 'warn'}`;
+      const ok = conn.core.every(k => keys.get(k));
+      const badge = $(conn.badge);
+      if (badge) {
+        badge.textContent = ok ? 'configured' : 'not configured';
+        badge.className = `chip ${ok ? 'ok' : 'warn'}`;
+      }
     }
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function saveEmailExt() {
-  // POST each field that the operator actually typed. Blank = leave as-is
-  // (so they don't have to re-enter the password to change the host).
+async function saveConnectorExt(ns) {
+  const conn = EXT_CONNECTORS.find(c => c.ns === ns);
+  if (!conn) return;
   let wrote = 0;
   try {
-    for (const f of EMAIL_FIELDS) {
-      const el = $(`se-${f}`);
+    for (const f of conn.fields) {
+      const el = $(`${conn.prefix}-${f}`);
       const value = (el?.value || '').trim();
       if (!value) continue;
-      await api('POST', '/admin/api/secrets', { namespace: 'email', name: f, value });
+      await api('POST', '/admin/api/secrets', { namespace: ns, name: f, value });
       wrote++;
-      if (f === 'pass') el.value = ''; // never keep the typed password in the DOM
+      if (conn.secretFields.includes(f)) el.value = ''; // don't keep secrets in the DOM
     }
     toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'}` : 'nothing to save');
     loadExtensionsTab();
@@ -2538,7 +2556,8 @@ const ACTIONS = {
   'audit-refresh':          () => loadAuditTab(),
 
   // extensions tab
-  'save-email-ext':         () => saveEmailExt(),
+  'save-email-ext':         () => saveConnectorExt('email'),
+  'save-twitter-ext':       () => saveConnectorExt('twitter'),
 
   // approvals tab + inline cards
   'approvals-refresh':      () => loadApprovalsList(),

@@ -69,6 +69,7 @@ export class AgentHost {
     const canManage = def.capabilities.includes('manage_agents');
     const canMonitor = def.capabilities.includes('monitor_agents');
     const canCrm = def.capabilities.includes('crm');
+    const canSocial = def.capabilities.includes('social');
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -158,6 +159,16 @@ export class AgentHost {
       // SecretStore inside the tool handlers, never exposed to the model.
       ...(canCrm ? {
         email: {
+          agentId: def.id,
+          secrets: this.secrets,
+          approvals: this.approvals,
+        },
+      } : {}),
+      // CRM social extension — X/Twitter tools when the agent has 'social'.
+      // post_tweet always blocks on approval. Creds resolved from the
+      // SecretStore inside the handlers, never exposed to the model.
+      ...(canSocial ? {
+        social: {
           agentId: def.id,
           secrets: this.secrets,
           approvals: this.approvals,

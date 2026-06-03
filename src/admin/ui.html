@@ -110,6 +110,24 @@
           </div>
         </form>
       </div>
+      <div class="panel">
+        <h2>𝕏 X / Twitter <span id="ext-twitter-status" class="chip">—</span></h2>
+        <p class="form-hint">OAuth 1.0a from your X developer app (the 4 keys/tokens). Give an agent the <code>social</code> capability and it can read mentions + draft posts; <strong>posting always pauses for your approval</strong>. Reading needs the paid API tier; posting works on free.</p>
+        <form class="grid" id="ext-twitter-form">
+          <label for="st-api_key">api key</label>
+          <input id="st-api_key" placeholder="consumer / API key" autocomplete="off" />
+          <label for="st-api_secret">api secret</label>
+          <input id="st-api_secret" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="st-access_token">access token</label>
+          <input id="st-access_token" placeholder="access token" autocomplete="off" />
+          <label for="st-access_secret">access secret</label>
+          <input id="st-access_secret" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-twitter-ext">Save</button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <!-- ============ AGENTS ============ -->
@@ -212,6 +230,7 @@
               <label><input type="checkbox" id="f-cap-manage" value="manage_agents" /> manage_agents</label>
               <label><input type="checkbox" id="f-cap-monitor" value="monitor_agents" /> monitor_agents</label>
               <label><input type="checkbox" id="f-cap-crm" value="crm" /> crm (email)</label>
+              <label><input type="checkbox" id="f-cap-social" value="social" /> social (X)</label>
             </div>
             <div class="form-hint">
               <code>manage_agents</code>: agent can mint &amp; edit other agents via <code>mcp__agent_admin__*</code>.

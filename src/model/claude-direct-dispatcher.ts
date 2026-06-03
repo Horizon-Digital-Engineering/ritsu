@@ -6,6 +6,7 @@ import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import { buildAgentMemoryMcp, MEMORY_TOOL_NAMES, MEMORY_MCP_NAME } from '../tools/mcp-internal/memory.js';
 import { buildAgentEmailMcp, EMAIL_TOOL_NAMES, EMAIL_MCP_NAME } from '../tools/mcp-internal/email.js';
+import { buildAgentSocialMcp, SOCIAL_TOOL_NAMES, SOCIAL_MCP_NAME } from '../tools/mcp-internal/social.js';
 import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import {
@@ -78,6 +79,12 @@ export interface ClaudeDirectOpts {
    * SecretStore inside the handlers — never surfaced to the model.
    */
   email?: { agentId: string; secrets: SecretStore; approvals: ApprovalStore };
+  /**
+   * CRM social tools (read_mentions / read_my_posts / post_tweet). Wired when
+   * the agent has the 'social' capability. post_tweet always blocks on
+   * approval. Same secret-store + gate pattern as email.
+   */
+  social?: { agentId: string; secrets: SecretStore; approvals: ApprovalStore };
 }
 
 export class ClaudeDirectDispatcher implements ModelDispatcher {
@@ -186,6 +193,7 @@ const IN_PROCESS_MCP_TOOLS = new Set<string>([
   ...ADMIN_TOOL_NAMES,
   ...MONITOR_TOOL_NAMES,
   ...EMAIL_TOOL_NAMES,
+  ...SOCIAL_TOOL_NAMES,
 ]);
 
 /**
@@ -294,6 +302,15 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null):
       conversationId,
     });
     allowedTools.push(...EMAIL_TOOL_NAMES);
+  }
+  if (opts.social) {
+    mcpServers[SOCIAL_MCP_NAME] = buildAgentSocialMcp({
+      agentId: opts.social.agentId,
+      secrets: opts.social.secrets,
+      approvals: opts.social.approvals,
+      conversationId,
+    });
+    allowedTools.push(...SOCIAL_TOOL_NAMES);
   }
   return { mcpServers, allowedTools };
 }

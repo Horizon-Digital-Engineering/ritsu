@@ -29,6 +29,7 @@
     "mailparser": "^3.9.9",
     "nodemailer": "^8.0.10",
     "re2-wasm": "^1.0.2",
+    "twitter-api-v2": "^1.29.0",
     "undici": "^8.3.0",
     "zod": "^4.4.3"
   },

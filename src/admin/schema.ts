@@ -28,9 +28,10 @@ export const AgentDefinitionSchema = z.object({
    *  (create/update/reload other agents). 'monitor_agents' unlocks read-only
    *  inspection across the whole swarm (conversations, messages, memories,
    *  state). 'crm' unlocks the email tools (read_inbox/read_email/send_email,
-   *  send always approval-gated). Empty default — every agent stays scoped to
-   *  its own surface. */
-  capabilities: z.array(z.enum(['manage_agents', 'monitor_agents', 'crm'])).default([]),
+   *  send always approval-gated). 'social' unlocks the X/Twitter tools
+   *  (read_mentions/read_my_posts/post_tweet, post always gated). Empty
+   *  default — every agent stays scoped to its own surface. */
+  capabilities: z.array(z.enum(['manage_agents', 'monitor_agents', 'crm', 'social'])).default([]),
   /** Tool names this agent must get operator approval for before each use
    *  (e.g. ['Bash','Write']). The agent's turn blocks on a pending approval
    *  until the operator approves or rejects. Empty = no gating. */
