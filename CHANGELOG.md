@@ -4,6 +4,50 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.9.0] — 2026-06-02
+
+Extensions + the CRM: agents read/draft freely, every send/publish is held
+for operator approval, and credentials never touch the model. Built on the
+v0.8.0 approval gate.
+
+### Added
+
+- **Plugin secret store** (`plugin_secrets` + `SecretStore`). Connector
+  credentials encrypted at rest (AES-256-GCM, AAD-bound to namespace+name).
+  `get()` is the only decrypt path and is reachable only from in-process
+  tool handlers — no agent-callable accessor. The admin API returns metadata
+  only, never values.
+- **Approval enforcement on the ritsu-agent runtime** — gating moved to the
+  layer we own. The claude-direct Max-session SDK runs its built-in tools
+  itself and never consults `canUseTool` (proven by event-stream tracing),
+  so gating lives in the MCP tool handlers (claude-direct) and the
+  tool-dispatch loop (ritsu-agent). The ritsu-agent gate is unconditional —
+  a plain `await`, no SDK/timeout to bypass it.
+- **CRM email extension** (`crm` capability) — `read_inbox` / `read_email`
+  (ungated) + `send_email` (always gated). IMAP+SMTP via
+  imapflow/nodemailer/mailparser, any provider.
+- **CRM social extension** (`social` capability) — X/Twitter
+  (`read_mentions` / `read_my_posts` ungated, `post_tweet` gated; OAuth 1.0a
+  via twitter-api-v2) and LinkedIn (`post_linkedin` gated, publish-only).
+- **Extensions admin tab** — configure each connector's credentials; per-agent
+  on/off via the capability checkboxes; the extension stays dormant until
+  configured. Table-driven so new connectors are a few rows.
+- **`update-ritsu --branch`** to deploy a PR branch to the box for testing.
+
+### Security
+
+- Adversarial review (3 red-team passes + 1 verifier) before merge. Closed:
+  - **CRITICAL** — a `manage_agents` agent could grant itself/another the
+    `crm`/`social` capability and read the inbox ungated. `crm`/`social` are
+    now operator-only (`assertGrantableCapabilities` at all six agent-admin
+    write surfaces) + a self-modification guard.
+  - **HIGH** — SMTP/IMAP plaintext-auth fallback. `requireTLS` + TLSv1.2
+    floor (SMTP) and `doSTARTTLS` (IMAP); both abort rather than send the
+    password in the clear.
+  - **MEDIUM** — `send_email` header-injection + unbounded input. CRLF
+    rejected on header-bound fields; length bounds on subject/body.
+  - `scrubSecrets()` on model-facing connector error messages.
+
 ## [0.8.0] — 2026-05-30
 
 Human-in-the-loop approvals — the first core capability of the plugin
