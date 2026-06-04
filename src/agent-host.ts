@@ -75,21 +75,38 @@ export class AgentHost {
     // SECURITY: an agent that reads untrusted content (email bodies, social
     // mentions) must not have an UNGATED egress/persistence path, or a
     // prompt-injected message could exfiltrate or self-persist with no
-    // operator approval. So for crm/social agents we auto-gate memory writes
-    // and the shell/web tools. On claude-direct the built-in egress tools
-    // (Bash/WebFetch/WebSearch) are NOT gateable — the SDK runs them and never
-    // consults our hook — so we STRIP them instead of pretending to gate them;
-    // an operator who wants gated shell+email uses the ritsu-agent runtime.
+    // operator approval. So for crm/social agents we auto-gate every egress +
+    // persistence tool: shell/web (exfil), Write/Edit (persist attacker
+    // content to a possibly-synced workspace), every memory mutation incl.
+    // forget (so injection can't silently tombstone the agent's own security
+    // memories), and ask_agent (so attacker text can't be laundered to a peer
+    // with an ungated egress path).
+    //
+    // The ritsu-agent (open-model) runtime is the REAL enforcement layer here:
+    // we own that loop, so these gates are unbypassable. claude-direct can't be
+    // a trust boundary — the Max-session SDK runs built-ins without consulting
+    // our hook — so for it we STRIP the ungateable built-ins rather than
+    // pretend to gate them. An operator who wants a hard gate uses ritsu-agent.
     const readsUntrusted = canCrm || canSocial;
-    const UNGATEABLE_BUILTIN_EGRESS = ['Bash', 'WebFetch', 'WebSearch'];
+    const UNGATEABLE_BUILTIN_EGRESS = ['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit'];
     let effectiveTools = def.tools_allowlist;
     const autoGated: string[] = [];
     if (readsUntrusted) {
       if (isRitsuAgent) {
         // Our own loop gates these reliably — require approval, don't strip.
-        autoGated.push('memory_remember', 'memory_update_memory', ...UNGATEABLE_BUILTIN_EGRESS);
+        autoGated.push(
+          'memory_remember', 'memory_update_memory', 'memory_forget',
+          'agent_comms_ask_agent',
+          ...UNGATEABLE_BUILTIN_EGRESS,
+        );
       } else {
-        autoGated.push('mcp__memory__remember', 'mcp__memory__update_memory');
+        // memory_forget + ask_agent gate via gateMcpTool inside their handlers
+        // (the path the SDK can't bypass); the built-in egress tools can't, so
+        // strip those.
+        autoGated.push(
+          'mcp__memory__remember', 'mcp__memory__update_memory', 'mcp__memory__forget',
+          'mcp__agent_comms__ask_agent',
+        );
         const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
         if (stripped.length) {
           effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.includes(t));

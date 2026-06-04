@@ -3,7 +3,7 @@
  *
  * Tools (each prefixed `mcp__agent_comms__` when reaching the model):
  *
- *   ask_agent(agent_id, message, conversation_id?)
+ *   ask_agent(agent_id, message)
  *     Send a message to another agent and get its reply. Enforced against
  *     the caller's `can_call` allowlist (re-read every call so admin edits
  *     take effect immediately). Loop-guarded by AsyncLocalStorage call
@@ -12,19 +12,26 @@
  *   list_agents()
  *     Names of agents the caller is allowed to ask_agent.
  *
- * Conversation continuity: when conversation_id is omitted, the call lands
- * on the canonical (caller, target) thread so each agent pairing keeps one
- * long-running thread. An explicit conversation_id overrides.
+ * Conversation continuity: the call ALWAYS lands on the canonical (caller,
+ * target) thread, derived server-side from the two ids. The model cannot
+ * pass a conversation_id — a model-supplied thread id was a spoofing vector
+ * (plant a message / approval card in an unrelated conversation's panel), and
+ * one stable thread per agent pairing is the only behavior anyone needs.
  *
  * The caller's agent_id is closed over so each tool call is scoped to "this
  * agent is asking" — no risk of a target agent impersonating a different
  * caller by passing a different id.
+ *
+ * Optional gate: a caller that reads untrusted content (crm/social) has
+ * ask_agent gated, so a prompt-injected message can't be laundered to a peer
+ * with an ungated egress path without the operator approving the relay.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
 
 export const COMMS_MCP_NAME = 'agent_comms';
@@ -56,9 +63,10 @@ const inflightPerCaller = new Map<string, number>();
 /**
  * Capabilities the callee has but caller does not = escalation. Refuse
  * the call to close the confused-deputy attack: caller can't borrow
- * callee's manage_agents to mint a wider-permission agent.
+ * callee's manage_agents to mint a wider-permission agent. Exported so the
+ * ritsu-agent native runtime shares the exact same guard.
  */
-function callerEscalatesTo(
+export function callerEscalatesTo(
   callerCaps: ReadonlyArray<string>,
   calleeCaps: ReadonlyArray<string>,
 ): string[] {
@@ -142,7 +150,7 @@ export function buildDenialMessage(caller: string, target: string, allowed: stri
   return msg;
 }
 
-export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) {
+export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, gate: McpGateContext | null = null) {
   return createSdkMcpServer({
     name: COMMS_MCP_NAME,
     version: '0.1.0',
@@ -150,16 +158,13 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) 
       tool(
         'ask_agent',
         'Send a message to another agent and get its reply. Only agents in your `can_call` ' +
-          "allowlist are reachable. Omit conversation_id to land in the canonical (you, target) " +
-          "thread — this keeps related back-and-forth in one place so the target sees its history " +
-          'with you. Pass an explicit conversation_id only when you specifically want a different thread.',
+          'allowlist are reachable. The reply lands in the canonical (you, target) thread so related ' +
+          'back-and-forth stays in one place and the target sees its history with you.',
         {
           agent_id: z.string().describe('id of the target agent to call'),
           message: z.string().min(1).describe('what to say to the target'),
-          conversation_id: z.number().int().positive().optional()
-            .describe('optional: specific conversation to use; omit for the default (caller, target) thread'),
         },
-        async ({ agent_id: target, message, conversation_id }) => {
+        async ({ agent_id: target, message }) => {
           // Re-read the caller's definition at call time so admin edits to the
           // can_call list take effect immediately, not just on next agent reload.
           const callerDef = await deps.defStore.read(callerAgentId);
@@ -232,21 +237,28 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps) 
           inflightPerCaller.set(callerAgentId, inflight + 1);
 
           const nextCtx: CallContext = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
-          const convoId = conversation_id ?? deps.conversations.findOrStartInterAgentThread(callerAgentId, target);
+          // Canonical (caller, target) thread, derived server-side from the
+          // two ids — never model-supplied.
+          const convoId = deps.conversations.findOrStartInterAgentThread(callerAgentId, target);
           logger.info('comms.ask', {
             caller: callerAgentId, target, conv: convoId, depth: nextCtx.depth, chain: nextCtx.chain.join('->'),
           });
           try {
-            const r = await runInCallContext(nextCtx, async () =>
-              deps.host.get(target).onMessage({
-                message,
-                conversation_id: convoId,
-                // Tag the user turn with the caller's agent id so the admin UI
-                // shows "from: agent-three" instead of an unlabelled user message.
-                caller_label: callerAgentId,
-              }),
-            );
-            return { content: [{ type: 'text', text: r.reply }] };
+            // Gate the relay when the caller reads untrusted content: a
+            // prompt-injected message must not reach a peer (possibly one with
+            // an ungated egress tool) without the operator approving it.
+            return await gateMcpTool(gate, COMMS_TOOL_NAMES[0], { agent_id: target, message }, async () => {
+              const r = await runInCallContext(nextCtx, async () =>
+                deps.host.get(target).onMessage({
+                  message,
+                  conversation_id: convoId,
+                  // Tag the user turn with the caller's agent id so the admin UI
+                  // shows "from: agent-three" instead of an unlabelled user message.
+                  caller_label: callerAgentId,
+                }),
+              );
+              return { content: [{ type: 'text', text: r.reply }] };
+            });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             logger.error('comms.error', { caller: callerAgentId, target, error: msg });

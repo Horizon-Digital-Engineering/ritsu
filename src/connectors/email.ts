@@ -18,6 +18,25 @@ import { logger } from '../util/log.js';
 
 export const EMAIL_NS = 'email';
 
+/**
+ * Hard cap on how many bytes of a single message we pull off the wire. A
+ * hostile (or just huge) message — a multi-hundred-MB attachment or a MIME
+ * bomb — would otherwise be buffered whole and OOM-kill the process, taking
+ * every agent down. We do a partial fetch and parse only the prefix; a
+ * truncated body still reads fine for triage. 2 MB covers essentially all
+ * real plain-text/HTML mail.
+ */
+const MAX_MESSAGE_BYTES = 2_000_000;
+
+/** Network timeouts (ms). A non-responsive mail server must not pin a turn
+ *  open indefinitely — these abort instead. socketTimeout is an inactivity
+ *  timer, so it's generous enough not to trip a legitimate large fetch. */
+const IMAP_GREETING_TIMEOUT = 15_000;
+const IMAP_SOCKET_TIMEOUT = 60_000;
+const SMTP_CONNECTION_TIMEOUT = 15_000;
+const SMTP_GREETING_TIMEOUT = 15_000;
+const SMTP_SOCKET_TIMEOUT = 30_000;
+
 /** Secret keys the connector reads. user/pass are shared between IMAP + SMTP
  *  (the common case — one mailbox account); override the smtp_* keys only if
  *  the provider splits them. */
@@ -92,6 +111,8 @@ function imapClient(cfg: EmailConfig): ImapFlow {
     ...(secure ? {} : { doSTARTTLS: true }),
     auth: { user: cfg.imap.user, pass: cfg.imap.pass },
     logger: false,
+    greetingTimeout: IMAP_GREETING_TIMEOUT,
+    socketTimeout: IMAP_SOCKET_TIMEOUT,
   });
 }
 
@@ -130,16 +151,29 @@ export async function readMessage(cfg: EmailConfig, uid: number): Promise<EmailM
   await client.connect();
   try {
     await client.mailboxOpen('INBOX');
-    const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+    // Partial fetch: pull at most MAX_MESSAGE_BYTES off the wire so a giant
+    // message can't OOM the process. `size` lets us tell the reader when the
+    // body was truncated.
+    const msg = await client.fetchOne(
+      String(uid),
+      { source: { maxLength: MAX_MESSAGE_BYTES }, size: true },
+      { uid: true },
+    );
     if (!msg || !msg.source) return null;
     const parsed = await simpleParser(msg.source);
+    const fullSize = typeof msg.size === 'number' ? msg.size : 0;
+    let text = (parsed.text ?? parsed.html ?? '').toString().trim();
+    if (fullSize > MAX_MESSAGE_BYTES) {
+      text += `\n\n[message truncated: ${(fullSize / 1_000_000).toFixed(1)} MB total, ` +
+        `showing first ${(MAX_MESSAGE_BYTES / 1_000_000).toFixed(1)} MB]`;
+    }
     return {
       uid,
       from: parsed.from?.text ?? '(unknown)',
       to: Array.isArray(parsed.to) ? parsed.to.map(a => a.text).join(', ') : parsed.to?.text ?? '',
       subject: parsed.subject ?? '(no subject)',
       date: parsed.date ? parsed.date.toISOString() : '',
-      text: (parsed.text ?? parsed.html ?? '').toString().trim(),
+      text,
     };
   } finally {
     await client.logout().catch(() => { /* best-effort close */ });
@@ -159,6 +193,9 @@ export async function sendEmail(cfg: EmailConfig, input: SendEmailInput): Promis
     requireTLS: true,
     tls: { minVersion: 'TLSv1.2' },
     auth: { user: cfg.smtp.user, pass: cfg.smtp.pass },
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT,
+    greetingTimeout: SMTP_GREETING_TIMEOUT,
+    socketTimeout: SMTP_SOCKET_TIMEOUT,
   });
   const info = await transporter.sendMail({
     from: cfg.from,

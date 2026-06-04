@@ -283,7 +283,7 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null):
     allowedTools.push(...MEMORY_TOOL_NAMES);
   }
   if (opts.comms) {
-    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps);
+    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps, gate);
     allowedTools.push(...COMMS_TOOL_NAMES);
   }
   if (opts.admin) {

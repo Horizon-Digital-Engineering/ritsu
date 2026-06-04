@@ -2324,6 +2324,81 @@ function approvalArgsPreview(argsJson) {
   }
 }
 
+function approvalTruncate(s, n) {
+  return s.length > n ? esc(s.slice(0, n)) + '<span class="txt-muted">… (' + (s.length - n) + ' more)</span>' : esc(s);
+}
+
+/**
+ * Render a string with every non-ASCII / control character made VISIBLE,
+ * tagged with its U+ code point. A spoofed recipient like "support@hdе.io"
+ * (Cyrillic е) or one carrying bidi/zero-width controls renders identically to
+ * the real thing in plain text — this unmasks it so the operator can't be
+ * tricked into approving a send to an attacker domain. Returns { html, bad }.
+ */
+function approvalUnmask(s) {
+  let bad = false;
+  const html = [...String(s)].map(ch => {
+    const cp = ch.codePointAt(0);
+    if (cp < 0x20 || cp > 0x7e) {
+      bad = true;
+      const u = 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+      return `<span class="ap-bad-char" title="${u}">${esc(ch)}[${u}]</span>`;
+    }
+    return esc(ch);
+  }).join('');
+  return { html, bad };
+}
+
+/**
+ * Pull the security-critical fields out of an approval's args so they show on
+ * the card by DEFAULT (no "show details" click). The destination of an
+ * irreversible action — email recipient, post text, target agent — is exactly
+ * what the operator must see before approving; hiding it behind a toggle is
+ * how you get a one-click approval of something you never read.
+ */
+function approvalHighlights(a) {
+  let args;
+  try { args = JSON.parse(a.args_json); } catch { return []; }
+  if (!args || typeof args !== 'object') return [];
+  const t = (a.tool_name || '').toLowerCase();
+  const rows = [];
+  const add = (label, value, critical = false) => {
+    if (value === undefined || value === null || value === '') return;
+    const { html, bad } = approvalUnmask(typeof value === 'string' ? value : JSON.stringify(value));
+    rows.push({ label, html, bad, critical });
+  };
+  if (t.includes('email')) {
+    add('To', args.to, true);
+    add('Subject', args.subject);
+    rows.push({ label: 'Body', html: approvalTruncate(String(args.body ?? ''), 400), bad: false });
+  } else if (t.includes('tweet') || t.includes('linkedin') || t.includes('post')) {
+    rows.push({ label: 'Post', html: approvalTruncate(String(args.text ?? ''), 400), bad: false, critical: true });
+  } else if (t.includes('ask_agent')) {
+    add('To agent', args.agent_id, true);
+    rows.push({ label: 'Message', html: approvalTruncate(String(args.message ?? ''), 400), bad: false });
+  } else {
+    for (const [k, v] of Object.entries(args).slice(0, 4)) {
+      add(k, typeof v === 'string' ? v : JSON.stringify(v), false);
+    }
+  }
+  return rows;
+}
+
+function approvalHighlightsHtml(a) {
+  const rows = approvalHighlights(a);
+  if (!rows.length) return '';
+  const anyBad = rows.some(r => r.bad);
+  const warn = anyBad
+    ? '<div class="ap-spoof-warn">⚠ Non-standard characters in a field below — possible spoofing. Verify before approving.</div>'
+    : '';
+  const body = rows.map(r =>
+    `<div class="ap-hl-row ${r.critical ? 'critical' : ''} ${r.bad ? 'bad' : ''}">` +
+      `<span class="ap-hl-label">${esc(r.label)}</span>` +
+      `<span class="ap-hl-val">${r.html}</span>` +
+    `</div>`).join('');
+  return `${warn}<div class="approval-highlights">${body}</div>`;
+}
+
 /** A pending approval card. Used on the Approvals page AND inline in the
  *  chat panel — handlers find their card via closest('.approval-card') so
  *  there are no duplicate-id collisions when the same approval shows in
@@ -2335,7 +2410,8 @@ function approvalCardHtml(a, inline = false) {
       <div class="approval-body">
         <div class="approval-title">${esc(a.tool_name)}</div>
         <div class="approval-meta">${esc(a.agent_id)} · ${approvalAgo(a.requested_at)}</div>
-        <button type="button" class="approval-detail-toggle" data-action="toggle-approval-detail">▸ show details</button>
+        ${approvalHighlightsHtml(a)}
+        <button type="button" class="approval-detail-toggle" data-action="toggle-approval-detail">▸ raw args</button>
         <pre class="approval-detail hidden">${approvalArgsPreview(a.args_json)}</pre>
         <textarea class="approval-reason hidden" placeholder="reason (optional — sent to the agent on reject)" rows="2"></textarea>
       </div>
@@ -2403,7 +2479,7 @@ function toggleApprovalDetail(cardEl) {
   if (!pre || !btn) return;
   const show = pre.classList.contains('hidden');
   pre.classList.toggle('hidden', !show);
-  btn.textContent = show ? '▾ hide details' : '▸ show details';
+  btn.textContent = show ? '▾ hide raw args' : '▸ raw args';
 }
 
 // ---- extensions (connectors) ------------------------------------------

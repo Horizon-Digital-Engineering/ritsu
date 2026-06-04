@@ -78,7 +78,7 @@ export abstract class AgentBase {
           '  - mcp__agent_comms__ask_agent(agent_id, message)         ask another agent and get their reply synchronously\n' +
           `You are allowed to call: ${canCall.join(', ')}\n` +
           'Each (you, target) pair keeps one long-running thread, so the target sees the prior context with you on subsequent calls. ' +
-          'Omit conversation_id to land in that canonical thread. Max call depth is 3 hops — don\'t chain too deep. ' +
+          'Max call depth is 3 hops — don\'t chain too deep. ' +
           'Reach for ask_agent when the user asks you to consult another agent, or when answering well needs context only another agent has.',
       });
     }

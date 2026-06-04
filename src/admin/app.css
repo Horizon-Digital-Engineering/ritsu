@@ -607,6 +607,28 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .approval-actions button { white-space: nowrap; }
 .approval-detail.hidden, .approval-reason.hidden { display: none; }
 
+/* Always-visible security-critical fields (recipient / post text / target).
+   Shown by default so an irreversible action is never approved unread. */
+.approval-highlights {
+  margin: 7px 0 2px; display: flex; flex-direction: column; gap: 4px;
+}
+.ap-hl-row {
+  display: grid; grid-template-columns: 64px 1fr; gap: 8px;
+  font-size: 0.82rem; align-items: start;
+}
+.ap-hl-label { color: var(--muted); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; padding-top: 2px; }
+.ap-hl-val { word-break: break-word; white-space: pre-wrap; }
+.ap-hl-row.critical .ap-hl-val { font-weight: 600; }
+.ap-bad-char {
+  background: hsl(0, 80%, 92%); color: hsl(0, 75%, 38%);
+  border-radius: 3px; padding: 0 2px; font-weight: 700;
+}
+.ap-spoof-warn {
+  margin: 7px 0 4px; padding: 6px 9px; border-radius: 4px;
+  background: hsl(0, 80%, 95%); color: hsl(0, 72%, 35%);
+  border: 1px solid hsl(0, 70%, 80%); font-size: 0.8rem; font-weight: 600;
+}
+
 /* Inline variant inside the chat-panel transcript: full width, no side-by-side
    action column (stacks under the body) so it fits the narrow panel. */
 .approval-card.inline { flex-direction: column; align-self: stretch; max-width: 100%; }
