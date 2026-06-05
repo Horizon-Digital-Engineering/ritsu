@@ -87,7 +87,7 @@ deploy-script change to test PR branches on the box.
 
 - **`update-ritsu --branch <name>`** mirrors the install to
   origin/&lt;branch&gt; (fetch + checkout -B + reset --hard) so a PR
-  branch can be deployed + tested on adjutant without merging to main.
+  branch can be deployed + tested on the host without merging to main.
   `--force` discards local box edits; no flag = back to origin/main.
 
 ### Known gaps
