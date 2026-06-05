@@ -4,11 +4,12 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
-## [0.9.0] — 2026-06-02
+## [0.9.0] — 2026-06-05
 
 Extensions + the CRM: agents read/draft freely, every send/publish is held
 for operator approval, and credentials never touch the model. Built on the
-v0.8.0 approval gate.
+v0.8.0 approval gate. Also adds image paste in the chat panel so vision
+agents can see operator-pasted screenshots.
 
 ### Added
 
@@ -33,6 +34,13 @@ v0.8.0 approval gate.
   on/off via the capability checkboxes; the extension stays dormant until
   configured. Table-driven so new connectors are a few rows.
 - **`update-ritsu --branch`** to deploy a PR branch to the box for testing.
+- **Image paste in agent chats** — operators paste/drag/pick images in the
+  chat panel and vision-capable agents see them (Anthropic image blocks on
+  claude-direct via the SDK's streamed-message form; OpenAI `image_url` parts
+  on ritsu-agent). Downscaled client-side to the model's resolution cap
+  (2576px for Opus 4.7/4.8, else 1568px); persisted in a `message_attachments`
+  sidecar for transcript re-render. `POST /ask` accepts the larger body and
+  zod caps it (≤4 images, ≤5MB each).
 
 ### Security
 
