@@ -21,10 +21,11 @@ import type { Workspace } from '../../workspace-store.js';
 import {
   AgentDefinitionSchema,
   AgentDefinitionPatchSchema,
+  assertGrantableCapabilities,
   type AgentDefinition,
 } from '../../admin/schema.js';
 import {
-  currentCallContext, runInCallContext, MAX_CALL_DEPTH, buildDenialMessage,
+  currentCallContext, runInCallContext, MAX_CALL_DEPTH, buildDenialMessage, callerEscalatesTo,
 } from '../mcp-internal/agent-comms.js';
 import { buildFsTools } from './fs.js';
 import { buildProcessTools } from './process.js';
@@ -171,8 +172,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
       name: 'agent_comms_ask_agent',
       description:
         'Send a message to another agent and get its reply. Only agents in your `can_call` allowlist are reachable. ' +
-        "Omit conversation_id to land in the canonical (you, target) thread — keeps related back-and-forth in one place. " +
-        'Pass an explicit conversation_id only when you specifically want a different thread.',
+        'The reply lands in the canonical (you, target) thread so related back-and-forth stays in one place.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -180,13 +180,11 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         properties: {
           agent_id: { type: 'string', description: 'id of the target agent to call' },
           message: { type: 'string', minLength: 1, description: 'what to say to the target' },
-          conversation_id: { type: 'integer', minimum: 1, description: 'optional: specific conversation to use' },
         },
       },
       handler: async (args) => {
         const target = asString(args.agent_id);
         const message = asString(args.message);
-        const conversation_id = typeof args.conversation_id === 'number' ? args.conversation_id : undefined;
         if (!target || !message) return 'error: agent_id and message required';
 
         // Live allowlist check — same posture as agent-comms-mcp.
@@ -197,16 +195,34 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
           return buildDenialMessage(agentId, target, allowed);
         }
 
+        // Confused-deputy guard (parity with agent-comms-mcp): refuse to route
+        // through a callee holding capabilities the caller lacks, so a caller
+        // can't borrow a peer's manage_agents to mint a wider-permission agent.
+        const targetDef = await defStore.read(target);
+        const escalated = callerEscalatesTo(def?.capabilities ?? [], targetDef?.capabilities ?? []);
+        if (escalated.length > 0) {
+          logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
+          return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
+            `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
+        }
+
         // Shared call-depth guard with agent-comms-mcp so mixed-runtime chains
         // (ritsu-agent → claude-sdk → ritsu-agent → …) are bounded together.
         const ctx = currentCallContext() ?? { depth: 0, chain: [agentId] };
+        if (ctx.chain.includes(target)) {
+          const chain = [...ctx.chain, target].join(' → ');
+          logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
+          return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
+        }
         if (ctx.depth >= MAX_CALL_DEPTH) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
           return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
         }
         const nextCtx = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
-        const convoId = conversation_id ?? conversations.findOrStartInterAgentThread(agentId, target);
+        // Canonical (caller, target) thread, derived server-side — never
+        // model-supplied (a model-chosen thread id was a spoofing vector).
+        const convoId = conversations.findOrStartInterAgentThread(agentId, target);
         logger.info('ra.comms.ask', { caller: agentId, target, conv: convoId, depth: nextCtx.depth });
 
         try {
@@ -290,6 +306,10 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
             ...args,
           };
           const validated = AgentDefinitionSchema.parse(withDefaults);
+          // runTool does not validate args against the JSON-schema enum, so
+          // AgentDefinitionSchema (which permits crm/social) is the only gate
+          // here — enforce the operator-only capabilities explicitly.
+          assertGrantableCapabilities(validated.capabilities);
           const existing = await defStore.read(validated.id);
           if (existing) return `error: agent ${validated.id} already exists; use agent_admin_update_agent`;
           const saved = await defStore.upsert(validated);
@@ -318,9 +338,14 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
         try {
           const id = asString(args.agent_id);
           if (!id) return 'error: agent_id required';
+          // Self-modification via agent-admin is operator-only — otherwise an
+          // agent could strip its own approval_tools / grant itself tools.
+          if (id === agentId) return 'error: an agent cannot modify itself via agent-admin (operator-only)';
           const current = await defStore.read(id);
           if (!current) return `error: agent ${id} not found`;
           const validPatch = AgentDefinitionPatchSchema.parse(args.patch ?? {});
+          // crm/social are operator-only; an agent cannot grant them here.
+          assertGrantableCapabilities(validPatch.capabilities);
           const merged = AgentDefinitionSchema.parse({ ...current, ...validPatch, id: current.id });
           const saved = await defStore.upsert(merged);
           adminHost.addOrReplace(saved);

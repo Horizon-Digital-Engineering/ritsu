@@ -31,6 +31,28 @@ describe('SqliteConversationStore', () => {
     assert.deepEqual(last3.map(m => m.content), ['m7', 'm8', 'm9']);
   });
 
+  it('persists image attachments on a user turn and returns them in order', () => {
+    const cid = store.start('alice');
+    store.append(cid, 'user', 'look at this', 'admin-ui', [
+      { media_type: 'image/png', data: 'QUFB' },
+      { media_type: 'image/jpeg', data: 'QkJC' },
+    ]);
+    store.append(cid, 'assistant', 'nice shot');
+    const recent = store.recent(cid);
+    assert.equal(recent.length, 2);
+    assert.deepEqual(recent[0].attachments, [
+      { media_type: 'image/png', data: 'QUFB' },
+      { media_type: 'image/jpeg', data: 'QkJC' },
+    ]);
+    assert.equal(recent[1].attachments, undefined); // assistant turn has none
+  });
+
+  it('omits the attachments field for a text-only turn', () => {
+    const cid = store.start('alice');
+    store.append(cid, 'user', 'plain text only');
+    assert.equal(store.recent(cid)[0].attachments, undefined);
+  });
+
   it('isolates conversations', () => {
     const a = store.start('alice');
     const b = store.start('bob');

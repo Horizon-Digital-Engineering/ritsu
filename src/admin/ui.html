@@ -15,6 +15,7 @@
   </header>
   <nav class="tabs primary" id="nav-primary" aria-label="Top-level admin sections">
     <button type="button" data-action="switch-group" data-group="dashboard" class="active">Dashboard</button>
+    <button type="button" data-action="switch-group" data-group="approvals">Approvals<span id="nav-approvals-badge" class="nav-badge hidden">0</span></button>
     <button type="button" data-action="switch-group" data-group="agents">Agents</button>
     <button type="button" data-action="switch-group" data-group="comms">Comms</button>
     <button type="button" data-action="switch-group" data-group="auth">Auth</button>
@@ -51,15 +52,103 @@
       </div>
       <div id="ap-transcript" class="ap-transcript">no conversation loaded.</div>
       <form id="ap-ask-form" class="ap-ask">
-        <textarea id="ap-input" placeholder="Ask this agent… (Enter to send, Shift+Enter for newline)" rows="2"></textarea>
+        <div id="ap-attach-tray" class="ap-attach-tray" aria-hidden="true"></div>
+        <div id="ap-attach-hint" class="ap-attach-hint" aria-hidden="true"></div>
+        <textarea id="ap-input" placeholder="Ask this agent… (Enter to send, Shift+Enter for newline · paste an image)" rows="2"></textarea>
         <div class="ap-ask-row">
           <button type="button" id="ap-meta" class="ap-meta-btn" data-action="toggle-convo-picker" title="switch conversation">—</button>
           <div id="ap-convo-picker" class="ap-convo-picker" aria-hidden="true"></div>
+          <button type="button" id="ap-attach-btn" class="ap-attach-btn" data-action="pick-attachment" title="attach image">📎</button>
+          <input type="file" id="ap-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
           <span class="flex1"></span>
           <button type="submit" id="ap-send" class="primary">Send</button>
         </div>
       </form>
     </aside>
+
+    <!-- ============ APPROVALS ============ -->
+    <section id="pane-approvals" class="pane">
+      <div class="panel">
+        <div class="approvals-head">
+          <div>
+            <h2 class="m0">Approvals</h2>
+            <p id="approvals-summary" class="tile-header-meta">Tool calls waiting on your sign-off.</p>
+          </div>
+          <button id="approvals-refresh" data-action="approvals-refresh" title="refresh now">↻</button>
+        </div>
+        <div class="conv-kind-tabs" id="approvals-subtabs">
+          <button type="button" class="conv-kind-tab active" data-action="approvals-subtab" data-sub="pending">Pending</button>
+          <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="decided">Decided</button>
+        </div>
+        <div id="approvals-list">loading…</div>
+      </div>
+    </section>
+
+    <!-- ============ EXTENSIONS ============ -->
+    <section id="pane-extensions" class="pane">
+      <div class="panel">
+        <h2 class="m0">Extensions</h2>
+        <p class="tile-header-meta">Connectors that give agents new jobs. Credentials are encrypted at rest and never shown to a model — agents act through them without ever seeing the secret. Turn an extension on for an agent with its capability checkbox (Agents tab).</p>
+      </div>
+      <div class="panel">
+        <h2>✉️ Email <span id="ext-email-status" class="chip">—</span></h2>
+        <p class="form-hint">IMAP (inbox) + SMTP (outbox) for any provider. Give an agent the <code>crm</code> capability and it can read the inbox and draft replies; <strong>sending always pauses for your approval</strong>. user/pass are shared between IMAP and SMTP.</p>
+        <form class="grid" id="ext-email-form">
+          <label for="se-imap_host">imap host</label>
+          <input id="se-imap_host" placeholder="imap.gmail.com" />
+          <label for="se-imap_port">imap port</label>
+          <input id="se-imap_port" placeholder="993" />
+          <label for="se-smtp_host">smtp host</label>
+          <input id="se-smtp_host" placeholder="smtp.gmail.com" />
+          <label for="se-smtp_port">smtp port</label>
+          <input id="se-smtp_port" placeholder="587" />
+          <label for="se-user">user</label>
+          <input id="se-user" placeholder="you@example.com" autocomplete="off" />
+          <label for="se-pass">password</label>
+          <input id="se-pass" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="se-from_address">from address</label>
+          <input id="se-from_address" placeholder="You &lt;you@example.com&gt;" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-email-ext">Save</button>
+          </div>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>𝕏 X / Twitter <span id="ext-twitter-status" class="chip">—</span></h2>
+        <p class="form-hint">OAuth 1.0a from your X developer app (the 4 keys/tokens). Give an agent the <code>social</code> capability and it can read mentions + draft posts; <strong>posting always pauses for your approval</strong>. Reading needs the paid API tier; posting works on free.</p>
+        <form class="grid" id="ext-twitter-form">
+          <label for="st-api_key">api key</label>
+          <input id="st-api_key" placeholder="consumer / API key" autocomplete="off" />
+          <label for="st-api_secret">api secret</label>
+          <input id="st-api_secret" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="st-access_token">access token</label>
+          <input id="st-access_token" placeholder="access token" autocomplete="off" />
+          <label for="st-access_secret">access secret</label>
+          <input id="st-access_secret" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-twitter-ext">Save</button>
+          </div>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>in LinkedIn <span id="ext-linkedin-status" class="chip">—</span></h2>
+        <p class="form-hint">Publish-only (LinkedIn gives apps no feed read). Paste an OAuth 2.0 access token (scope <code>w_member_social</code>) and your author URN — <code>urn:li:person:…</code> for your profile or <code>urn:li:organization:…</code> for a company page. Shared <code>social</code> capability; <strong>posting always needs your approval</strong>.</p>
+        <form class="grid" id="ext-linkedin-form">
+          <label for="sl-access_token">access token</label>
+          <input id="sl-access_token" type="password" placeholder="(leave blank to keep current)" autocomplete="new-password" />
+          <label for="sl-author_urn">author urn</label>
+          <input id="sl-author_urn" placeholder="urn:li:person:xxxx or urn:li:organization:xxxx" autocomplete="off" />
+          <label for="sl-api_version">api version</label>
+          <input id="sl-api_version" placeholder="202401 (YYYYMM — bump if posts 426)" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="save-linkedin-ext">Save</button>
+          </div>
+        </form>
+      </div>
+    </section>
 
     <!-- ============ AGENTS ============ -->
     <section id="pane-agents" class="pane">
@@ -160,11 +249,25 @@
             <div id="f-capabilities" class="row-wrap">
               <label><input type="checkbox" id="f-cap-manage" value="manage_agents" /> manage_agents</label>
               <label><input type="checkbox" id="f-cap-monitor" value="monitor_agents" /> monitor_agents</label>
+              <label><input type="checkbox" id="f-cap-crm" value="crm" /> crm (email)</label>
+              <label><input type="checkbox" id="f-cap-social" value="social" /> social (X)</label>
             </div>
             <div class="form-hint">
               <code>manage_agents</code>: agent can mint &amp; edit other agents via <code>mcp__agent_admin__*</code>.
               <code>monitor_agents</code>: read-only swarm inspection via <code>mcp__agent_monitor__*</code>.
-              Keep both empty for normal agents.
+              <code>crm</code>: email manager — read inbox + send (sending always needs your approval).
+              Configure the mailbox in the <strong>Extensions</strong> tab.
+              Keep empty for normal agents.
+            </div>
+          </div>
+
+          <label for="f-approval-tools">require approval</label>
+          <div>
+            <div id="f-approval-tools" class="row-wrap"></div>
+            <div class="form-hint">
+              Tools this agent must get <strong>your approval</strong> for before each use.
+              The agent's turn pauses on a card in the Approvals tab until you approve or reject.
+              Empty = no gating.
             </div>
           </div>
 

@@ -36,23 +36,25 @@ note() { printf '\033[2m  %s\033[0m\n' "$*"; }
 as_svc() { sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" "$@"; }
 
 bold "==> Sync to origin/${BRANCH}"
-# Refuse to clobber local edits unless --force — mirrors the old
-# `pull --ff-only` safety, but the message points at the real options.
-if [[ -n "$(as_svc status --porcelain)" ]]; then
+# Only *tracked* modifications block a deploy. The data dir holds untracked
+# runtime files (the live DB, the .admin-token) that legitimately live in
+# the working tree and must NEVER be touched — so `--untracked-files=no`,
+# and crucially no `git clean` anywhere (it would delete the admin token).
+if [[ -n "$(as_svc status --porcelain --untracked-files=no)" ]]; then
   if [[ "${FORCE}" -eq 1 ]]; then
-    note "working tree dirty — --force given, discarding local changes"
+    note "tracked files modified — --force given, discarding those edits"
     as_svc reset --hard
-    as_svc clean -fd
   else
-    echo "working tree at ${INSTALL_DIR} is dirty — aborting." >&2
-    echo "commit/stash on the box, or re-run with --force to discard." >&2
+    echo "tracked files at ${INSTALL_DIR} are modified — aborting." >&2
+    echo "commit/stash on the box, or re-run with --force to discard them." >&2
+    echo "(untracked runtime files like data/.admin-token are ignored + preserved.)" >&2
     exit 1
   fi
 fi
 as_svc fetch origin --prune
 # checkout -B creates-or-moves the local branch onto origin/<branch> and
-# checks it out; the follow-up reset --hard guarantees an exact mirror
-# even if the local branch already existed and had diverged.
+# checks it out; the follow-up reset --hard guarantees an exact mirror of
+# tracked files. Untracked runtime files (DB, token) are left in place.
 as_svc checkout -B "${BRANCH}" "origin/${BRANCH}"
 as_svc reset --hard "origin/${BRANCH}"
 note "now at ${BRANCH} @ $(as_svc rev-parse --short HEAD)"

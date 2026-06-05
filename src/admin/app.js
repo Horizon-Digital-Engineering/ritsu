@@ -202,6 +202,9 @@ const NAV_GROUPS = [
   { id: 'dashboard', label: 'Dashboard', tabs: [
     { id: 'tiles', label: 'Dashboard' },
   ] },
+  { id: 'approvals', label: 'Approvals', tabs: [
+    { id: 'approvals', label: 'Approvals' },
+  ] },
   { id: 'agents', label: 'Agents', tabs: [
     { id: 'agents',        label: 'Agents' },
     { id: 'workspaces',    label: 'Workspaces' },
@@ -212,6 +215,9 @@ const NAV_GROUPS = [
   { id: 'comms', label: 'Comms', tabs: [
     { id: 'channels', label: 'Channels' },
     { id: 'mcp',      label: 'MCP' },
+  ] },
+  { id: 'extensions', label: 'Extensions', tabs: [
+    { id: 'extensions', label: 'Extensions' },
   ] },
   { id: 'auth', label: 'Auth', tabs: [
     { id: 'tokens',        label: 'Tokens' },
@@ -266,6 +272,8 @@ function switchTab(name) {
   renderNav();
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
+  if (name === 'approvals') loadApprovalsTab();
+  if (name === 'extensions') loadExtensionsTab();
   if (name === 'mcp') loadMcpTools();
   else if (name === 'tokens') refreshTokens();
   else if (name === 'api-keys') refreshApiKeys();
@@ -327,6 +335,7 @@ async function loadAvailableTools() {
     const { tools } = await api('GET', '/admin/api/tools/available');
     availableTools = tools;
     renderToolCheckboxes([]);
+    renderApprovalToolsCheckboxes([]);
   } catch (e) { toast(e.message, 'err'); }
 }
 function renderToolCheckboxes(selected) {
@@ -337,6 +346,15 @@ function renderToolCheckboxes(selected) {
 }
 function readToolsAllowlist() {
   return [...$('f-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
+}
+function renderApprovalToolsCheckboxes(selected) {
+  const set = new Set(selected || []);
+  $('f-approval-tools').innerHTML = availableTools.map(t =>
+    `<label class="row fs-md1"><input type="checkbox" value="${esc(t)}" ${set.has(t) ? 'checked' : ''} class="input-auto" /> ${esc(t)}</label>`,
+  ).join('');
+}
+function readApprovalTools() {
+  return [...$('f-approval-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
 }
 function renderCanCallCheckboxes(selected) {
   const set = new Set(selected || []);
@@ -460,10 +478,13 @@ function loadAgentForm(a) {
     : '';
   refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); });
   renderToolCheckboxes(a.tools_allowlist || []);
+  renderApprovalToolsCheckboxes(a.approval_tools || []);
   renderCanCallCheckboxes(a.can_call || []);
   const caps = new Set(a.capabilities || []);
   $('f-cap-manage').checked = caps.has('manage_agents');
   $('f-cap-monitor').checked = caps.has('monitor_agents');
+  $('f-cap-crm').checked = caps.has('crm');
+  $('f-cap-social').checked = caps.has('social');
   // Show Revert only when there's a previous prompt to swap to.
   const revertBtn = $('f-revert');
   if (a.previous_system_prompt) {
@@ -489,9 +510,12 @@ function clearForm() {
   renderApiKeyDropdown(null);
   refreshApiKeyDropdown();
   renderToolCheckboxes([]);
+  renderApprovalToolsCheckboxes([]);
   renderCanCallCheckboxes([]);
   $('f-cap-manage').checked = false;
   $('f-cap-monitor').checked = false;
+  $('f-cap-crm').checked = false;
+  $('f-cap-social').checked = false;
   $('f-revert').classList.add('hidden');
   $('test-pane').classList.remove('hidden'); // available for drafts too
   $('test-reply').classList.add('hidden');
@@ -514,10 +538,13 @@ async function submitAgent(method) {
     model: $('f-model').value, memory_backend: $('f-memory-backend').value,
     enabled: $('f-enabled').checked, system_prompt: $('f-system-prompt').value,
     tools_allowlist: readToolsAllowlist(),
+    approval_tools: readApprovalTools(),
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
       ...($('f-cap-monitor').checked ? ['monitor_agents'] : []),
+      ...($('f-cap-crm').checked ? ['crm'] : []),
+      ...($('f-cap-social').checked ? ['social'] : []),
     ],
     provider,
     api_key_ref: apiKeyRef,
@@ -785,6 +812,12 @@ let tilesPollHandle = null;
 let panelAgentId = null;
 let panelConvoId = null;
 let panelAsking = false;
+// Images the operator has pasted/dropped/picked but not yet sent. Each entry
+// is { media_type, data (base64, no prefix), url (data: URL for preview) }.
+// Cleared after a successful send and on panel close / convo switch.
+let panelAttachments = [];
+// The panel agent's model id, kept so the attach-hint can flag a text-only model.
+let panelModel = null;
 // AbortController for the conversation-events stream — fires for EVERY
 // conversation event in the server, we filter by panelConvoId on
 // receipt. Opened on openAgentPanel, aborted on closeAgentPanel.
@@ -903,6 +936,7 @@ async function openAgentPanel(agentId) {
   // Schedule a transcript-padding sync once the panel finishes animating in.
   requestAnimationFrame(syncTranscriptPadding);
   ensurePanelSse();
+  ensurePanelApprovalSse();
   $('ap-id').textContent = agentId;
   $('ap-sub').textContent = 'loading…';
   $('ap-transcript').innerHTML = '<div class="ap-empty">loading…</div>';
@@ -915,6 +949,9 @@ async function openAgentPanel(agentId) {
     panelConvoId = summaries.conversations[0]?.id ?? null;
     $('ap-dot').className = `tile-dot ${def.enabled ? 'idle' : 'off'}`;
     $('ap-sub').textContent = `${def.model} · ${def.dispatcher}${def.enabled ? '' : ' · disabled'}`;
+    panelModel = def.model;
+    clearAttachments();
+    updateAttachHint();
     await loadPanelTranscript();
     // Set the trigger label to the conversation's title (first user msg);
     // computed inside loadPanelTranscript so it has the messages in hand.
@@ -935,10 +972,54 @@ async function loadPanelTranscript() {
     const { messages } = await api('GET', `/admin/api/conversations/${panelConvoId}`);
     renderTranscript(messages);
     updateMetaFromMessages(messages);
+    await appendInlineApprovals();
   } catch (e) {
     t.innerHTML = `<div class="txt-err">${esc(e.message)}</div>`;
   }
 }
+
+// ---- inline approval cards in the chat panel --------------------------
+// The chat panel opens its own approvals stream (filtered to the open
+// thread) so a gated tool call the agent is waiting on shows up as a card
+// right in the transcript — approve/reject without leaving the chat.
+let panelApprovalAbort = null;
+function ensurePanelApprovalSse() {
+  if (panelApprovalAbort) return;
+  panelApprovalAbort = new AbortController();
+  sseFetch('/admin/api/approvals/stream', handlePanelApprovalEvent, panelApprovalAbort.signal);
+}
+function closePanelApprovalSse() {
+  if (!panelApprovalAbort) return;
+  panelApprovalAbort.abort();
+  panelApprovalAbort = null;
+}
+function handlePanelApprovalEvent(ev) {
+  const a = ev?.approval;
+  if (!a || a.conversation_id !== panelConvoId) return;
+  if (ev.kind === 'requested') {
+    appendInlineApprovals();
+  } else if (ev.kind === 'decided') {
+    // Flip the inline card to a stamp in place; it clears on the next full
+    // transcript reload when the agent's follow-up message arrives.
+    const card = $('ap-transcript').querySelector(`.approval-card[data-approval-id="${a.id}"]`);
+    if (card) card.outerHTML = approvalStampHtml(a);
+  }
+}
+/** Refresh the inline pending-approval cards for the open thread. Cards live
+ *  at the bottom of the transcript (the agent is blocked waiting on them). */
+async function appendInlineApprovals() {
+  if (!panelConvoId) return;
+  const t = $('ap-transcript');
+  t.querySelectorAll('.approval-card.inline').forEach(el => el.remove());
+  try {
+    const { approvals } = await api('GET', `/admin/api/approvals?conversation_id=${panelConvoId}`);
+    for (const a of approvals) {
+      t.insertAdjacentHTML('beforeend', approvalCardHtml(a, true));
+    }
+    t.scrollTop = t.scrollHeight;
+  } catch { /* best-effort — the Approvals tab is the durable surface */ }
+}
+
 /** Derive a short, one-line title from the first user turn and stuff it
  *  into the trigger button. Falls back gracefully when the convo is empty. */
 function computeConvoTitle(messages) {
@@ -967,7 +1048,11 @@ function renderTranscript(messages) {
       const byline = showByline
         ? `<div class="transcript-byline">${esc(m.caller_label)}</div>`
         : '';
-      return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}</div>`;
+      const atts = (m.attachments && m.attachments.length)
+        ? `<div class="ap-msg-atts">${m.attachments.map(a =>
+            `<img class="ap-att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${a.data}" alt="attachment">`).join('')}</div>`
+        : '';
+      return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}${atts}</div>`;
     }).join('');
   }
   // If a turn is currently in flight (here or in another tab), keep the
@@ -978,12 +1063,29 @@ function renderTranscript(messages) {
   t.scrollTop = t.scrollHeight;
 }
 
-function appendTranscript(role, content) {
+function appendTranscript(role, content, attachmentUrls) {
   const t = $('ap-transcript');
   if (t.querySelector('.ap-empty')) t.innerHTML = '';
   const div = document.createElement('div');
   div.className = `ap-msg ${role}`;
-  div.textContent = content;
+  if (content) {
+    const text = document.createElement('span');
+    text.textContent = content;
+    div.appendChild(text);
+  }
+  if (attachmentUrls && attachmentUrls.length) {
+    const atts = document.createElement('div');
+    atts.className = 'ap-msg-atts';
+    for (const url of attachmentUrls) {
+      const img = document.createElement('img');
+      img.className = 'ap-att-img';
+      img.src = url;
+      img.alt = 'attachment';
+      img.dataset.action = 'zoom-attachment';
+      atts.appendChild(img);
+    }
+    div.appendChild(atts);
+  }
   t.appendChild(div);
   t.scrollTop = t.scrollHeight;
   return div;
@@ -1009,22 +1111,169 @@ function removePendingBubble() {
   if (pending) pending.remove();
 }
 
+// ---- image attachments (chat panel) ----------------------------------
+const ATTACH_MAX = 4;
+// Long-edge downscale cap, resolved per-agent from the panel's model. 1568px is
+// the resolution ceiling for Sonnet 4.6 / Opus 4.6 & older (larger buys no
+// fidelity — the API downsamples anyway); Opus 4.7/4.8 do high-res vision up to
+// 2576px, so agents on those models get the sharper cap.
+const ATTACH_MAX_EDGE_DEFAULT = 1568;
+const ATTACH_MAX_EDGE_HIRES = 2576;
+const ATTACH_MAX_B64 = 6_800_000;    // ~5MB binary; server enforces the same
+function attachMaxEdge() {
+  return /opus-4-[78]/.test(panelModel || '') ? ATTACH_MAX_EDGE_HIRES : ATTACH_MAX_EDGE_DEFAULT;
+}
+const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+// Best-effort vision-capability guess. Unknown models default to "yes" so we
+// don't nag; the warning only fires for models we're fairly sure are text-only.
+const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error('failed to read image'));
+    r.onload = () => {
+      const s = String(r.result);
+      const comma = s.indexOf(',');
+      resolve(comma >= 0 ? s.slice(comma + 1) : s);
+    };
+    r.readAsDataURL(blob);
+  });
+}
+
+// Decode → downscale to ATTACH_MAX_EDGE → re-encode, bounding the payload.
+// GIFs pass through untouched so animation survives (canvas flattens them).
+async function processImageFile(file) {
+  if (!ATTACH_TYPES.includes(file.type)) {
+    throw new Error('unsupported image type (png/jpeg/webp/gif only)');
+  }
+  if (file.type === 'image/gif') {
+    const data = await blobToBase64(file);
+    if (data.length > ATTACH_MAX_B64) throw new Error('gif too large (max ~5MB)');
+    return { media_type: 'image/gif', data, url: `data:image/gif;base64,${data}` };
+  }
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, attachMaxEdge() / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+  // PNG stays PNG (screenshots, transparency); everything else → JPEG.
+  const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const toBlob = (q) => new Promise(res => canvas.toBlob(res, outType, q));
+  let blob = await toBlob(0.85);
+  let data = blob ? await blobToBase64(blob) : '';
+  if (data.length > ATTACH_MAX_B64 && outType === 'image/jpeg') {
+    blob = await toBlob(0.6);                    // one retry at lower quality
+    data = blob ? await blobToBase64(blob) : data;
+  }
+  if (!data) throw new Error('failed to encode image');
+  if (data.length > ATTACH_MAX_B64) throw new Error('image too large after downscale (max ~5MB)');
+  return { media_type: outType, data, url: `data:${outType};base64,${data}` };
+}
+
+async function addAttachmentFiles(files) {
+  const list = Array.from(files || []).filter(f => f && f.type && f.type.startsWith('image/'));
+  for (const f of list) {
+    if (panelAttachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
+    try {
+      panelAttachments.push(await processImageFile(f));
+    } catch (e) {
+      toast(e.message || 'could not attach image', 'err');
+    }
+  }
+  renderAttachTray();
+}
+
+function renderAttachTray() {
+  const tray = $('ap-attach-tray');
+  if (!tray) return;
+  if (!panelAttachments.length) {
+    tray.classList.remove('show');
+    tray.setAttribute('aria-hidden', 'true');
+    tray.innerHTML = '';
+    return;
+  }
+  tray.classList.add('show');
+  tray.setAttribute('aria-hidden', 'false');
+  tray.innerHTML = panelAttachments.map((a, i) =>
+    `<div class="ap-attach-chip"><img src="${a.url}" alt="attachment ${i + 1}"><button type="button" data-action="remove-attachment" data-idx="${i}" title="remove">✕</button></div>`,
+  ).join('');
+}
+
+function removeAttachment(idx) {
+  panelAttachments.splice(idx, 1);
+  renderAttachTray();
+}
+
+function clearAttachments() {
+  panelAttachments = [];
+  renderAttachTray();
+}
+
+function modelSupportsVision(model) {
+  return !model || VISION_MODEL_RE.test(model); // unknown → assume capable
+}
+
+// Tap a transcript image to view it full-size in an overlay.
+function openImageLightbox(src) {
+  if (!src) return;
+  closeImageLightbox();
+  const back = document.createElement('div');
+  back.className = 'ap-lightbox';
+  back.dataset.action = 'close-lightbox';
+  const img = document.createElement('img');
+  img.src = src;
+  back.appendChild(img);
+  document.body.appendChild(back);
+}
+
+function closeImageLightbox() {
+  document.querySelectorAll('.ap-lightbox').forEach(n => n.remove());
+}
+
+// Warn (don't block) when the panel's agent runs a model we think is text-only.
+function updateAttachHint() {
+  const hint = $('ap-attach-hint');
+  if (!hint) return;
+  const model = panelModel || ((agentCache || []).find(a => a.id === panelAgentId) || {}).model;
+  if (model && !modelSupportsVision(model)) {
+    hint.textContent = `heads up: ${model} may not be able to see images`;
+    hint.classList.add('show');
+    hint.setAttribute('aria-hidden', 'false');
+  } else {
+    hint.classList.remove('show');
+    hint.setAttribute('aria-hidden', 'true');
+    hint.textContent = '';
+  }
+}
+
 async function sendPanelAsk() {
   if (panelAsking || !panelAgentId) return;
   const msg = $('ap-input').value.trim();
-  if (!msg) return;
+  // Allow an image-only turn (e.g. "look at this") — require text OR an image.
+  if (!msg && !panelAttachments.length) return;
   panelAsking = true;
   $('ap-send').disabled = true;
   $('ap-input').value = '';
+  // Snapshot + clear the pending images so the tray empties immediately and a
+  // double-tap can't resend them. Restored into the tray if the send fails.
+  const sentAttachments = panelAttachments;
+  clearAttachments();
   // Optimistic user bubble so the operator sees their input land
   // instantly; the SSE 'message' event will reload the transcript
   // shortly with the canonical row. Typing dots are driven by the
   // server's ask-start SSE event (also covers other-tab + agent-to-
   // agent + telegram-bot callers).
-  const optimisticBubble = appendTranscript('user', msg);
+  const optimisticBubble = appendTranscript('user', msg, sentAttachments.map(a => a.url));
   try {
     const body = { message: msg };
     if (panelConvoId) body.conversation_id = panelConvoId;
+    if (sentAttachments.length) {
+      body.attachments = sentAttachments.map(a => ({ media_type: a.media_type, data: a.data }));
+    }
     const resp = await api('POST', `/admin/agents/${panelAgentId}/ask`, body);
     panelConvoId = resp.conversation_id;
     // If the trigger label was "(empty)" before the first turn, refresh
@@ -1042,6 +1291,8 @@ async function sendPanelAsk() {
     optimisticBubble.remove();
     removePendingBubble();
     $('ap-input').value = msg;
+    // Put the images back in the tray so the operator can just hit Send again.
+    if (sentAttachments.length) { panelAttachments = sentAttachments; renderAttachTray(); }
     const friendly = /load failed|networkerror|failed to fetch/i.test(e.message)
       ? 'connection dropped — tap Send to retry'
       : `error: ${e.message}`;
@@ -1064,9 +1315,13 @@ function closeAgentPanel() {
   panel.setAttribute('aria-hidden', 'true');
   closeConvoPicker();
   setPanelReadOnly(false);
+  clearAttachments();
+  closeImageLightbox();
+  panelModel = null;
   panelAgentId = null;
   panelConvoId = null;
   closePanelSse();
+  closePanelApprovalSse();
 }
 
 /** Open the conversation-events stream if not already open. Uses
@@ -1189,6 +1444,7 @@ function setPanelReadOnly(on) {
 async function switchPanelConvo(cid, readOnly) {
   if (!panelAgentId) return;
   closeConvoPicker();
+  clearAttachments();
   panelConvoId = cid;
   $('ap-meta').textContent = 'loading…';
   setPanelReadOnly(readOnly);
@@ -1877,6 +2133,8 @@ const MCP_TOOL_MAP = {
   agent_comms: ['ask_agent', 'list_agents'],
   agent_admin: ['create_agent', 'update_agent', 'reload_agent'],
   agent_monitor: ['list_agents', 'list_conversations', 'read_conversation', 'read_memory'],
+  email: ['read_inbox', 'read_email', 'send_email'],
+  social: ['read_mentions', 'read_my_posts', 'post_tweet', 'post_linkedin'],
 };
 
 function deriveAgentTools(agent) {
@@ -1901,6 +2159,12 @@ function deriveAgentTools(agent) {
       : []),
     ...(caps.has('monitor_agents')
       ? [{ server: 'agent_monitor', tools: MCP_TOOL_MAP.agent_monitor, note: 'capability: monitor_agents' }]
+      : []),
+    ...(caps.has('crm')
+      ? [{ server: 'email', tools: MCP_TOOL_MAP.email, note: 'capability: crm — send_email always needs approval' }]
+      : []),
+    ...(caps.has('social')
+      ? [{ server: 'social', tools: MCP_TOOL_MAP.social, note: 'capability: social — post_tweet always needs approval' }]
       : []),
   ];
   return { builtin: agent.tools_allowlist || [], mcp };
@@ -2130,6 +2394,343 @@ function renderAudit() {
   }).join('');
 }
 
+// ---- approvals (human-in-the-loop) ------------------------------------
+// A gated tool call blocks the agent's turn on a pending row server-side.
+// The operator approves/rejects here (the Approvals tab) or inline in the
+// chat panel — both share the same endpoints + the /approvals/stream SSE.
+// The nav badge stays live on EVERY tab via a global stream opened at boot.
+let approvalsSubtab = 'pending';
+let approvalsSseAbort = null;
+
+/** Open the global approvals stream once. Keeps the nav badge + (if shown)
+ *  the Approvals list live regardless of which tab is active. */
+function ensureApprovalsSse() {
+  if (approvalsSseAbort) return;
+  approvalsSseAbort = new AbortController();
+  sseFetch('/admin/api/approvals/stream', handleApprovalsSseEvent, approvalsSseAbort.signal);
+}
+
+function handleApprovalsSseEvent(ev) {
+  refreshApprovalBadge();
+  if (activeTab === 'approvals') loadApprovalsList();
+  // The chat panel handles its own inline copy via the same stream
+  // (handlePanelApprovalEvent) when it's open.
+}
+
+async function refreshApprovalBadge() {
+  try {
+    const { pending } = await api('GET', '/admin/api/approvals/count');
+    setApprovalBadge(pending);
+  } catch { /* badge is best-effort */ }
+}
+
+function setApprovalBadge(n) {
+  const el = $('nav-approvals-badge');
+  if (!el) return;
+  el.textContent = String(n);
+  el.classList.toggle('hidden', !n);
+}
+
+function loadApprovalsTab() {
+  ensureApprovalsSse();
+  loadApprovalsList();
+}
+
+function setApprovalsSubtab(sub) {
+  approvalsSubtab = sub;
+  document.querySelectorAll('#approvals-subtabs .conv-kind-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.sub === sub));
+  loadApprovalsList();
+}
+
+async function loadApprovalsList() {
+  const target = $('approvals-list');
+  if (!target) return;
+  try {
+    const { approvals } = await api('GET', `/admin/api/approvals?state=${approvalsSubtab}&limit=200`);
+    renderApprovalsList(approvals);
+    if (approvalsSubtab === 'pending') {
+      setApprovalBadge(approvals.length);
+      $('approvals-summary').textContent = approvals.length
+        ? `${approvals.length} tool call${approvals.length === 1 ? '' : 's'} waiting on your sign-off.`
+        : 'Nothing waiting — every agent is unblocked.';
+    } else {
+      $('approvals-summary').textContent = 'Recently approved / rejected.';
+    }
+  } catch (e) {
+    target.innerHTML = `<div class="txt-err">${esc(e.message)}</div>`;
+  }
+}
+
+function renderApprovalsList(list) {
+  const target = $('approvals-list');
+  if (!list.length) {
+    target.innerHTML = approvalsSubtab === 'pending'
+      ? '<div class="ap-empty">No pending approvals — nothing needs you right now.</div>'
+      : '<div class="ap-empty">No decisions yet.</div>';
+    return;
+  }
+  target.innerHTML = list.map(a => a.state === 'pending'
+    ? approvalCardHtml(a)
+    : approvalStampHtml(a)).join('');
+}
+
+/** Glyph for an approval, by tool name — quick visual recognition. */
+function approvalToolIcon(tool) {
+  const t = (tool || '').toLowerCase();
+  if (t.includes('bash') || t.includes('exec')) return '⌘';      // ⌘
+  if (t.includes('write') || t.includes('edit')) return '✎';     // ✎
+  if (t.includes('web') || t.includes('fetch') || t.includes('search')) return '🌐'; // 🌐
+  if (t.includes('mail') || t.includes('email')) return '✉️'; // ✉️
+  return '⚙️'; // ⚙️
+}
+
+/** Staleness class — drives the row tint. No auto-reject; visibility scales
+ *  with neglect (see operations/ritsu/approval-system.md). */
+function approvalStaleClass(a) {
+  const age = Math.floor(Date.now() / 1000) - a.requested_at;
+  if (age > 7 * 86400) return 'stale-7d';
+  if (age > 86400) return 'stale-24h';
+  if (age > 4 * 3600) return 'stale-4h';
+  return '';
+}
+
+function approvalAgo(ts) {
+  return fmtRelativeSeconds(Math.max(0, Math.floor(Date.now() / 1000) - ts));
+}
+
+function approvalArgsPreview(argsJson) {
+  try {
+    return esc(JSON.stringify(JSON.parse(argsJson), null, 2));
+  } catch {
+    return esc(String(argsJson));
+  }
+}
+
+function approvalTruncate(s, n) {
+  return s.length > n ? esc(s.slice(0, n)) + '<span class="txt-muted">… (' + (s.length - n) + ' more)</span>' : esc(s);
+}
+
+/**
+ * Render a string with every non-ASCII / control character made VISIBLE,
+ * tagged with its U+ code point. A spoofed recipient like "support@hdе.io"
+ * (Cyrillic е) or one carrying bidi/zero-width controls renders identically to
+ * the real thing in plain text — this unmasks it so the operator can't be
+ * tricked into approving a send to an attacker domain. Returns { html, bad }.
+ */
+function approvalUnmask(s) {
+  let bad = false;
+  const html = [...String(s)].map(ch => {
+    const cp = ch.codePointAt(0);
+    if (cp < 0x20 || cp > 0x7e) {
+      bad = true;
+      const u = 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+      return `<span class="ap-bad-char" title="${u}">${esc(ch)}[${u}]</span>`;
+    }
+    return esc(ch);
+  }).join('');
+  return { html, bad };
+}
+
+/**
+ * Pull the security-critical fields out of an approval's args so they show on
+ * the card by DEFAULT (no "show details" click). The destination of an
+ * irreversible action — email recipient, post text, target agent — is exactly
+ * what the operator must see before approving; hiding it behind a toggle is
+ * how you get a one-click approval of something you never read.
+ */
+function approvalHighlights(a) {
+  let args;
+  try { args = JSON.parse(a.args_json); } catch { return []; }
+  if (!args || typeof args !== 'object') return [];
+  const t = (a.tool_name || '').toLowerCase();
+  const rows = [];
+  const add = (label, value, critical = false) => {
+    if (value === undefined || value === null || value === '') return;
+    const { html, bad } = approvalUnmask(typeof value === 'string' ? value : JSON.stringify(value));
+    rows.push({ label, html, bad, critical });
+  };
+  if (t.includes('email')) {
+    add('To', args.to, true);
+    add('Subject', args.subject);
+    rows.push({ label: 'Body', html: approvalTruncate(String(args.body ?? ''), 400), bad: false });
+  } else if (t.includes('tweet') || t.includes('linkedin') || t.includes('post')) {
+    rows.push({ label: 'Post', html: approvalTruncate(String(args.text ?? ''), 400), bad: false, critical: true });
+  } else if (t.includes('ask_agent')) {
+    add('To agent', args.agent_id, true);
+    rows.push({ label: 'Message', html: approvalTruncate(String(args.message ?? ''), 400), bad: false });
+  } else {
+    for (const [k, v] of Object.entries(args).slice(0, 4)) {
+      add(k, typeof v === 'string' ? v : JSON.stringify(v), false);
+    }
+  }
+  return rows;
+}
+
+function approvalHighlightsHtml(a) {
+  const rows = approvalHighlights(a);
+  if (!rows.length) return '';
+  const anyBad = rows.some(r => r.bad);
+  const warn = anyBad
+    ? '<div class="ap-spoof-warn">⚠ Non-standard characters in a field below — possible spoofing. Verify before approving.</div>'
+    : '';
+  const body = rows.map(r =>
+    `<div class="ap-hl-row ${r.critical ? 'critical' : ''} ${r.bad ? 'bad' : ''}">` +
+      `<span class="ap-hl-label">${esc(r.label)}</span>` +
+      `<span class="ap-hl-val">${r.html}</span>` +
+    `</div>`).join('');
+  return `${warn}<div class="approval-highlights">${body}</div>`;
+}
+
+/** A pending approval card. Used on the Approvals page AND inline in the
+ *  chat panel — handlers find their card via closest('.approval-card') so
+ *  there are no duplicate-id collisions when the same approval shows in
+ *  both places. */
+function approvalCardHtml(a, inline = false) {
+  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}" data-approval-id="${a.id}">
+    <div class="approval-main">
+      <span class="approval-icon">${approvalToolIcon(a.tool_name)}</span>
+      <div class="approval-body">
+        <div class="approval-title">${esc(a.tool_name)}</div>
+        <div class="approval-meta">${esc(a.agent_id)} · ${approvalAgo(a.requested_at)}</div>
+        ${approvalHighlightsHtml(a)}
+        <button type="button" class="approval-detail-toggle" data-action="toggle-approval-detail">▸ raw args</button>
+        <pre class="approval-detail hidden">${approvalArgsPreview(a.args_json)}</pre>
+        <textarea class="approval-reason hidden" placeholder="reason (optional — sent to the agent on reject)" rows="2"></textarea>
+      </div>
+    </div>
+    <div class="approval-actions">
+      <button type="button" class="primary" data-action="approve-approval">Approve</button>
+      <button type="button" class="danger" data-action="reject-approval">Reject</button>
+    </div>
+  </div>`;
+}
+
+/** A decided approval — compact audit stamp. */
+function approvalStampHtml(a) {
+  const ok = a.state === 'approved';
+  const reason = a.reason ? ` · “${esc(a.reason)}”` : '';
+  return `<div class="approval-stamp ${ok ? 'ok' : 'rej'}">
+    <span class="approval-stamp-mark">${ok ? '✓ approved' : '✗ rejected'}</span>
+    <span class="approval-stamp-body">${esc(a.tool_name)} · ${esc(a.agent_id)}${reason}</span>
+    <span class="approval-when">${approvalAgo(a.decided_at || a.requested_at)}</span>
+  </div>`;
+}
+
+/** Approve (one click) or reject (two-step: first click reveals the reason
+ *  box + relabels, second click submits). cardEl scopes the lookups. */
+function approveApprovalClick(cardEl) {
+  const id = Number(cardEl?.dataset.approvalId);
+  if (!id) return;
+  decideApproval(id, 'approved', '', cardEl);
+}
+function rejectApprovalClick(cardEl) {
+  const id = Number(cardEl?.dataset.approvalId);
+  if (!id) return;
+  if (!cardEl.classList.contains('rejecting')) {
+    cardEl.classList.add('rejecting');
+    const r = cardEl.querySelector('.approval-reason');
+    if (r) { r.classList.remove('hidden'); r.focus(); }
+    const btn = cardEl.querySelector('[data-action="reject-approval"]');
+    if (btn) btn.textContent = 'Confirm reject';
+    return;
+  }
+  const reason = cardEl.querySelector('.approval-reason')?.value.trim() || '';
+  decideApproval(id, 'rejected', reason, cardEl);
+}
+
+async function decideApproval(id, decision, reason, cardEl) {
+  // Lock the card's buttons so a double-tap can't double-submit.
+  cardEl?.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  try {
+    const body = { decision };
+    if (reason) body.reason = reason;
+    await api('POST', `/admin/api/approvals/${id}/decide`, body);
+    toast(decision === 'approved' ? 'approved' : 'rejected', decision === 'approved' ? 'ok' : 'err');
+  } catch (e) {
+    toast(e.message, 'err');           // 409 = already decided (race)
+    cardEl?.querySelectorAll('button').forEach(b => { b.disabled = false; });
+  }
+  // SSE drives the authoritative refresh (badge, list, inline flip). Nudge
+  // the badge immediately for snappiness in case SSE is mid-reconnect.
+  refreshApprovalBadge();
+}
+
+function toggleApprovalDetail(cardEl) {
+  const pre = cardEl?.querySelector('.approval-detail');
+  const btn = cardEl?.querySelector('.approval-detail-toggle');
+  if (!pre || !btn) return;
+  const show = pre.classList.contains('hidden');
+  pre.classList.toggle('hidden', !show);
+  btn.textContent = show ? '▾ hide raw args' : '▸ raw args';
+}
+
+// ---- extensions (connectors) ------------------------------------------
+// Each extension is a connector that gives agents a new job. The operator
+// configures credentials here (encrypted server-side, never returned); the
+// per-agent on/off is the capability checkbox on the Agents tab.
+// Each connector: its secret field ids in the form (prefix), namespace, the
+// fields that count as "fully configured", and a status badge id.
+const EXT_CONNECTORS = [
+  { ns: 'email',   prefix: 'se', badge: 'ext-email-status',
+    fields: ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'user', 'pass', 'from_address'],
+    core: ['imap_host', 'smtp_host', 'user', 'pass', 'from_address'],
+    secretFields: ['pass'] },
+  { ns: 'twitter', prefix: 'st', badge: 'ext-twitter-status',
+    fields: ['api_key', 'api_secret', 'access_token', 'access_secret'],
+    core: ['api_key', 'api_secret', 'access_token', 'access_secret'],
+    secretFields: ['api_secret', 'access_secret'] },
+  { ns: 'linkedin', prefix: 'sl', badge: 'ext-linkedin-status',
+    fields: ['access_token', 'author_urn', 'api_version'],
+    core: ['access_token', 'author_urn'],
+    secretFields: ['access_token'] },
+];
+
+async function loadExtensionsTab() {
+  try {
+    const { connectors } = await api('GET', '/admin/api/secrets');
+    for (const conn of EXT_CONNECTORS) {
+      const remote = (connectors || []).find(c => c.namespace === conn.ns);
+      const keys = new Map((remote?.keys || []).map(k => [k.name, k.set]));
+      for (const f of conn.fields) {
+        const el = $(`${conn.prefix}-${f}`);
+        if (!el) continue;
+        if (keys.get(f)) {
+          el.classList.add('field-set');
+          if (conn.secretFields.includes(f)) el.placeholder = '•••••• (set — blank keeps it)';
+          else if (!el.value) el.placeholder = '(set — blank keeps it)';
+        } else {
+          el.classList.remove('field-set');
+        }
+      }
+      const ok = conn.core.every(k => keys.get(k));
+      const badge = $(conn.badge);
+      if (badge) {
+        badge.textContent = ok ? 'configured' : 'not configured';
+        badge.className = `chip ${ok ? 'ok' : 'warn'}`;
+      }
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function saveConnectorExt(ns) {
+  const conn = EXT_CONNECTORS.find(c => c.ns === ns);
+  if (!conn) return;
+  let wrote = 0;
+  try {
+    for (const f of conn.fields) {
+      const el = $(`${conn.prefix}-${f}`);
+      const value = (el?.value || '').trim();
+      if (!value) continue;
+      await api('POST', '/admin/api/secrets', { namespace: ns, name: f, value });
+      wrote++;
+      if (conn.secretFields.includes(f)) el.value = ''; // don't keep secrets in the DOM
+    }
+    toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'}` : 'nothing to save');
+    loadExtensionsTab();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 // ---- event delegation -------------------------------------------------
 // One document-level click listener routes every data-action attribute to
 // the handler in ACTIONS. This is what lets script-src drop 'unsafe-inline':
@@ -2164,6 +2765,10 @@ const ACTIONS = {
   'ap-close':               () => closeAgentPanel(),
   'toggle-convo-picker':    (el, e) => toggleConvoPicker(e),
   'switch-panel-convo':     (el) => switchPanelConvo(Number(el.dataset.cid), el.dataset.readonly === '1'),
+  'pick-attachment':        () => $('ap-file')?.click(),
+  'remove-attachment':      (el) => removeAttachment(Number(el.dataset.idx)),
+  'zoom-attachment':        (el) => openImageLightbox(el.getAttribute('src')),
+  'close-lightbox':         () => closeImageLightbox(),
 
   // conversations tab
   'open-conversation':      (el) => openConversation(Number(el.dataset.id), el.dataset.agent, el.dataset.title || ''),
@@ -2217,6 +2822,18 @@ const ACTIONS = {
   // audit tab
   'audit-refresh':          () => loadAuditTab(),
 
+  // extensions tab
+  'save-email-ext':         () => saveConnectorExt('email'),
+  'save-twitter-ext':       () => saveConnectorExt('twitter'),
+  'save-linkedin-ext':      () => saveConnectorExt('linkedin'),
+
+  // approvals tab + inline cards
+  'approvals-refresh':      () => loadApprovalsList(),
+  'approvals-subtab':       (el) => setApprovalsSubtab(el.dataset.sub),
+  'approve-approval':       (el) => approveApprovalClick(el.closest('.approval-card')),
+  'reject-approval':        (el) => rejectApprovalClick(el.closest('.approval-card')),
+  'toggle-approval-detail': (el) => toggleApprovalDetail(el.closest('.approval-card')),
+
   // oauth clients tab
   'oauth-client-tokens':    (el) => openOAuthClientTokens(el.dataset.client),
   'revoke-oauth-client':    (el) => revokeOAuthClient(el.dataset.client, el.dataset.name),
@@ -2239,6 +2856,11 @@ renderNav();
 await loadAgentTypes();
 await Promise.all([refreshAgents(), loadAvailableTools(), loadLogLevels(), refreshInfo()]);
 setInterval(refreshInfo, 5000);
+
+// Approvals: open the live stream + seed the nav badge so a pending
+// approval is visible from any tab, not just when the Approvals tab is open.
+ensureApprovalsSse();
+refreshApprovalBadge();
 
 // Tiles is the default tab → kick its polling immediately.
 startTilesPolling();
@@ -2274,6 +2896,34 @@ $('ap-input')?.addEventListener('keydown', (e) => {
 // Textarea autosize → form height changes → re-pad the transcript.
 $('ap-input')?.addEventListener('input', syncTranscriptPadding);
 
+// Image attachments: paste into the box, drop onto the panel, or pick a file.
+$('ap-input')?.addEventListener('paste', (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const files = items.filter(it => it.kind === 'file' && it.type.startsWith('image/'))
+    .map(it => it.getAsFile()).filter(Boolean);
+  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+});
+$('ap-file')?.addEventListener('change', (e) => {
+  addAttachmentFiles(e.target.files);
+  e.target.value = ''; // allow re-picking the same file
+});
+const apPanelEl = $('agent-panel');
+apPanelEl?.addEventListener('dragover', (e) => {
+  if (panelReadOnly) return;
+  if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+    e.preventDefault();
+    apPanelEl.classList.add('ap-drag');
+  }
+});
+apPanelEl?.addEventListener('dragleave', (e) => {
+  if (e.target === apPanelEl) apPanelEl.classList.remove('ap-drag');
+});
+apPanelEl?.addEventListener('drop', (e) => {
+  apPanelEl.classList.remove('ap-drag');
+  const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+});
+
 // Live filters on the Logs tab.
 $('log-filter-msg').addEventListener('input', renderLogs);
 $('log-filter-agent').addEventListener('input', renderLogs);
@@ -2286,6 +2936,7 @@ $('audit-filter-method')?.addEventListener('change', renderAudit);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (document.querySelector('.ap-lightbox')) { closeImageLightbox(); return; }
     if ($('ap-convo-picker').classList.contains('open')) { closeConvoPicker(); return; }
     if ($('agent-panel').classList.contains('open')) closeAgentPanel();
   }

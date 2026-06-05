@@ -12,3 +12,9 @@ description = "rt_YOUR_TOKEN is the placeholder string the admin UI renders into
 # only appears in admin-UI snippet strings that we own.
 regexTarget = "line"
 regexes = ['''rt_YOUR_TOKEN''']
+# security-guards.test.ts is the scrubSecrets test suite — it MUST contain fake,
+# secret-SHAPED fixtures (Bearer tokens, OAuth 1.0a signatures, base64 blobs) to
+# prove the scrubber redacts them. They are not real credentials. Scoped to this
+# one file so the rest of the tree is still fully scanned (trufflehog + snyk also
+# cover it). generic-api-key flagged the oauth_signature fixture here.
+paths = ['''src/__tests__/security-guards\.test\.ts''']

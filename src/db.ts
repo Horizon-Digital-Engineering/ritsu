@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 
+-- Image (and future binary) attachments for a message. Kept out of the
+-- messages.content column so the transcript text stays cheap to scan; the data
+-- column is base64. conversation_id is denormalized so a single query can fetch
+-- every attachment for a thread in one shot.
+CREATE TABLE IF NOT EXISTS message_attachments (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id      INTEGER NOT NULL REFERENCES messages(id),
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+  media_type      TEXT NOT NULL,
+  data            TEXT NOT NULL,
+  created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation ON message_attachments(conversation_id);
+
 -- MCP bearer tokens (Flashback-style). Full token shown to user once at mint;
 -- stored as sha256 hash. prefix is the first 8 chars after the rt_ prefix,
 -- kept for display so the operator can identify tokens by sight.
@@ -194,6 +209,50 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_client ON oauth_refresh_tokens(client_id);
+
+-- Human-in-the-loop approvals. A row is created when an agent tries to use
+-- a tool that its definition lists in approval_tools; the agent's turn
+-- blocks until the operator approves or rejects. agent_id / conversation_id
+-- are plain strings/ids (no FK) so a row survives agent or conversation
+-- deletion for audit. args_json is the tool input the model proposed —
+-- shown verbatim on the approval card. reason is the operator's optional
+-- note on reject, fed back to the model as the tool-denial message.
+CREATE TABLE IF NOT EXISTS tool_approvals (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id        TEXT NOT NULL,
+  conversation_id INTEGER,
+  tool_name       TEXT NOT NULL,
+  args_json       TEXT NOT NULL DEFAULT '{}',
+  state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','approved','rejected')),
+  reason          TEXT,
+  decided_by      TEXT,
+  requested_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  decided_at      INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_pending ON tool_approvals(requested_at DESC) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_convo ON tool_approvals(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_tool_approvals_decided ON tool_approvals(decided_at DESC) WHERE state <> 'pending';
+
+-- Plugin secret store. Credentials for CRM/email/social and any other plugin
+-- that talks to an external service: an IMAP password, an SMTP login, an API
+-- token. Encrypted at rest (AES-256-GCM with row-context AAD via
+-- secret-crypto, same as api_keys/channels). The decrypt path is reachable
+-- ONLY from tool/plugin handlers — there is deliberately NO agent-callable
+-- "get_secret" tool, so the plaintext never enters an LLM's context. Agents
+-- pass opaque references (e.g. account name) and the handler resolves the
+-- secret internally. namespace groups a connector's secrets (e.g. 'email').
+CREATE TABLE IF NOT EXISTS plugin_secrets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  namespace   TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  value_enc   TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(namespace, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_secrets_ns ON plugin_secrets(namespace);
 `;
 
 /**
@@ -355,6 +414,10 @@ function migrate(db: Db): void {
   // 'monitor_agents' (read-only swarm inspection). Empty = the safe
   // default; existing agents stay where they are.
   addColumnIfMissing(db, 'agent_definitions', 'capabilities', "TEXT NOT NULL DEFAULT '[]'");
+  // Human-in-the-loop: JSON array of tool names this agent must get operator
+  // approval for before each use (e.g. ["Bash","Write"]). Empty = no gating
+  // (current behavior for every existing agent).
+  addColumnIfMissing(db, 'agent_definitions', 'approval_tools', "TEXT NOT NULL DEFAULT '[]'");
 }
 
 /** API keys for the ritsu-agent runtime (Phase B). Stored AES-256-GCM

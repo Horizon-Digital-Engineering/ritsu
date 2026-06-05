@@ -1,9 +1,15 @@
-import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
+import { query, type CanUseTool, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
+import { messageText, messageImages } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
+import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import { buildAgentMemoryMcp, MEMORY_TOOL_NAMES, MEMORY_MCP_NAME } from '../tools/mcp-internal/memory.js';
+import { buildAgentEmailMcp, EMAIL_TOOL_NAMES, EMAIL_MCP_NAME } from '../tools/mcp-internal/email.js';
+import { buildAgentSocialMcp, SOCIAL_TOOL_NAMES, SOCIAL_MCP_NAME } from '../tools/mcp-internal/social.js';
+import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
+import type { SecretStore } from '../auth/secret-store.js';
 import {
   buildAgentCommsMcp, COMMS_TOOL_NAMES, COMMS_MCP_NAME,
   type AgentCommsDeps,
@@ -59,6 +65,27 @@ export interface ClaudeDirectOpts {
    * the agent's `capabilities` include 'monitor_agents'.
    */
   monitor?: { callerAgentId: string; deps: AgentMonitorDeps };
+  /**
+   * Human-in-the-loop approval gate. When a tool the model wants to call is
+   * in `gatedTools`, the dispatcher writes a pending approval and blocks the
+   * turn until the operator approves (→ allow) or rejects (→ deny, with the
+   * operator's reason fed back to the model). `agentId` attributes the
+   * request; `store` is the shared ApprovalStore. Omit to disable gating.
+   */
+  approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
+  /**
+   * CRM email tools (read_inbox / read_email / send_email). Wired when the
+   * agent has the 'crm' capability. send_email always blocks on approval, so
+   * the ApprovalStore is required here. Credentials are read from the
+   * SecretStore inside the handlers — never surfaced to the model.
+   */
+  email?: { agentId: string; secrets: SecretStore; approvals: ApprovalStore };
+  /**
+   * CRM social tools (read_mentions / read_my_posts / post_tweet). Wired when
+   * the agent has the 'social' capability. post_tweet always blocks on
+   * approval. Same secret-store + gate pattern as email.
+   */
+  social?: { agentId: string; secrets: SecretStore; approvals: ApprovalStore };
 }
 
 export class ClaudeDirectDispatcher implements ModelDispatcher {
@@ -71,7 +98,12 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const model = req.model ?? this.defaultModel;
-    const { systemMsg, userPrompt } = formatMessages(req.messages);
+    const { systemMsg, userPrompt, images } = formatMessages(req.messages);
+    // The SDK's `prompt` is either a plain string (text-only, the common case)
+    // or an async stream of user messages. We only need the stream form when a
+    // turn carries images: yield ONE user message whose content is the
+    // flattened text + the image blocks, then close (= a single turn).
+    const prompt = images.length === 0 ? userPrompt : imagePrompt(userPrompt, images);
 
     logger.debug('claude-direct.chat', {
       model,
@@ -82,8 +114,8 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    const canUseTool = buildCanUseToolCallback(workspaces, this.opts);
-    const { mcpServers, allowedTools } = buildMcpServers(this.opts);
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
+    const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
 
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
@@ -93,10 +125,29 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     // that case — it's the model's most recent words to the user.
     let lastAssistantText = '';
     for await (const event of query({
-      prompt: userPrompt,
+      prompt,
       options: {
         systemPrompt: systemMsg,
         model,
+        // Explicit-safe permission baseline. settingSources:[] stops the SDK
+        // loading the service account's ~/.claude/settings.json (whose
+        // `defaultMode: "auto"` would put the agent in classifier-auto mode);
+        // permissionMode:'default' is the documented interactive-approval
+        // mode. OAuth credentials load independently of settings, so $0 Max
+        // dispatch is unaffected, and agents carry their own system_prompt so
+        // dropping CLAUDE.md costs nothing.
+        //
+        // CAVEAT (learned the hard way): on the Max-plan session path the
+        // spawned `claude` subprocess runs its BUILT-IN tools itself and does
+        // NOT route them through canUseTool regardless of these options —
+        // proven by tracing the event stream. So built-in Bash/Read/Write are
+        // ungovernable here. We therefore gate at the layer we DO own: the
+        // in-process MCP tool handlers (see approval-gate.ts), and we hand
+        // governed agents OUR MCP-wrapped tools instead of the SDK's built-ins.
+        // The ritsu-agent runtime (our own loop) gates reliably and is the
+        // home for agents that need hard tool approval.
+        settingSources: [],
+        permissionMode: 'default',
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
@@ -125,19 +176,47 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
 // ---- helpers ---------------------------------------------------------------
 
+/** An Anthropic base64 image content block, the shape the SDK forwards to the
+ *  Messages API verbatim. */
+interface AnthropicImageBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+
 /** Split a flat message list into the SDK's expected (systemPrompt, userPrompt)
  *  shape. System turns concatenate into systemPrompt; everything else becomes
- *  a single user-prompt blob with role-prefixed lines. */
-function formatMessages(messages: readonly ChatMessage[]): { systemMsg: string; userPrompt: string } {
+ *  a single user-prompt blob with role-prefixed lines. Any image blocks (only
+ *  user turns carry them) are pulled out and returned in Anthropic wire shape
+ *  to ride along on the streamed user message. */
+export function formatMessages(
+  messages: readonly ChatMessage[],
+): { systemMsg: string; userPrompt: string; images: AnthropicImageBlock[] } {
   const systemMsg = messages
     .filter(m => m.role === 'system')
-    .map(m => m.content)
+    .map(m => messageText(m.content))
     .join('\n\n');
   const userPrompt = messages
     .filter(m => m.role !== 'system')
-    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .map(m => `${m.role.toUpperCase()}: ${messageText(m.content)}`)
     .join('\n\n');
-  return { systemMsg, userPrompt };
+  const images: AnthropicImageBlock[] = messages
+    .flatMap(m => messageImages(m.content))
+    .map(b => ({ type: 'image', source: { type: 'base64', media_type: b.media_type, data: b.data } }));
+  return { systemMsg, userPrompt, images };
+}
+
+/** A single-turn streamed prompt: one user message carrying the flattened
+ *  conversation text plus the image blocks. Closing the generator after one
+ *  yield tells the SDK this is a complete turn. */
+export async function* imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text }, ...images],
+    },
+  } as SDKUserMessage;
 }
 
 /** Names of in-process MCP tools that are pre-authorized by their per-agent
@@ -147,30 +226,65 @@ const IN_PROCESS_MCP_TOOLS = new Set<string>([
   ...COMMS_TOOL_NAMES,
   ...ADMIN_TOOL_NAMES,
   ...MONITOR_TOOL_NAMES,
+  ...EMAIL_TOOL_NAMES,
+  ...SOCIAL_TOOL_NAMES,
 ]);
 
 /**
- * Build the SDK's `canUseTool` callback. Returns undefined when no permission
- * gate is needed (no workspaces AND no in-process MCP servers wired). The
- * callback allows in-process MCP tools unconditionally (their handlers do
- * their own allowlist + loop-guard checks) and routes everything else through
- * checkToolUse which enforces workspace permissions on built-in FS tools.
+ * Build the SDK's `canUseTool` callback. Returns undefined when no gate is
+ * needed at all (no workspaces, no in-process MCP servers, no approval gating).
+ * The callback:
+ *   1. allows in-process MCP tools unconditionally (their handlers do their
+ *      own allowlist + loop-guard checks),
+ *   2. enforces workspace permissions on built-in FS/exec/net tools via
+ *      checkToolUse,
+ *   3. and finally, for tools listed in the agent's approval_tools, blocks on
+ *      operator approval — a reject denies the call with the operator's reason
+ *      so the model sees why and can adapt.
  */
 function buildCanUseToolCallback(
   workspaces: Workspace[],
   opts: ClaudeDirectOpts,
+  conversationId: number | null,
 ): CanUseTool | undefined {
-  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor) {
+  const gating = opts.approval && opts.approval.gatedTools.length > 0 ? opts.approval : undefined;
+  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor && !gating) {
     return undefined;
   }
   return async (toolName, input) => {
     if (IN_PROCESS_MCP_TOOLS.has(toolName)) {
       return { behavior: 'allow' as const, updatedInput: input };
     }
+    // Observability: every built-in tool call (Bash/Read/Write/Web*) that
+    // routes through permission. Tells us whether the model is actually
+    // invoking a tool vs answering from memory — and whether a gated tool
+    // is being recognized as gated.
+    logger.info('tool.check', {
+      tool: toolName,
+      gated: !!(gating && gating.gatedTools.includes(toolName)),
+    });
     const result = checkToolUse(toolName, input, workspaces);
-    if (result.ok) return { behavior: 'allow' as const, updatedInput: input };
-    logger.warn('tool.denied', { tool: toolName, reason: result.reason });
-    return { behavior: 'deny' as const, message: result.reason };
+    if (!result.ok) {
+      logger.warn('tool.denied', { tool: toolName, reason: result.reason });
+      return { behavior: 'deny' as const, message: result.reason };
+    }
+    if (gating && gating.gatedTools.includes(toolName)) {
+      logger.info('approval.gate', { agent_id: gating.agentId, tool: toolName, conversation_id: conversationId });
+      const decision = await gating.store.request({
+        agentId: gating.agentId,
+        conversationId,
+        toolName,
+        args: input,
+      });
+      if (decision.state === 'rejected') {
+        const why = decision.reason?.trim()
+          ? `Operator rejected this ${toolName} call: ${decision.reason.trim()}`
+          : `Operator rejected this ${toolName} call.`;
+        return { behavior: 'deny' as const, message: why };
+      }
+      return { behavior: 'allow' as const, updatedInput: input };
+    }
+    return { behavior: 'allow' as const, updatedInput: input };
   };
 }
 
@@ -181,18 +295,29 @@ function buildCanUseToolCallback(
  * name or the SDK strips them from the model's toolbelt even when the server
  * is registered.
  */
-function buildMcpServers(opts: ClaudeDirectOpts): {
+function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null): {
   mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>>;
   allowedTools: string[];
 } {
   const mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>> = {};
   const allowedTools: string[] = [];
+  // Approval gate context for in-process MCP tools — enforced INSIDE the
+  // handler (the SDK can't bypass that, unlike canUseTool). Null when the
+  // agent gates nothing.
+  const gate: McpGateContext | null = opts.approval && opts.approval.gatedTools.length > 0
+    ? {
+        agentId: opts.approval.agentId,
+        conversationId,
+        gatedTools: opts.approval.gatedTools,
+        approvals: opts.approval.store,
+      }
+    : null;
   if (opts.memory) {
-    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store);
+    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store, gate);
     allowedTools.push(...MEMORY_TOOL_NAMES);
   }
   if (opts.comms) {
-    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps);
+    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps, gate);
     allowedTools.push(...COMMS_TOOL_NAMES);
   }
   if (opts.admin) {
@@ -202,6 +327,24 @@ function buildMcpServers(opts: ClaudeDirectOpts): {
   if (opts.monitor) {
     mcpServers[MONITOR_MCP_NAME] = buildAgentMonitorMcp(opts.monitor.callerAgentId, opts.monitor.deps);
     allowedTools.push(...MONITOR_TOOL_NAMES);
+  }
+  if (opts.email) {
+    mcpServers[EMAIL_MCP_NAME] = buildAgentEmailMcp({
+      agentId: opts.email.agentId,
+      secrets: opts.email.secrets,
+      approvals: opts.email.approvals,
+      conversationId,
+    });
+    allowedTools.push(...EMAIL_TOOL_NAMES);
+  }
+  if (opts.social) {
+    mcpServers[SOCIAL_MCP_NAME] = buildAgentSocialMcp({
+      agentId: opts.social.agentId,
+      secrets: opts.social.secrets,
+      approvals: opts.social.approvals,
+      conversationId,
+    });
+    allowedTools.push(...SOCIAL_TOOL_NAMES);
   }
   return { mcpServers, allowedTools };
 }

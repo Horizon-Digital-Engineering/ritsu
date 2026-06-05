@@ -4,6 +4,106 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.9.0] — 2026-06-05
+
+Extensions + the CRM: agents read/draft freely, every send/publish is held
+for operator approval, and credentials never touch the model. Built on the
+v0.8.0 approval gate. Also adds image paste in the chat panel so vision
+agents can see operator-pasted screenshots.
+
+### Added
+
+- **Plugin secret store** (`plugin_secrets` + `SecretStore`). Connector
+  credentials encrypted at rest (AES-256-GCM, AAD-bound to namespace+name).
+  `get()` is the only decrypt path and is reachable only from in-process
+  tool handlers — no agent-callable accessor. The admin API returns metadata
+  only, never values.
+- **Approval enforcement on the ritsu-agent runtime** — gating moved to the
+  layer we own. The claude-direct Max-session SDK runs its built-in tools
+  itself and never consults `canUseTool` (proven by event-stream tracing),
+  so gating lives in the MCP tool handlers (claude-direct) and the
+  tool-dispatch loop (ritsu-agent). The ritsu-agent gate is unconditional —
+  a plain `await`, no SDK/timeout to bypass it.
+- **CRM email extension** (`crm` capability) — `read_inbox` / `read_email`
+  (ungated) + `send_email` (always gated). IMAP+SMTP via
+  imapflow/nodemailer/mailparser, any provider.
+- **CRM social extension** (`social` capability) — X/Twitter
+  (`read_mentions` / `read_my_posts` ungated, `post_tweet` gated; OAuth 1.0a
+  via twitter-api-v2) and LinkedIn (`post_linkedin` gated, publish-only).
+- **Extensions admin tab** — configure each connector's credentials; per-agent
+  on/off via the capability checkboxes; the extension stays dormant until
+  configured. Table-driven so new connectors are a few rows.
+- **`update-ritsu --branch`** to deploy a PR branch to the box for testing.
+- **Image paste in agent chats** — operators paste/drag/pick images in the
+  chat panel and vision-capable agents see them (Anthropic image blocks on
+  claude-direct via the SDK's streamed-message form; OpenAI `image_url` parts
+  on ritsu-agent). Downscaled client-side to the model's resolution cap
+  (2576px for Opus 4.7/4.8, else 1568px); persisted in a `message_attachments`
+  sidecar for transcript re-render. `POST /ask` accepts the larger body and
+  zod caps it (≤4 images, ≤5MB each).
+
+### Security
+
+- Adversarial review (3 red-team passes + 1 verifier) before merge. Closed:
+  - **CRITICAL** — a `manage_agents` agent could grant itself/another the
+    `crm`/`social` capability and read the inbox ungated. `crm`/`social` are
+    now operator-only (`assertGrantableCapabilities` at all six agent-admin
+    write surfaces) + a self-modification guard.
+  - **HIGH** — SMTP/IMAP plaintext-auth fallback. `requireTLS` + TLSv1.2
+    floor (SMTP) and `doSTARTTLS` (IMAP); both abort rather than send the
+    password in the clear.
+  - **MEDIUM** — `send_email` header-injection + unbounded input. CRLF
+    rejected on header-bound fields; length bounds on subject/body.
+  - `scrubSecrets()` on model-facing connector error messages.
+
+## [0.8.0] — 2026-05-30
+
+Human-in-the-loop approvals — the first core capability of the plugin
+era (core slot 5; see operations/ritsu/approval-system.md). Plus a
+deploy-script change to test PR branches on the box.
+
+### Added
+
+- **Approval gate.** An agent definition can list tools in a new
+  `approval_tools` field (e.g. `["Bash","Write"]`). When the agent tries
+  to use a gated tool, its turn blocks on a pending approval until the
+  operator approves (the call proceeds) or rejects (the call is denied
+  and the operator's reason is fed back to the model). Honored by the
+  claude-direct dispatcher's `canUseTool`, after the workspace-permission
+  check. No timeout — agents have no deadline; staleness is surfaced in
+  the UI instead.
+- **Approvals admin tab** with a live pending-count badge (updates on
+  every tab via a global SSE subscription). Pending / Decided sub-tabs.
+  Pending cards: tool glyph, agent + age, expandable args, one-click
+  Approve, two-step Reject with an optional reason. Staleness ladder
+  tints the card border at 4h / 24h / 7d. Decided cards are ✓/✗ stamps.
+- **Inline approval cards** in the slide-in chat panel — a gated call the
+  open thread is waiting on appears right in the transcript; approve or
+  reject without leaving the chat.
+- **Agent form** gains a "require approval" multi-select writing
+  `approval_tools`. The MCP `create_agent` tool accepts it too.
+- New `tool_approvals` table; `approval-bus.ts` + `approval-store.ts`
+  (request/decide with an in-memory resolver map, `reconcileOnBoot()` to
+  close orphaned pendings from a prior process). Endpoints:
+  `GET /admin/api/approvals`, `/approvals/count`, `/approvals/stream`
+  (SSE), `POST /approvals/:id/decide`.
+- 9-case `approval-store.test.ts` (request→resolve, reject-reason
+  feedback, idempotent decide, ordering, per-conversation scope,
+  reconcile-orphans, bus events). 312 tests green.
+
+### Deploy
+
+- **`update-ritsu --branch <name>`** mirrors the install to
+  origin/&lt;branch&gt; (fetch + checkout -B + reset --hard) so a PR
+  branch can be deployed + tested on the host without merging to main.
+  `--force` discards local box edits; no flag = back to origin/main.
+
+### Known gaps
+
+- The ritsu-agent dispatcher does not honor `approval_tools` yet — only
+  claude-direct (the deployed path). In-process MCP tools (memory, comms,
+  admin, monitor) are intentionally never gated.
+
 ## [0.7.2] — 2026-05-30
 
 Empty-reply fix when the agent's final action is a tool call.

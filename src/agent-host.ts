@@ -7,6 +7,8 @@ import type { ModelDispatcher } from './model/dispatcher.js';
 import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
+import type { ApprovalStore } from './approval-store.js';
+import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import { logger } from './util/log.js';
 
@@ -34,6 +36,8 @@ export class AgentHost {
     private readonly defStore: AgentDefinitionStore,
     private readonly workspaces: WorkspaceStore,
     private readonly apiKeys: import('./auth/api-key-store.js').ApiKeyStore,
+    private readonly approvals: ApprovalStore,
+    private readonly secrets: SecretStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
         // ritsu-agent runtime overrides def.dispatcher when both provider +
@@ -64,6 +68,53 @@ export class AgentHost {
     const cwd = workspaces[0]?.path;
     const canManage = def.capabilities.includes('manage_agents');
     const canMonitor = def.capabilities.includes('monitor_agents');
+    const canCrm = def.capabilities.includes('crm');
+    const canSocial = def.capabilities.includes('social');
+    const isRitsuAgent = !!(def.provider && def.api_key_ref);
+
+    // SECURITY: an agent that reads untrusted content (email bodies, social
+    // mentions) must not have an UNGATED egress/persistence path, or a
+    // prompt-injected message could exfiltrate or self-persist with no
+    // operator approval. So for crm/social agents we auto-gate every egress +
+    // persistence tool: shell/web (exfil), Write/Edit (persist attacker
+    // content to a possibly-synced workspace), every memory mutation incl.
+    // forget (so injection can't silently tombstone the agent's own security
+    // memories), and ask_agent (so attacker text can't be laundered to a peer
+    // with an ungated egress path).
+    //
+    // The ritsu-agent (open-model) runtime is the REAL enforcement layer here:
+    // we own that loop, so these gates are unbypassable. claude-direct can't be
+    // a trust boundary — the Max-session SDK runs built-ins without consulting
+    // our hook — so for it we STRIP the ungateable built-ins rather than
+    // pretend to gate them. An operator who wants a hard gate uses ritsu-agent.
+    const readsUntrusted = canCrm || canSocial;
+    const UNGATEABLE_BUILTIN_EGRESS = ['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit'];
+    let effectiveTools = def.tools_allowlist;
+    const autoGated: string[] = [];
+    if (readsUntrusted) {
+      if (isRitsuAgent) {
+        // Our own loop gates these reliably — require approval, don't strip.
+        autoGated.push(
+          'memory_remember', 'memory_update_memory', 'memory_forget',
+          'agent_comms_ask_agent',
+          ...UNGATEABLE_BUILTIN_EGRESS,
+        );
+      } else {
+        // memory_forget + ask_agent gate via gateMcpTool inside their handlers
+        // (the path the SDK can't bypass); the built-in egress tools can't, so
+        // strip those.
+        autoGated.push(
+          'mcp__memory__remember', 'mcp__memory__update_memory', 'mcp__memory__forget',
+          'mcp__agent_comms__ask_agent',
+        );
+        const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
+        if (stripped.length) {
+          effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.includes(t));
+          logger.warn('agent.crm-egress-stripped', { id: def.id, stripped });
+        }
+      }
+    }
+    const gatedTools = [...new Set([...def.approval_tools, ...autoGated])];
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -94,8 +145,9 @@ export class AgentHost {
       cwd,
       // tools_allowlist on the definition IS the list of SDK tool names
       // exposed to claude-direct (e.g. ['Read', 'Bash']). Empty array =
-      // no tools (the safe default).
-      tools: def.tools_allowlist,
+      // no tools (the safe default). effectiveTools drops ungate-able egress
+      // for content-reading agents (see SECURITY note above).
+      tools: effectiveTools,
       // Full workspace list (with per-path permissions) is consumed by the
       // dispatcher's canUseTool hook for per-call permission enforcement.
       workspaces,
@@ -136,6 +188,38 @@ export class AgentHost {
           },
         },
       } : {}),
+      // Human-in-the-loop: tools this agent must get operator approval for.
+      // Only wired when the list is non-empty so unconfigured agents pay
+      // nothing. Re-read fresh on every addOrReplace, so editing
+      // approval_tools in the admin UI takes effect on the next reload.
+      ...(gatedTools.length > 0 ? {
+        approval: {
+          agentId: def.id,
+          store: this.approvals,
+          gatedTools,
+        },
+      } : {}),
+      // CRM email extension — only when the agent has the 'crm' capability.
+      // send_email always blocks on approval, so the gate store rides along
+      // independent of approval_tools. Credentials are resolved from the
+      // SecretStore inside the tool handlers, never exposed to the model.
+      ...(canCrm ? {
+        email: {
+          agentId: def.id,
+          secrets: this.secrets,
+          approvals: this.approvals,
+        },
+      } : {}),
+      // CRM social extension — X/Twitter tools when the agent has 'social'.
+      // post_tweet always blocks on approval. Creds resolved from the
+      // SecretStore inside the handlers, never exposed to the model.
+      ...(canSocial ? {
+        social: {
+          agentId: def.id,
+          secrets: this.secrets,
+          approvals: this.approvals,
+        },
+      } : {}),
       // Phase B: ritsu-agent runtime config. Only consumed when the
       // factory picks 'ritsu-agent' kind (def.provider + def.api_key_ref set).
       ...(def.provider && def.api_key_ref ? {
@@ -159,8 +243,9 @@ export class AgentHost {
       provider: def.provider ?? null,
       memory_backend: def.memory_backend,
       workspace: cwd ?? null,
-      tools_count: def.tools_allowlist.length,
+      tools_count: effectiveTools.length,
       capabilities: def.capabilities,
+      gated_tools: gatedTools,
     });
   }
 

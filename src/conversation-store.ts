@@ -3,6 +3,13 @@ import type { Db } from './db.js';
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
+/** An image (or future binary) attached to a user turn. `data` is raw base64
+ *  (no `data:` prefix). */
+export interface MessageAttachment {
+  media_type: string;
+  data: string;
+}
+
 export interface ConversationMessage {
   role: MessageRole;
   content: string;
@@ -10,6 +17,11 @@ export interface ConversationMessage {
    *  injections; for user turns it's 'admin-ui', a bearer token's name (or
    *  OAuth client_id), or the calling agent's id. */
   caller_label?: string | null;
+  /** Images attached to this turn (user turns only). Absent/empty for the
+   *  common text-only turn. Surfaced to the admin UI for rendering; the model
+   *  context path (AgentBase) re-attaches the current turn's images directly,
+   *  so these are NOT replayed into history. */
+  attachments?: MessageAttachment[];
 }
 
 /**
@@ -36,7 +48,13 @@ export type ConversationKind = 'human' | 'agent' | 'all';
 export interface ConversationStore {
   start(agent_id: string): number;
   end(conversation_id: number): void;
-  append(conversation_id: number, role: MessageRole, content: string, caller_label?: string | null): number;
+  append(
+    conversation_id: number,
+    role: MessageRole,
+    content: string,
+    caller_label?: string | null,
+    attachments?: MessageAttachment[],
+  ): number;
   recent(conversation_id: number, limit?: number): ConversationMessage[];
   /**
    * List conversations (newest first). Optional `agent_id` matches c.agent_id;
@@ -75,15 +93,30 @@ export class SqliteConversationStore implements ConversationStore {
       .run(conversation_id);
   }
 
-  append(conversation_id: number, role: MessageRole, content: string, caller_label?: string | null): number {
+  append(
+    conversation_id: number,
+    role: MessageRole,
+    content: string,
+    caller_label?: string | null,
+    attachments?: MessageAttachment[],
+  ): number {
     const r = this.db
       .prepare('INSERT INTO messages (conversation_id, role, content, caller_label) VALUES (?, ?, ?, ?)')
       .run(conversation_id, role, content, caller_label ?? null);
+    const messageId = Number(r.lastInsertRowid);
+    if (attachments && attachments.length > 0) {
+      const ins = this.db.prepare(
+        'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) VALUES (?, ?, ?, ?)',
+      );
+      for (const a of attachments) ins.run(messageId, conversation_id, a.media_type, a.data);
+    }
     // Look up agent_id once so SSE subscribers can scope by agent without
     // a second round-trip. Cheap (indexed lookup on the row we just touched).
     const row = this.db
       .prepare('SELECT agent_id FROM conversations WHERE id = ?')
       .get(conversation_id) as { agent_id: string } | undefined;
+    // The SSE 'message' event only signals "something changed" — clients
+    // re-fetch the transcript (which carries attachments) — so it stays lean.
     conversationBus.publish({
       kind: 'message',
       conversation_id,
@@ -93,7 +126,7 @@ export class SqliteConversationStore implements ConversationStore {
       caller_label: caller_label ?? null,
       ts: Math.floor(Date.now() / 1000),
     });
-    return Number(r.lastInsertRowid);
+    return messageId;
   }
 
   recent(conversation_id: number, limit = 50): ConversationMessage[] {
@@ -105,13 +138,39 @@ export class SqliteConversationStore implements ConversationStore {
     // order with the most recent turn at the end.
     const rows = this.db
       .prepare(
-        `SELECT role, content, caller_label FROM messages
+        `SELECT id, role, content, caller_label FROM messages
          WHERE conversation_id = ?
          ORDER BY id DESC
          LIMIT ?`,
       )
-      .all(conversation_id, limit) as ConversationMessage[];
-    return rows.reverse();
+      .all(conversation_id, limit) as Array<ConversationMessage & { id: number }>;
+    rows.reverse();
+    // Attach images in one extra query, grouped by message id. Skipped
+    // entirely when the thread has none (the common case).
+    const ids = rows.map(r => r.id);
+    if (ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(',');
+      const atts = this.db
+        .prepare(
+          `SELECT message_id, media_type, data FROM message_attachments
+           WHERE message_id IN (${placeholders})
+           ORDER BY id ASC`,
+        )
+        .all(...ids) as Array<{ message_id: number; media_type: string; data: string }>;
+      if (atts.length > 0) {
+        const byMessage = new Map<number, MessageAttachment[]>();
+        for (const a of atts) {
+          const list = byMessage.get(a.message_id) ?? [];
+          list.push({ media_type: a.media_type, data: a.data });
+          byMessage.set(a.message_id, list);
+        }
+        for (const r of rows) {
+          const list = byMessage.get(r.id);
+          if (list) r.attachments = list;
+        }
+      }
+    }
+    return rows.map(({ id: _id, ...rest }) => rest);
   }
 
   findOrStartInterAgentThread(caller_agent_id: string, target_agent_id: string): number {

@@ -1,7 +1,9 @@
 node_modules/
 dist/
-data/*.db
-data/*.db-*
+# Runtime data — DB, WAL/SHM, .admin-token, .master-key, etc. Ignore the
+# whole dir; keep only the placeholder so the path exists on a fresh clone.
+data/*
+!data/.gitkeep
 .env
 *.log
 .litellm-venv/

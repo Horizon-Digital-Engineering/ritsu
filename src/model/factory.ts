@@ -11,6 +11,7 @@ import type { ApiKeyStore } from '../auth/api-key-store.js';
 import type { AgentCommsDeps } from '../tools/mcp-internal/agent-comms.js';
 import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
 import type { AgentMonitorDeps } from '../tools/mcp-internal/agent-monitor.js';
+import type { ApprovalStore } from '../approval-store.js';
 
 /**
  * Per-agent dispatcher options. claude-direct consumes the SDK opts;
@@ -43,6 +44,16 @@ export interface DispatcherOpts {
    * the agent's `capabilities` include 'monitor_agents'.
    */
   monitor?: { callerAgentId: string; deps: AgentMonitorDeps };
+  /**
+   * Human-in-the-loop approval gate. gatedTools is the agent's approval_tools
+   * list; when non-empty, the dispatcher blocks on operator approval before
+   * each listed tool runs. Currently honored by the claude-direct dispatcher.
+   */
+  approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
+  /** CRM email tools — wired when the agent has the 'crm' capability. */
+  email?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
+  /** CRM social tools — wired when the agent has the 'social' capability. */
+  social?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
   /**
    * Ritsu-agent runtime config (Phase B). When present + kind is
    * 'ritsu-agent', the dispatcher uses its own tool-calling loop against
@@ -86,6 +97,9 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.comms      !== undefined) out.comms      = opts.comms;
   if (opts.admin      !== undefined) out.admin      = opts.admin;
   if (opts.monitor    !== undefined) out.monitor    = opts.monitor;
+  if (opts.approval   !== undefined) out.approval   = opts.approval;
+  if (opts.email      !== undefined) out.email      = opts.email;
+  if (opts.social     !== undefined) out.social     = opts.social;
   return out;
 }
 
@@ -102,5 +116,8 @@ function ritsuAgentOptsFrom(opts: DispatcherOpts, defaultModel: string) {
     defaultModel,
     providerOptions: opts.ritsuAgent.providerOptions,
     toolDeps: opts.ritsuAgent.toolDeps,
+    // Same approval gate the claude-direct path gets — but here it's the
+    // reliable enforcement point (our own loop, no SDK to bypass it).
+    ...(opts.approval ? { approval: opts.approval } : {}),
   };
 }

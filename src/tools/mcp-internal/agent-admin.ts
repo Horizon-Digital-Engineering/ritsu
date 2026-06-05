@@ -25,6 +25,7 @@ import {
   AgentDefinitionPatchSchema,
   DispatcherKindSchema,
   MemoryBackendSchema,
+  assertGrantableCapabilities,
 } from '../../admin/schema.js';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import { logger } from '../../util/log.js';
@@ -76,6 +77,9 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
         },
         async (args) => {
           const validated = AgentDefinitionSchema.parse(args);
+          // Defense-in-depth: the inline enum already blocks crm/social, but
+          // assert again so the rule holds if that schema ever loosens.
+          assertGrantableCapabilities(validated.capabilities);
           const existing = await deps.defStore.read(validated.id);
           if (existing) {
             return { content: [{ type: 'text', text: `error: agent ${validated.id} already exists; use update_agent` }] };
@@ -107,9 +111,14 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
           }).describe('Partial definition; only the fields you want to change.'),
         },
         async ({ agent_id, patch }) => {
+          // Self-modification via agent-admin is operator-only.
+          if (agent_id === callerAgentId) {
+            return { content: [{ type: 'text', text: 'error: an agent cannot modify itself via agent-admin (operator-only)' }] };
+          }
           const current = await deps.defStore.read(agent_id);
           if (!current) return { content: [{ type: 'text', text: `error: agent ${agent_id} not found` }] };
           const validPatch = AgentDefinitionPatchSchema.parse(patch);
+          assertGrantableCapabilities(validPatch.capabilities);
           const merged = AgentDefinitionSchema.parse({ ...current, ...validPatch, id: current.id });
           const saved = await deps.defStore.upsert(merged);
           deps.host.addOrReplace(saved);

@@ -7,6 +7,8 @@ import { SqliteMemoryStore } from './memory-store.js';
 import { SqliteConversationStore } from './conversation-store.js';
 import { SqliteAgentDefinitionStore, seedIfEmpty } from './agent-definition-store.js';
 import { WorkspaceStore } from './workspace-store.js';
+import { ApprovalStore } from './approval-store.js';
+import { SecretStore } from './auth/secret-store.js';
 import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
 import { OAuthStore } from './auth/oauth-store.js';
@@ -36,11 +38,25 @@ async function main(): Promise<void> {
   const apiKeys = new ApiKeyStore(db);
   const oauth = new OAuthStore(db);
   const workspaces = new WorkspaceStore(db);
+  const approvals = new ApprovalStore(db);
+  // Close out any approvals left pending by a prior process — their agent
+  // turns died with that process and can never resume.
+  approvals.reconcileOnBoot();
+  // Periodic sweep: reap pending approvals whose turn was abandoned mid-await
+  // (SDK tool-timeout, dropped socket) so the resolver map + the rows don't
+  // grow unbounded between restarts. 24h matches "agents can hang a while".
+  const APPROVAL_TTL_S = Number(process.env.RITSU_APPROVAL_TTL_S ?? 86400) || 86400;
+  const approvalSweep = setInterval(() => {
+    try { approvals.sweepStale(APPROVAL_TTL_S); }
+    catch (err) { logger.warn('approval.sweep-error', { err: (err as Error).message }); }
+  }, 3_600_000); // hourly
+  approvalSweep.unref();
+  const secrets = new SecretStore(db);
 
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
 
-  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys);
+  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets);
   await host.loadAll();
 
   // Comm channels (Telegram + future Discord/Slack). Each enabled row in
@@ -72,6 +88,8 @@ async function main(): Promise<void> {
     workspaces,
     memory,
     conversations,
+    approvals,
+    secrets,
     channels: channelStore,
     channelRegistry: channels,
     oauth,
@@ -110,6 +128,16 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // Survive a stray rejection. A long-lived multi-agent server must not die
+  // because one floating promise (a channel poll, a connector call) rejected
+  // without a local catch — log it and keep serving.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('unhandledRejection', { reason: reason instanceof Error ? reason.message : String(reason) });
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error('uncaughtException', { err: err.message });
+  });
 }
 
 try {

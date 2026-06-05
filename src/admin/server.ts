@@ -12,6 +12,11 @@ import { API_KEY_PROVIDERS } from '../auth/api-key-store.js';
 import type { WorkspaceStore, Permission } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
+import type { ApprovalStore } from '../approval-store.js';
+import type { SecretStore } from '../auth/secret-store.js';
+import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
+import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
+import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
@@ -21,6 +26,7 @@ import { AgentDefinitionSchema, AgentDefinitionPatchSchema } from './schema.js';
 import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
 import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
+import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
@@ -46,6 +52,8 @@ export interface AdminDeps {
   workspaces: WorkspaceStore;
   memory: MemoryStore;
   conversations: ConversationStore;
+  approvals: ApprovalStore;
+  secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
   oauth: OAuthStore;
@@ -83,10 +91,25 @@ const LogLevelBody = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
 });
 
-const AskBody = z.object({
-  message: z.string().trim().min(1, 'message required'),
-  conversation_id: z.number().int().optional(),
+// Attachments are operator-pasted images. Hard caps here are the server-side
+// backstop to the client's downscaling: ≤4 images/turn, each ≤~5MB binary
+// (~6.8M base64 chars), matching the Anthropic per-image API limit. Charset is
+// validated so a non-base64 blob can't slip through to a provider.
+const AttachmentBody = z.object({
+  media_type: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  data: z.string().min(1).max(6_800_000).regex(/^[A-Za-z0-9+/]+={0,2}$/, 'data must be base64'),
 });
+
+const AskBody = z.object({
+  // Empty is allowed only when an image rides along (an image-only "look at
+  // this" turn); the refine below enforces "text OR image".
+  message: z.string().trim().default(''),
+  conversation_id: z.number().int().optional(),
+  attachments: z.array(AttachmentBody).max(4).optional(),
+}).refine(
+  b => b.message.length > 0 || (b.attachments?.length ?? 0) > 0,
+  { message: 'message or an image is required' },
+);
 
 const MemoryCreateBody = z.object({
   agent_id: z.string().trim().min(1, 'agent_id required'),
@@ -135,6 +158,19 @@ const ChannelPatchBody = z.object({
 
 const BindChatBody = z.object({
   chat_id: z.number().int(),
+});
+
+const ApprovalDecideBody = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  // Operator's optional note. On reject it's fed back to the model as the
+  // tool-denial reason so it can adapt; on approve it's just an audit note.
+  reason: z.string().trim().max(2000).optional(),
+});
+
+const SecretSetBody = z.object({
+  namespace: z.string().trim().min(1).max(64),
+  name:      z.string().trim().min(1).max(64),
+  value:     z.string().min(1).max(8192),
 });
 
 /** Test-pane body. Mirrors the agent-edit form's draft state — never
@@ -321,7 +357,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, memory, conversations } = deps;
+  const { defStore, host, tokens, workspaces, memory, conversations, approvals, secrets } = deps;
   const app = express();
   app.disable('x-powered-by');
 
@@ -377,8 +413,19 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   // 256kb is plenty for admin payloads (agent system prompts can be long but
-  // not megabyte-long). Caps stop a misbehaving client from blowing up RAM.
-  app.use(express.json({ limit: '256kb' }));
+  // not megabyte-long). The one exception is POST /ask, which can carry
+  // operator-pasted images (base64); it gets a cap matching what AskBody
+  // already enforces (≤4 images × ~6.8MB base64 ≈ 27MB) so the zod validator —
+  // not the body parser — is the gate that rejects oversize attachments (with
+  // a clean JSON error instead of a raw 413). Both caps stop a misbehaving
+  // client from blowing up RAM.
+  const jsonDefault = express.json({ limit: '256kb' });
+  const jsonAsk = express.json({ limit: '32mb' });
+  app.use((req, res, next) =>
+    req.method === 'POST' && req.path.endsWith('/ask')
+      ? jsonAsk(req, res, next)
+      : jsonDefault(req, res, next),
+  );
 
   // ---- per-IP rate limit on /admin/api/* --------------------------------
   // Tiny in-memory token-bucket. Defends against credential-stuffing on the
@@ -521,11 +568,13 @@ export function createAdminApp(deps: AdminDeps) {
 
   // ---- admin action audit ------------------------------------------------
   // Runs after the auth middleware (so we have the token id) and only for
-  // mutating verbs on /admin/api/* (GETs are read-only — noisy without value).
-  // Writes a row to admin_audit on response finish.
+  // mutating verbs. Mounted on BOTH /admin/api AND /admin/agents — the
+  // agent-lifecycle routes (create/delete/update/reload/ask, workspace
+  // create/delete) live under /admin/agents and are the highest-impact admin
+  // actions, so they must be in the audit trail too. Writes on response finish.
   type DbHandle = { prepare(s: string): { run(...a: unknown[]): unknown; all(...a: unknown[]): unknown[] } };
   const auditDb = (deps.host as unknown as { db: DbHandle }).db;
-  app.use('/admin/api', (req, res, next) => {
+  const auditMiddleware = (req: Request, res: Response, next: () => void): void => {
     const method = req.method.toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') { next(); return; }
     const t0 = Date.now();
@@ -539,18 +588,22 @@ export function createAdminApp(deps: AdminDeps) {
       const bodyText = req.body ? JSON.stringify(req.body) : '';
       if (bodyText) bodySha256 = createHash('sha256').update(bodyText).digest('hex');
     } catch { /* swallow — audit must never break the request */ }
+    // originalUrl gives the full path; req.path is relative to the mount.
+    const auditedPath = req.originalUrl.split('?')[0];
     res.on('finish', () => {
       try {
         auditDb.prepare(
           `INSERT INTO admin_audit (token_id, ip, method, path, status, body_sha256, duration_ms)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(tokenId, ip, method, req.path, res.statusCode, bodySha256, Date.now() - t0);
+        ).run(tokenId, ip, method, auditedPath, res.statusCode, bodySha256, Date.now() - t0);
       } catch (err) {
         logger.warn('admin.audit.write-failed', { err: (err as Error).message });
       }
     });
     next();
-  });
+  };
+  app.use('/admin/api', auditMiddleware);
+  app.use('/admin/agents', auditMiddleware);
 
   // List recent admin actions. Read-only.
   app.get('/admin/api/audit', (req: Request, res: Response) => {
@@ -697,6 +750,114 @@ export function createAdminApp(deps: AdminDeps) {
     });
   });
 
+  // ---- approvals (human-in-the-loop) -------------------------------------
+  // A gated tool call blocks the agent's turn on a pending row here; the
+  // operator approves/rejects from the Approvals tab or an inline card in
+  // the chat panel. Both surfaces share these endpoints + the SSE feed.
+
+  // ?state=pending (default) | decided | all. Pending is sorted oldest-first
+  // (work queue); decided is newest-first (recent history).
+  app.get('/admin/api/approvals', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 200), 1000);
+    const state = typeof req.query.state === 'string' ? req.query.state : 'pending';
+    const convo = req.query.conversation_id !== undefined ? Number(req.query.conversation_id) : undefined;
+    if (convo !== undefined) {
+      if (!Number.isInteger(convo)) { res.status(400).json({ error: 'conversation_id must be integer' }); return; }
+      res.json({ approvals: approvals.listPendingForConversation(convo) });
+      return;
+    }
+    if (state === 'decided') { res.json({ approvals: approvals.listDecided(limit) }); return; }
+    if (state === 'all') {
+      res.json({ approvals: [...approvals.listPending(limit), ...approvals.listDecided(limit)] });
+      return;
+    }
+    res.json({ approvals: approvals.listPending(limit) });
+  });
+
+  // Lightweight count for the nav badge. Cheap COUNT(*); polled as a fallback
+  // when SSE isn't connected.
+  app.get('/admin/api/approvals/count', (_req: Request, res: Response) => {
+    res.json({ pending: approvals.pendingCount() });
+  });
+
+  app.get('/admin/api/approvals/stream', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const onEvent = (ev: ApprovalEvent): void => {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    };
+    approvalBus.on('event', onEvent);
+    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
+
+    req.on('close', () => {
+      clearInterval(ping);
+      approvalBus.off('event', onEvent);
+    });
+  });
+
+  app.post('/admin/api/approvals/:id/decide', (req: Request, res: Response) => {
+    const id = Number(param(req.params.id));
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'id must be integer' }); return; }
+    const body = parseBody(req, res, ApprovalDecideBody);
+    if (!body) return;
+    const decided = approvals.decide(id, body.decision, body.reason ?? null, 'admin-ui');
+    if (!decided) {
+      // Either unknown id or already decided (double-click / race). 409 so the
+      // UI can refetch + show the now-final state rather than treat as success.
+      res.status(409).json({ error: 'approval not found or already decided' });
+      return;
+    }
+    res.json({ approval: decided });
+  });
+
+  // ---- secrets (extension credentials) -----------------------------------
+  // Operator-only. Values are encrypted at rest and NEVER returned by the API
+  // — list shows metadata + which fields are set, set/delete mutate. The
+  // email extension reads these in-process; the model never sees them.
+
+  app.get('/admin/api/secrets', (_req: Request, res: Response) => {
+    // Group metadata by namespace + advertise the expected keys per known
+    // connector so the UI can render a form that shows what's set vs missing.
+    const all = secrets.list();
+    const setKeys = new Set(all.map(s => `${s.namespace}:${s.name}`));
+    res.json({
+      secrets: all,
+      connectors: [
+        {
+          namespace: EMAIL_NS,
+          label: 'Email (IMAP + SMTP)',
+          keys: EMAIL_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${EMAIL_NS}:${k}`) })),
+        },
+        {
+          namespace: TWITTER_NS,
+          label: 'X / Twitter (OAuth 1.0a)',
+          keys: TWITTER_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${TWITTER_NS}:${k}`) })),
+        },
+        {
+          namespace: LINKEDIN_NS,
+          label: 'LinkedIn (OAuth 2.0, publish-only)',
+          keys: LINKEDIN_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${LINKEDIN_NS}:${k}`) })),
+        },
+      ],
+    });
+  });
+
+  app.post('/admin/api/secrets', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SecretSetBody);
+    if (!body) return;
+    secrets.set(body.namespace, body.name, body.value);
+    res.json({ ok: true, namespace: body.namespace, name: body.name });
+  });
+
+  app.delete('/admin/api/secrets/:namespace/:name', (req: Request, res: Response) => {
+    const removed = secrets.delete(param(req.params.namespace), param(req.params.name));
+    res.status(removed ? 204 : 404).end();
+  });
+
   // ---- agents ------------------------------------------------------------
 
   app.get('/admin/agents/types', (_req: Request, res: Response) => {
@@ -829,7 +990,7 @@ export function createAdminApp(deps: AdminDeps) {
     }
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
-    const { message, conversation_id } = ask;
+    const { message, conversation_id, attachments } = ask;
     // Resolve the conversation up-front so the typing-dot SSE events
     // carry the same id as the message events that follow. If the
     // caller didn't supply one, this is the canonical human thread the
@@ -847,7 +1008,7 @@ export function createAdminApp(deps: AdminDeps) {
       // need to differentiate which device/token. The UI hides the byline
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
-      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui' });
+      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments });
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

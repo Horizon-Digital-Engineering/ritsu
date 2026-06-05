@@ -6,6 +6,8 @@ import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
 import { WorkspaceStore } from '../workspace-store.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
+import { ApprovalStore } from '../approval-store.js';
+import { SecretStore } from '../auth/secret-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
 
@@ -25,6 +27,7 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     api_key_ref: null,
     provider_options: {},
     capabilities: [],
+    approval_tools: [],
     enabled: true,
     ...overrides,
   };
@@ -64,7 +67,9 @@ describe('AgentHost', () => {
     // ApiKeyStore is a real instance — empty until a test exercises a
     // ritsu-agent. claude-direct paths don't touch it.
     const apiKeys = new ApiKeyStore(db);
-    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, stub.factory);
+    const approvals = new ApprovalStore(db);
+    const secrets = new SecretStore(db);
+    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, secrets, stub.factory);
   });
 
   it('loadAll wires every enabled definition', async () => {
@@ -117,5 +122,38 @@ describe('AgentHost', () => {
     const sent = stub.chats[0].req.messages;
     assert.equal(sent.some(m => m.role === 'user' && m.content === 'hi'), true);
     assert.equal(sent.some(m => m.role === 'system' && m.content === def.system_prompt), true);
+  });
+
+  it('onMessage threads pasted images into the current user turn as content blocks', async () => {
+    const def = await defStore.upsert(sampleDef());
+    host.addOrReplace(def);
+
+    await host.get(def.id).onMessage({
+      message: 'what is this?',
+      attachments: [{ media_type: 'image/png', data: 'QUJD' }],
+    });
+
+    const sent = stub.chats[0].req.messages;
+    const lastUser = sent[sent.length - 1];
+    assert.equal(lastUser.role, 'user');
+    assert.ok(Array.isArray(lastUser.content), 'image turn carries block content');
+    const blocks = lastUser.content as Array<{ type: string; text?: string; media_type?: string; data?: string }>;
+    assert.deepEqual(blocks[0], { type: 'text', text: 'what is this?' });
+    assert.deepEqual(blocks[1], { type: 'image', media_type: 'image/png', data: 'QUJD' });
+  });
+
+  it('an image-only turn (no text) gets a placeholder prompt so the block is not empty', async () => {
+    const def = await defStore.upsert(sampleDef());
+    host.addOrReplace(def);
+
+    await host.get(def.id).onMessage({
+      message: '',
+      attachments: [{ media_type: 'image/jpeg', data: 'WFla' }],
+    });
+
+    const sent = stub.chats[0].req.messages;
+    const blocks = sent[sent.length - 1].content as Array<{ type: string; text?: string }>;
+    assert.equal(blocks[0].type, 'text');
+    assert.ok((blocks[0].text ?? '').length > 0, 'empty image-only turn gets a non-empty text block');
   });
 });
