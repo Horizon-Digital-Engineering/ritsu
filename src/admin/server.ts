@@ -413,8 +413,19 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   // 256kb is plenty for admin payloads (agent system prompts can be long but
-  // not megabyte-long). Caps stop a misbehaving client from blowing up RAM.
-  app.use(express.json({ limit: '256kb' }));
+  // not megabyte-long). The one exception is POST /ask, which can carry
+  // operator-pasted images (base64); it gets a cap matching what AskBody
+  // already enforces (≤4 images × ~6.8MB base64 ≈ 27MB) so the zod validator —
+  // not the body parser — is the gate that rejects oversize attachments (with
+  // a clean JSON error instead of a raw 413). Both caps stop a misbehaving
+  // client from blowing up RAM.
+  const jsonDefault = express.json({ limit: '256kb' });
+  const jsonAsk = express.json({ limit: '32mb' });
+  app.use((req, res, next) =>
+    req.method === 'POST' && req.path.endsWith('/ask')
+      ? jsonAsk(req, res, next)
+      : jsonDefault(req, res, next),
+  );
 
   // ---- per-IP rate limit on /admin/api/* --------------------------------
   // Tiny in-memory token-bucket. Defends against credential-stuffing on the
