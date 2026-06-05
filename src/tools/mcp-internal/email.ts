@@ -99,7 +99,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
           // inject extra headers (Bcc:, etc.); `to` must contain an @ and no
           // line breaks (allows "Name <a@b.com>"). Bounds cap the DB row +
           // the approval-card payload.
-          to: z.string().min(3).max(320).regex(/^[^\r\n]*@[^\r\n]*$/, 'must be an email address with no line breaks').describe('recipient address'),
+          to: z.string().min(3).max(320).regex(/^[^\r\n@]*@[^\r\n]*$/, 'must be an email address with no line breaks').describe('recipient address'),
           subject: z.string().min(1).max(998).regex(/^[^\r\n]*$/, 'subject must not contain line breaks').describe('subject line'),
           body: z.string().min(1).max(100_000).describe('plain-text body of the email'),
           in_reply_to: z.string().max(998).regex(/^[^\r\n]*$/, 'no line breaks').optional().describe('optional Message-ID this replies to (threads it)'),

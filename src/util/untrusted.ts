@@ -29,7 +29,7 @@ export function fenceUntrusted(source: string, content: string): string {
     s
       .replace(/<<<\s*UNTRUSTED/gi, '[marker redacted]')                       // opening shape
       .replace(/UNTRUSTED[\s0-9a-f]{0,40}>>>/gi, '[marker redacted]')          // closing shape (bounded run)
-      .replace(/-{3,}\s*(?:BEGIN|END)\s+UNTRUSTED[^\n]{0,40}/gi, '[marker redacted]'); // legacy dash markers
+      .replace(/-{3,64}\s{0,8}(?:BEGIN|END)\s{1,8}UNTRUSTED[^\n]{0,40}/gi, '[marker redacted]'); // legacy dash markers (all quantifiers bounded → linear)
   const safeSource = defang(source).replace(/[\r\n]+/g, ' ').slice(0, 200);
   const safeContent = defang(content);
   return (
