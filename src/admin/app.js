@@ -1113,8 +1113,16 @@ function removePendingBubble() {
 
 // ---- image attachments (chat panel) ----------------------------------
 const ATTACH_MAX = 4;
-const ATTACH_MAX_EDGE = 1568;        // Anthropic's recommended long-edge cap
+// Long-edge downscale cap, resolved per-agent from the panel's model. 1568px is
+// the resolution ceiling for Sonnet 4.6 / Opus 4.6 & older (larger buys no
+// fidelity — the API downsamples anyway); Opus 4.7/4.8 do high-res vision up to
+// 2576px, so agents on those models get the sharper cap.
+const ATTACH_MAX_EDGE_DEFAULT = 1568;
+const ATTACH_MAX_EDGE_HIRES = 2576;
 const ATTACH_MAX_B64 = 6_800_000;    // ~5MB binary; server enforces the same
+function attachMaxEdge() {
+  return /opus-4-[78]/.test(panelModel || '') ? ATTACH_MAX_EDGE_HIRES : ATTACH_MAX_EDGE_DEFAULT;
+}
 const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 // Best-effort vision-capability guess. Unknown models default to "yes" so we
 // don't nag; the warning only fires for models we're fairly sure are text-only.
@@ -1145,7 +1153,7 @@ async function processImageFile(file) {
     return { media_type: 'image/gif', data, url: `data:image/gif;base64,${data}` };
   }
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, ATTACH_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(1, attachMaxEdge() / Math.max(bitmap.width, bitmap.height));
   const w = Math.max(1, Math.round(bitmap.width * scale));
   const h = Math.max(1, Math.round(bitmap.height * scale));
   const canvas = document.createElement('canvas');
