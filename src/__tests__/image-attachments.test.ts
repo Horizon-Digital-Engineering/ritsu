@@ -59,22 +59,30 @@ describe('claude-direct formatMessages (Anthropic image translation)', () => {
   });
 });
 
+interface CapturedBody { messages: Array<{ role: string; content: unknown }>; }
+type OpenAIPart = { type: string; text?: string; image_url?: { url: string } };
+
+/** A fetch stub that captures the request body into `sink` and replies with a
+ *  minimal Chat Completions response. Typed (no `any`) so the lint gate stays
+ *  green. */
+function captureFetch(sink: { body: CapturedBody | null }, replyContent: string): typeof fetch {
+  return async (_url: string | URL | Request, init?: RequestInit) => {
+    sink.body = JSON.parse(init?.body as string) as CapturedBody;
+    return {
+      ok: true,
+      json: async () => ({
+        id: 'x', model: 'gpt-4o',
+        choices: [{ index: 0, message: { role: 'assistant', content: replyContent }, finish_reason: 'stop' }],
+      }),
+    } as unknown as Response;
+  };
+}
+
 describe('ritsu-agent OpenAI client (image_url translation)', () => {
   it('renders an image block as a data-URL image_url part', async () => {
-    let captured: any = null;
-    const fakeFetch = (async (_url: string, init: any) => {
-      captured = JSON.parse(init.body);
-      return {
-        ok: true,
-        json: async () => ({
-          id: 'x', model: 'gpt-4o',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'a cat' }, finish_reason: 'stop' }],
-        }),
-      };
-    }) as unknown as typeof fetch;
-
+    const sink: { body: CapturedBody | null } = { body: null };
     const client = new OpenAICompatClient({
-      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: fakeFetch,
+      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'a cat'),
     });
     const messages: RaMessage[] = [
       { role: 'user', content: [
@@ -84,29 +92,19 @@ describe('ritsu-agent OpenAI client (image_url translation)', () => {
     ];
     await client.chat(messages, []);
 
-    const parts = captured.messages[0].content;
+    const parts = sink.body?.messages[0].content as OpenAIPart[];
     assert.ok(Array.isArray(parts));
     assert.deepEqual(parts[0], { type: 'text', text: 'what is this?' });
     assert.equal(parts[1].type, 'image_url');
-    assert.equal(parts[1].image_url.url, `data:image/jpeg;base64,${PNG_1PX}`);
+    assert.equal(parts[1].image_url?.url, `data:image/jpeg;base64,${PNG_1PX}`);
   });
 
   it('leaves a plain-string message as a string (no needless multi-part)', async () => {
-    let captured: any = null;
-    const fakeFetch = (async (_url: string, init: any) => {
-      captured = JSON.parse(init.body);
-      return {
-        ok: true,
-        json: async () => ({
-          id: 'x', model: 'gpt-4o',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-        }),
-      };
-    }) as unknown as typeof fetch;
+    const sink: { body: CapturedBody | null } = { body: null };
     const client = new OpenAICompatClient({
-      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: fakeFetch,
+      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'hi'),
     });
     await client.chat([{ role: 'user', content: 'hi' }], []);
-    assert.equal(captured.messages[0].content, 'hi');
+    assert.equal(sink.body?.messages[0].content, 'hi');
   });
 });

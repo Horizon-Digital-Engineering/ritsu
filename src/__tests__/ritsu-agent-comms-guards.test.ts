@@ -32,9 +32,9 @@ function fakeDeps(overrides: Partial<RaToolDeps> = {}): RaToolDeps {
           return { reply: 'ok', conversation_id: req.conversation_id ?? 0 };
         },
       }),
-    } as RaToolDeps['host'],
+    },
     ...overrides,
-  } as RaToolDeps;
+  };
   // expose the captured call for assertions
   (deps as unknown as { _asked: () => typeof asked })._asked = () => asked;
   return deps;
@@ -43,7 +43,7 @@ function fakeDeps(overrides: Partial<RaToolDeps> = {}): RaToolDeps {
 function askAgent(deps: RaToolDeps) {
   const tool = buildAgentCommsTools(deps).find(t => t.name === 'agent_comms_ask_agent');
   assert.ok(tool, 'ask_agent tool present');
-  return tool!;
+  return tool;
 }
 
 describe('ritsu-agent native ask_agent guards', () => {
@@ -64,7 +64,7 @@ describe('ritsu-agent native ask_agent guards', () => {
     const deps = fakeDeps();
     // Even if the model smuggles a conversation_id, the handler ignores it and
     // routes to the server-derived canonical thread.
-    await askAgent(deps).handler({ agent_id: 'peer', message: 'hi', conversation_id: 99999 } as Record<string, unknown>);
+    await askAgent(deps).handler({ agent_id: 'peer', message: 'hi', conversation_id: 99999 });
     const asked = (deps as unknown as { _asked: () => { conversation_id?: number } | null })._asked();
     assert.equal(asked?.conversation_id, 4242);
   });
