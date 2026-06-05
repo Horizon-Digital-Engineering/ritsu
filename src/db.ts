@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 
+-- Image (and future binary) attachments for a message. Kept out of the
+-- messages.content column so the transcript text stays cheap to scan; the data
+-- column is base64. conversation_id is denormalized so a single query can fetch
+-- every attachment for a thread in one shot.
+CREATE TABLE IF NOT EXISTS message_attachments (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id      INTEGER NOT NULL REFERENCES messages(id),
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+  media_type      TEXT NOT NULL,
+  data            TEXT NOT NULL,
+  created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation ON message_attachments(conversation_id);
+
 -- MCP bearer tokens (Flashback-style). Full token shown to user once at mint;
 -- stored as sha256 hash. prefix is the first 8 chars after the rt_ prefix,
 -- kept for display so the operator can identify tokens by sight.

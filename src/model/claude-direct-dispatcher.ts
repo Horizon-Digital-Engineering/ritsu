@@ -1,5 +1,6 @@
-import { query, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
+import { query, type CanUseTool, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
+import { messageText, messageImages } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ApprovalStore } from '../approval-store.js';
@@ -97,7 +98,12 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const model = req.model ?? this.defaultModel;
-    const { systemMsg, userPrompt } = formatMessages(req.messages);
+    const { systemMsg, userPrompt, images } = formatMessages(req.messages);
+    // The SDK's `prompt` is either a plain string (text-only, the common case)
+    // or an async stream of user messages. We only need the stream form when a
+    // turn carries images: yield ONE user message whose content is the
+    // flattened text + the image blocks, then close (= a single turn).
+    const prompt = images.length === 0 ? userPrompt : imagePrompt(userPrompt, images);
 
     logger.debug('claude-direct.chat', {
       model,
@@ -119,7 +125,7 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     // that case — it's the model's most recent words to the user.
     let lastAssistantText = '';
     for await (const event of query({
-      prompt: userPrompt,
+      prompt,
       options: {
         systemPrompt: systemMsg,
         model,
@@ -170,19 +176,47 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
 // ---- helpers ---------------------------------------------------------------
 
+/** An Anthropic base64 image content block, the shape the SDK forwards to the
+ *  Messages API verbatim. */
+interface AnthropicImageBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+
 /** Split a flat message list into the SDK's expected (systemPrompt, userPrompt)
  *  shape. System turns concatenate into systemPrompt; everything else becomes
- *  a single user-prompt blob with role-prefixed lines. */
-function formatMessages(messages: readonly ChatMessage[]): { systemMsg: string; userPrompt: string } {
+ *  a single user-prompt blob with role-prefixed lines. Any image blocks (only
+ *  user turns carry them) are pulled out and returned in Anthropic wire shape
+ *  to ride along on the streamed user message. */
+export function formatMessages(
+  messages: readonly ChatMessage[],
+): { systemMsg: string; userPrompt: string; images: AnthropicImageBlock[] } {
   const systemMsg = messages
     .filter(m => m.role === 'system')
-    .map(m => m.content)
+    .map(m => messageText(m.content))
     .join('\n\n');
   const userPrompt = messages
     .filter(m => m.role !== 'system')
-    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .map(m => `${m.role.toUpperCase()}: ${messageText(m.content)}`)
     .join('\n\n');
-  return { systemMsg, userPrompt };
+  const images: AnthropicImageBlock[] = messages
+    .flatMap(m => messageImages(m.content))
+    .map(b => ({ type: 'image', source: { type: 'base64', media_type: b.media_type, data: b.data } }));
+  return { systemMsg, userPrompt, images };
+}
+
+/** A single-turn streamed prompt: one user message carrying the flattened
+ *  conversation text plus the image blocks. Closing the generator after one
+ *  yield tells the SDK this is a complete turn. */
+async function* imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncGenerator<SDKUserMessage> {
+  yield {
+    type: 'user',
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text }, ...images],
+    },
+  } as SDKUserMessage;
 }
 
 /** Names of in-process MCP tools that are pre-authorized by their per-agent

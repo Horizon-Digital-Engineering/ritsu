@@ -1,6 +1,7 @@
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
-import type { ChatMessage, ChatRequest, DispatcherKind, ModelDispatcher } from '../model/dispatcher.js';
+import type { ChatMessage, ChatRequest, ChatContentBlock, DispatcherKind, ModelDispatcher } from '../model/dispatcher.js';
+import type { MessageAttachment } from '../conversation-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import { logger } from '../util/log.js';
 
@@ -10,6 +11,10 @@ export interface AgentRequest {
   /** Who's making this call. Stored alongside the user turn in the transcript
    *  so the admin UI can show "from: admin-ui / Mac mini CLI / agent-three". */
   caller_label?: string | null;
+  /** Images attached to THIS turn (operator paste/drop in the chat panel).
+   *  Sent to the model with this turn and persisted for transcript rendering;
+   *  not replayed into later turns' context (see onMessage). */
+  attachments?: MessageAttachment[];
 }
 
 export interface AgentResponse {
@@ -151,12 +156,30 @@ export abstract class AgentBase {
     // this branch.
     const conversationId = req.conversation_id ?? this.deps.conversations.findOrStartHumanThread(this.id);
 
-    this.deps.conversations.append(conversationId, 'user', req.message, req.caller_label ?? null);
+    const attachments = req.attachments && req.attachments.length > 0 ? req.attachments : undefined;
+    this.deps.conversations.append(conversationId, 'user', req.message, req.caller_label ?? null, attachments);
 
-    const history = this.deps.conversations
+    const history: ChatMessage[] = this.deps.conversations
       .recent(conversationId, 50)
       .map(m => ({ role: m.role, content: m.content }));
     const contextMsgs = await this.loadContext();
+
+    // Attach THIS turn's images to the current user message (the last one in
+    // history — we just appended it). Images ride along only on the turn they
+    // were sent; we don't replay them into later turns to keep token cost flat.
+    if (attachments) {
+      const last = history[history.length - 1];
+      if (last && last.role === 'user') {
+        // Providers reject empty text blocks, so an image-only turn gets a
+        // minimal prompt the model can act on.
+        const text = (typeof last.content === 'string' ? last.content : '') || 'Please look at the attached image(s).';
+        const blocks: ChatContentBlock[] = [
+          { type: 'text', text },
+          ...attachments.map((a): ChatContentBlock => ({ type: 'image', media_type: a.media_type, data: a.data })),
+        ];
+        last.content = blocks;
+      }
+    }
 
     const messages: ChatMessage[] = [
       { role: 'system', content: this.systemPrompt },

@@ -812,6 +812,12 @@ let tilesPollHandle = null;
 let panelAgentId = null;
 let panelConvoId = null;
 let panelAsking = false;
+// Images the operator has pasted/dropped/picked but not yet sent. Each entry
+// is { media_type, data (base64, no prefix), url (data: URL for preview) }.
+// Cleared after a successful send and on panel close / convo switch.
+let panelAttachments = [];
+// The panel agent's model id, kept so the attach-hint can flag a text-only model.
+let panelModel = null;
 // AbortController for the conversation-events stream — fires for EVERY
 // conversation event in the server, we filter by panelConvoId on
 // receipt. Opened on openAgentPanel, aborted on closeAgentPanel.
@@ -943,6 +949,9 @@ async function openAgentPanel(agentId) {
     panelConvoId = summaries.conversations[0]?.id ?? null;
     $('ap-dot').className = `tile-dot ${def.enabled ? 'idle' : 'off'}`;
     $('ap-sub').textContent = `${def.model} · ${def.dispatcher}${def.enabled ? '' : ' · disabled'}`;
+    panelModel = def.model;
+    clearAttachments();
+    updateAttachHint();
     await loadPanelTranscript();
     // Set the trigger label to the conversation's title (first user msg);
     // computed inside loadPanelTranscript so it has the messages in hand.
@@ -1039,7 +1048,11 @@ function renderTranscript(messages) {
       const byline = showByline
         ? `<div class="transcript-byline">${esc(m.caller_label)}</div>`
         : '';
-      return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}</div>`;
+      const atts = (m.attachments && m.attachments.length)
+        ? `<div class="ap-msg-atts">${m.attachments.map(a =>
+            `<img class="ap-att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${a.data}" alt="attachment">`).join('')}</div>`
+        : '';
+      return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}${atts}</div>`;
     }).join('');
   }
   // If a turn is currently in flight (here or in another tab), keep the
@@ -1050,12 +1063,29 @@ function renderTranscript(messages) {
   t.scrollTop = t.scrollHeight;
 }
 
-function appendTranscript(role, content) {
+function appendTranscript(role, content, attachmentUrls) {
   const t = $('ap-transcript');
   if (t.querySelector('.ap-empty')) t.innerHTML = '';
   const div = document.createElement('div');
   div.className = `ap-msg ${role}`;
-  div.textContent = content;
+  if (content) {
+    const text = document.createElement('span');
+    text.textContent = content;
+    div.appendChild(text);
+  }
+  if (attachmentUrls && attachmentUrls.length) {
+    const atts = document.createElement('div');
+    atts.className = 'ap-msg-atts';
+    for (const url of attachmentUrls) {
+      const img = document.createElement('img');
+      img.className = 'ap-att-img';
+      img.src = url;
+      img.alt = 'attachment';
+      img.dataset.action = 'zoom-attachment';
+      atts.appendChild(img);
+    }
+    div.appendChild(atts);
+  }
   t.appendChild(div);
   t.scrollTop = t.scrollHeight;
   return div;
@@ -1081,22 +1111,161 @@ function removePendingBubble() {
   if (pending) pending.remove();
 }
 
+// ---- image attachments (chat panel) ----------------------------------
+const ATTACH_MAX = 4;
+const ATTACH_MAX_EDGE = 1568;        // Anthropic's recommended long-edge cap
+const ATTACH_MAX_B64 = 6_800_000;    // ~5MB binary; server enforces the same
+const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+// Best-effort vision-capability guess. Unknown models default to "yes" so we
+// don't nag; the warning only fires for models we're fairly sure are text-only.
+const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error('failed to read image'));
+    r.onload = () => {
+      const s = String(r.result);
+      const comma = s.indexOf(',');
+      resolve(comma >= 0 ? s.slice(comma + 1) : s);
+    };
+    r.readAsDataURL(blob);
+  });
+}
+
+// Decode → downscale to ATTACH_MAX_EDGE → re-encode, bounding the payload.
+// GIFs pass through untouched so animation survives (canvas flattens them).
+async function processImageFile(file) {
+  if (!ATTACH_TYPES.includes(file.type)) {
+    throw new Error('unsupported image type (png/jpeg/webp/gif only)');
+  }
+  if (file.type === 'image/gif') {
+    const data = await blobToBase64(file);
+    if (data.length > ATTACH_MAX_B64) throw new Error('gif too large (max ~5MB)');
+    return { media_type: 'image/gif', data, url: `data:image/gif;base64,${data}` };
+  }
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, ATTACH_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+  if (bitmap.close) bitmap.close();
+  // PNG stays PNG (screenshots, transparency); everything else → JPEG.
+  const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const toBlob = (q) => new Promise(res => canvas.toBlob(res, outType, q));
+  let blob = await toBlob(0.85);
+  let data = blob ? await blobToBase64(blob) : '';
+  if (data.length > ATTACH_MAX_B64 && outType === 'image/jpeg') {
+    blob = await toBlob(0.6);                    // one retry at lower quality
+    data = blob ? await blobToBase64(blob) : data;
+  }
+  if (!data) throw new Error('failed to encode image');
+  if (data.length > ATTACH_MAX_B64) throw new Error('image too large after downscale (max ~5MB)');
+  return { media_type: outType, data, url: `data:${outType};base64,${data}` };
+}
+
+async function addAttachmentFiles(files) {
+  const list = Array.from(files || []).filter(f => f && f.type && f.type.startsWith('image/'));
+  for (const f of list) {
+    if (panelAttachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
+    try {
+      panelAttachments.push(await processImageFile(f));
+    } catch (e) {
+      toast(e.message || 'could not attach image', 'err');
+    }
+  }
+  renderAttachTray();
+}
+
+function renderAttachTray() {
+  const tray = $('ap-attach-tray');
+  if (!tray) return;
+  if (!panelAttachments.length) {
+    tray.classList.remove('show');
+    tray.setAttribute('aria-hidden', 'true');
+    tray.innerHTML = '';
+    return;
+  }
+  tray.classList.add('show');
+  tray.setAttribute('aria-hidden', 'false');
+  tray.innerHTML = panelAttachments.map((a, i) =>
+    `<div class="ap-attach-chip"><img src="${a.url}" alt="attachment ${i + 1}"><button type="button" data-action="remove-attachment" data-idx="${i}" title="remove">✕</button></div>`,
+  ).join('');
+}
+
+function removeAttachment(idx) {
+  panelAttachments.splice(idx, 1);
+  renderAttachTray();
+}
+
+function clearAttachments() {
+  panelAttachments = [];
+  renderAttachTray();
+}
+
+function modelSupportsVision(model) {
+  return !model || VISION_MODEL_RE.test(model); // unknown → assume capable
+}
+
+// Tap a transcript image to view it full-size in an overlay.
+function openImageLightbox(src) {
+  if (!src) return;
+  closeImageLightbox();
+  const back = document.createElement('div');
+  back.className = 'ap-lightbox';
+  back.dataset.action = 'close-lightbox';
+  const img = document.createElement('img');
+  img.src = src;
+  back.appendChild(img);
+  document.body.appendChild(back);
+}
+
+function closeImageLightbox() {
+  document.querySelectorAll('.ap-lightbox').forEach(n => n.remove());
+}
+
+// Warn (don't block) when the panel's agent runs a model we think is text-only.
+function updateAttachHint() {
+  const hint = $('ap-attach-hint');
+  if (!hint) return;
+  const model = panelModel || ((agentCache || []).find(a => a.id === panelAgentId) || {}).model;
+  if (model && !modelSupportsVision(model)) {
+    hint.textContent = `heads up: ${model} may not be able to see images`;
+    hint.classList.add('show');
+    hint.setAttribute('aria-hidden', 'false');
+  } else {
+    hint.classList.remove('show');
+    hint.setAttribute('aria-hidden', 'true');
+    hint.textContent = '';
+  }
+}
+
 async function sendPanelAsk() {
   if (panelAsking || !panelAgentId) return;
   const msg = $('ap-input').value.trim();
-  if (!msg) return;
+  // Allow an image-only turn (e.g. "look at this") — require text OR an image.
+  if (!msg && !panelAttachments.length) return;
   panelAsking = true;
   $('ap-send').disabled = true;
   $('ap-input').value = '';
+  // Snapshot + clear the pending images so the tray empties immediately and a
+  // double-tap can't resend them. Restored into the tray if the send fails.
+  const sentAttachments = panelAttachments;
+  clearAttachments();
   // Optimistic user bubble so the operator sees their input land
   // instantly; the SSE 'message' event will reload the transcript
   // shortly with the canonical row. Typing dots are driven by the
   // server's ask-start SSE event (also covers other-tab + agent-to-
   // agent + telegram-bot callers).
-  const optimisticBubble = appendTranscript('user', msg);
+  const optimisticBubble = appendTranscript('user', msg, sentAttachments.map(a => a.url));
   try {
     const body = { message: msg };
     if (panelConvoId) body.conversation_id = panelConvoId;
+    if (sentAttachments.length) {
+      body.attachments = sentAttachments.map(a => ({ media_type: a.media_type, data: a.data }));
+    }
     const resp = await api('POST', `/admin/agents/${panelAgentId}/ask`, body);
     panelConvoId = resp.conversation_id;
     // If the trigger label was "(empty)" before the first turn, refresh
@@ -1114,6 +1283,8 @@ async function sendPanelAsk() {
     optimisticBubble.remove();
     removePendingBubble();
     $('ap-input').value = msg;
+    // Put the images back in the tray so the operator can just hit Send again.
+    if (sentAttachments.length) { panelAttachments = sentAttachments; renderAttachTray(); }
     const friendly = /load failed|networkerror|failed to fetch/i.test(e.message)
       ? 'connection dropped — tap Send to retry'
       : `error: ${e.message}`;
@@ -1136,6 +1307,9 @@ function closeAgentPanel() {
   panel.setAttribute('aria-hidden', 'true');
   closeConvoPicker();
   setPanelReadOnly(false);
+  clearAttachments();
+  closeImageLightbox();
+  panelModel = null;
   panelAgentId = null;
   panelConvoId = null;
   closePanelSse();
@@ -1262,6 +1436,7 @@ function setPanelReadOnly(on) {
 async function switchPanelConvo(cid, readOnly) {
   if (!panelAgentId) return;
   closeConvoPicker();
+  clearAttachments();
   panelConvoId = cid;
   $('ap-meta').textContent = 'loading…';
   setPanelReadOnly(readOnly);
@@ -2582,6 +2757,10 @@ const ACTIONS = {
   'ap-close':               () => closeAgentPanel(),
   'toggle-convo-picker':    (el, e) => toggleConvoPicker(e),
   'switch-panel-convo':     (el) => switchPanelConvo(Number(el.dataset.cid), el.dataset.readonly === '1'),
+  'pick-attachment':        () => $('ap-file')?.click(),
+  'remove-attachment':      (el) => removeAttachment(Number(el.dataset.idx)),
+  'zoom-attachment':        (el) => openImageLightbox(el.getAttribute('src')),
+  'close-lightbox':         () => closeImageLightbox(),
 
   // conversations tab
   'open-conversation':      (el) => openConversation(Number(el.dataset.id), el.dataset.agent, el.dataset.title || ''),
@@ -2709,6 +2888,34 @@ $('ap-input')?.addEventListener('keydown', (e) => {
 // Textarea autosize → form height changes → re-pad the transcript.
 $('ap-input')?.addEventListener('input', syncTranscriptPadding);
 
+// Image attachments: paste into the box, drop onto the panel, or pick a file.
+$('ap-input')?.addEventListener('paste', (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const files = items.filter(it => it.kind === 'file' && it.type.startsWith('image/'))
+    .map(it => it.getAsFile()).filter(Boolean);
+  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+});
+$('ap-file')?.addEventListener('change', (e) => {
+  addAttachmentFiles(e.target.files);
+  e.target.value = ''; // allow re-picking the same file
+});
+const apPanelEl = $('agent-panel');
+apPanelEl?.addEventListener('dragover', (e) => {
+  if (panelReadOnly) return;
+  if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+    e.preventDefault();
+    apPanelEl.classList.add('ap-drag');
+  }
+});
+apPanelEl?.addEventListener('dragleave', (e) => {
+  if (e.target === apPanelEl) apPanelEl.classList.remove('ap-drag');
+});
+apPanelEl?.addEventListener('drop', (e) => {
+  apPanelEl.classList.remove('ap-drag');
+  const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+});
+
 // Live filters on the Logs tab.
 $('log-filter-msg').addEventListener('input', renderLogs);
 $('log-filter-agent').addEventListener('input', renderLogs);
@@ -2721,6 +2928,7 @@ $('audit-filter-method')?.addEventListener('change', renderAudit);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (document.querySelector('.ap-lightbox')) { closeImageLightbox(); return; }
     if ($('ap-convo-picker').classList.contains('open')) { closeConvoPicker(); return; }
     if ($('agent-panel').classList.contains('open')) closeAgentPanel();
   }

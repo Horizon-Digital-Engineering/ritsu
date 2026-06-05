@@ -91,10 +91,25 @@ const LogLevelBody = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
 });
 
-const AskBody = z.object({
-  message: z.string().trim().min(1, 'message required'),
-  conversation_id: z.number().int().optional(),
+// Attachments are operator-pasted images. Hard caps here are the server-side
+// backstop to the client's downscaling: ≤4 images/turn, each ≤~5MB binary
+// (~6.8M base64 chars), matching the Anthropic per-image API limit. Charset is
+// validated so a non-base64 blob can't slip through to a provider.
+const AttachmentBody = z.object({
+  media_type: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  data: z.string().min(1).max(6_800_000).regex(/^[A-Za-z0-9+/]+={0,2}$/, 'data must be base64'),
 });
+
+const AskBody = z.object({
+  // Empty is allowed only when an image rides along (an image-only "look at
+  // this" turn); the refine below enforces "text OR image".
+  message: z.string().trim().default(''),
+  conversation_id: z.number().int().optional(),
+  attachments: z.array(AttachmentBody).max(4).optional(),
+}).refine(
+  b => b.message.length > 0 || (b.attachments?.length ?? 0) > 0,
+  { message: 'message or an image is required' },
+);
 
 const MemoryCreateBody = z.object({
   agent_id: z.string().trim().min(1, 'agent_id required'),
@@ -964,7 +979,7 @@ export function createAdminApp(deps: AdminDeps) {
     }
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
-    const { message, conversation_id } = ask;
+    const { message, conversation_id, attachments } = ask;
     // Resolve the conversation up-front so the typing-dot SSE events
     // carry the same id as the message events that follow. If the
     // caller didn't supply one, this is the canonical human thread the
@@ -982,7 +997,7 @@ export function createAdminApp(deps: AdminDeps) {
       // need to differentiate which device/token. The UI hides the byline
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
-      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui' });
+      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments });
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

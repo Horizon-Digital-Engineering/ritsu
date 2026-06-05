@@ -78,7 +78,8 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
     const toolsByName = new Map(tools.map(t => [t.name, t]));
 
     // Seed messages from the ChatRequest. Roles map 1:1 to OpenAI's shape;
-    // we don't have an SDK-style internal protocol to translate.
+    // we don't have an SDK-style internal protocol to translate. Content
+    // (string or image blocks) is structurally identical, passed through.
     const messages: RaMessage[] = req.messages.map(m => ({ role: m.role, content: m.content }));
 
     let lastContent = '';

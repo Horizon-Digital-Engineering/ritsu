@@ -8,12 +8,20 @@
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
+/** A part of a multi-part message. Mirrors the dispatcher-level ChatContentBlock;
+ *  the OpenAI client renders images as `image_url` data-URLs. */
+export type RaContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; media_type: string; data: string };
+
 /** One conversation turn passed to the provider. `tool_call_id` is set on
  *  role:'tool' messages so the provider can match results back to the
  *  call that produced them. */
 export interface RaMessage {
   role: Role;
-  content: string;
+  /** Plain string for the common case; a block array when a user turn carries
+   *  images. */
+  content: string | RaContentBlock[];
   /** Set on role:'tool' rows. */
   tool_call_id?: string;
   /** Set on role:'assistant' rows that have tool calls to make. */

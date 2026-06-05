@@ -126,9 +126,21 @@ export class OpenAICompatClient {
 }
 
 function toOpenAIMessage(m: RaMessage): Record<string, unknown> {
-  const out: Record<string, unknown> = { role: m.role, content: m.content };
+  const out: Record<string, unknown> = { role: m.role, content: toOpenAIContent(m.content) };
   if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
   if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls;
   if (m.name) out.name = m.name;
   return out;
+}
+
+/** Render content for the OpenAI Chat Completions API. Plain strings pass
+ *  through; block arrays become the multi-part `[{type:'text'},{type:'image_url'}]`
+ *  shape, with images as base64 `data:` URLs (the OpenAI-compat vision format). */
+function toOpenAIContent(content: RaMessage['content']): unknown {
+  if (typeof content === 'string') return content;
+  return content.map(b =>
+    b.type === 'text'
+      ? { type: 'text', text: b.text }
+      : { type: 'image_url', image_url: { url: `data:${b.media_type};base64,${b.data}` } },
+  );
 }

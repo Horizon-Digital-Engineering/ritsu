@@ -289,6 +289,49 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .ap-msg.system { background: transparent; color: var(--muted); font-style: italic; font-size: 0.78rem; }
 .ap-msg.pending { opacity: 0.85; padding: 10px 14px; }
 
+/* Image attachments rendered inside a transcript bubble. */
+.ap-msg-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ap-msg-atts:first-child { margin-top: 0; }
+.ap-att-img {
+  max-width: 220px; max-height: 220px; border-radius: 6px;
+  border: 1px solid var(--line); cursor: zoom-in; display: block;
+}
+
+/* Pending-attachment tray above the textarea: thumbnails the operator has
+   queued but not yet sent, each removable. */
+.ap-attach-tray { display: none; flex-wrap: wrap; gap: 6px; }
+.ap-attach-tray.show { display: flex; }
+.ap-attach-chip { position: relative; width: 56px; height: 56px; }
+.ap-attach-chip img {
+  width: 56px; height: 56px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.ap-attach-chip button {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
+  border-radius: 50%; border: none; cursor: pointer; line-height: 1;
+  background: var(--danger, #b23); color: #fff; font-size: 12px; padding: 0;
+}
+.ap-attach-hint {
+  display: none; font-size: 0.74rem; color: var(--warn, #d59a2b);
+}
+.ap-attach-hint.show { display: block; }
+.ap-attach-btn {
+  background: transparent; border: 1px solid var(--line); color: var(--fg);
+  border-radius: 4px; cursor: pointer; padding: 4px 8px; font-size: 0.95rem;
+}
+.ap-attach-btn:hover { background: var(--panel-2); }
+/* Drop target highlight while dragging an image over the panel. */
+.agent-panel.ap-drag .ap-transcript { outline: 2px dashed var(--accent, #4a90d9); outline-offset: -6px; }
+
+/* Full-size image overlay (tap a transcript thumbnail). */
+.ap-lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; cursor: zoom-out;
+}
+.ap-lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+
 /* Three bouncing dots in the pending assistant bubble — replaces the
    static '…' so the user can tell the request is alive rather than
    silently hung. Animation runs forever; the bubble is removed when
