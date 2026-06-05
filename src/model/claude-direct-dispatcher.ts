@@ -208,7 +208,7 @@ export function formatMessages(
 /** A single-turn streamed prompt: one user message carrying the flattened
  *  conversation text plus the image blocks. Closing the generator after one
  *  yield tells the SDK this is a complete turn. */
-async function* imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncGenerator<SDKUserMessage> {
+export async function* imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncGenerator<SDKUserMessage> {
   yield {
     type: 'user',
     parent_tool_use_id: null,

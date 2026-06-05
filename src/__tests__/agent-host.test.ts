@@ -123,4 +123,37 @@ describe('AgentHost', () => {
     assert.equal(sent.some(m => m.role === 'user' && m.content === 'hi'), true);
     assert.equal(sent.some(m => m.role === 'system' && m.content === def.system_prompt), true);
   });
+
+  it('onMessage threads pasted images into the current user turn as content blocks', async () => {
+    const def = await defStore.upsert(sampleDef());
+    host.addOrReplace(def);
+
+    await host.get(def.id).onMessage({
+      message: 'what is this?',
+      attachments: [{ media_type: 'image/png', data: 'QUJD' }],
+    });
+
+    const sent = stub.chats[0].req.messages;
+    const lastUser = sent[sent.length - 1];
+    assert.equal(lastUser.role, 'user');
+    assert.ok(Array.isArray(lastUser.content), 'image turn carries block content');
+    const blocks = lastUser.content as Array<{ type: string; text?: string; media_type?: string; data?: string }>;
+    assert.deepEqual(blocks[0], { type: 'text', text: 'what is this?' });
+    assert.deepEqual(blocks[1], { type: 'image', media_type: 'image/png', data: 'QUJD' });
+  });
+
+  it('an image-only turn (no text) gets a placeholder prompt so the block is not empty', async () => {
+    const def = await defStore.upsert(sampleDef());
+    host.addOrReplace(def);
+
+    await host.get(def.id).onMessage({
+      message: '',
+      attachments: [{ media_type: 'image/jpeg', data: 'WFla' }],
+    });
+
+    const sent = stub.chats[0].req.messages;
+    const blocks = sent[sent.length - 1].content as Array<{ type: string; text?: string }>;
+    assert.equal(blocks[0].type, 'text');
+    assert.ok((blocks[0].text ?? '').length > 0, 'empty image-only turn gets a non-empty text block');
+  });
 });

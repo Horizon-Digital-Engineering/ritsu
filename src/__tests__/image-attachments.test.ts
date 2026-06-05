@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { messageText, messageImages, type ChatMessage } from '../model/dispatcher.js';
-import { formatMessages } from '../model/claude-direct-dispatcher.js';
+import { formatMessages, imagePrompt } from '../model/claude-direct-dispatcher.js';
 import { OpenAICompatClient } from '../model/ritsu-agent/openai-client.js';
 import type { RaMessage } from '../model/ritsu-agent/types.js';
 
@@ -56,6 +56,21 @@ describe('claude-direct formatMessages (Anthropic image translation)', () => {
     const { images, userPrompt } = formatMessages([{ role: 'user', content: 'hi' }]);
     assert.equal(images.length, 0);
     assert.equal(userPrompt, 'USER: hi');
+  });
+
+  it('imagePrompt streams a single user message carrying the text + image blocks', async () => {
+    const gen = imagePrompt('describe', [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX } },
+    ]);
+    const first = await gen.next();
+    assert.equal(first.done, false);
+    assert.equal(first.value.type, 'user');
+    const content = first.value.message.content as Array<{ type: string; text?: string; source?: { data: string } }>;
+    assert.deepEqual(content[0], { type: 'text', text: 'describe' });
+    assert.equal(content[1].type, 'image');
+    assert.equal(content[1].source?.data, PNG_1PX);
+    // single-turn: the generator closes after one yield
+    assert.equal((await gen.next()).done, true);
   });
 });
 
