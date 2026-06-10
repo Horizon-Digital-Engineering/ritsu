@@ -1,7 +1,18 @@
 # Contributing to ritsu
 
 ritsu is a **public** repository. Everything you push — code, commit messages,
-docs — is public and permanent. Read the three sections below before you commit.
+docs — is public and permanent.
+
+## Status & contributions
+
+ritsu is built and shipped by Horizon Digital Engineering, and it moves fast:
+`main` changes frequently and the APIs are not stable yet. It's public so you can
+read it, run it, and fork it — **not** as an open call for contributions.
+Unsolicited PRs may sit unreviewed or be closed without merge, especially when
+they collide with in-flight work. Found a bug or want a change? **Open an issue
+first** so we can tell you whether it fits before you spend time on a PR.
+
+The conventions below are for us and anyone working from a fork.
 
 ## Commit messages
 
