@@ -33,6 +33,7 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
 import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
+import type { CommsDenialStore } from '../../comms-denial-store.js';
 
 export const COMMS_MCP_NAME = 'agent_comms';
 export const COMMS_TOOL_NAMES = [
@@ -100,6 +101,9 @@ export interface AgentCommsDeps {
   host: CommsHost;
   defStore: AgentDefinitionStore;
   conversations: ConversationStore;
+  /** Records blocked calls so the operator can see them. Best-effort; optional
+   *  so existing callers/tests don't have to wire it. */
+  denials?: CommsDenialStore;
 }
 
 /** Levenshtein edit distance — used to spot a typo'd agent id. */
@@ -171,6 +175,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const allowed = callerDef?.can_call ?? [];
           if (!allowed.includes(target)) {
             logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'not_in_allowlist' });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist', conversationId: gate?.conversationId ?? null });
             return {
               content: [{ type: 'text', text: buildDenialMessage(callerAgentId, target, allowed) }],
             };
@@ -184,6 +189,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const escalated = callerEscalatesTo(callerDef?.capabilities ?? [], targetDef?.capabilities ?? []);
           if (escalated.length > 0) {
             logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}`, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',
@@ -201,6 +207,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           if (ctx.chain.includes(target)) {
             const chain = [...ctx.chain, target].join(' → ');
             logger.warn('comms.cycle', { caller: callerAgentId, target, chain });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'cycle', detail: chain, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',
@@ -212,6 +219,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           if (ctx.depth >= MAX_CALL_DEPTH) {
             const chain = [...ctx.chain, target].join(' → ');
             logger.warn('comms.depth-exceeded', { caller: callerAgentId, target, chain });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'depth', detail: chain, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',
@@ -226,6 +234,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const inflight = inflightPerCaller.get(callerAgentId) ?? 0;
           if (inflight >= MAX_PER_CALLER_INFLIGHT) {
             logger.warn('comms.inflight-exceeded', { caller: callerAgentId, target, inflight });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'inflight', detail: `${inflight}/${MAX_PER_CALLER_INFLIGHT} in flight`, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',

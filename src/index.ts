@@ -8,6 +8,7 @@ import { SqliteConversationStore } from './conversation-store.js';
 import { SqliteAgentDefinitionStore, seedIfEmpty } from './agent-definition-store.js';
 import { WorkspaceStore } from './workspace-store.js';
 import { ApprovalStore } from './approval-store.js';
+import { CommsDenialStore } from './comms-denial-store.js';
 import { SecretStore } from './auth/secret-store.js';
 import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
@@ -52,11 +53,12 @@ async function main(): Promise<void> {
   }, 3_600_000); // hourly
   approvalSweep.unref();
   const secrets = new SecretStore(db);
+  const commsDenials = new CommsDenialStore(db);
 
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
 
-  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets);
+  const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
   await host.loadAll();
 
   // Comm channels (Telegram + future Discord/Slack). Each enabled row in
@@ -89,6 +91,7 @@ async function main(): Promise<void> {
     memory,
     conversations,
     approvals,
+    commsDenials,
     secrets,
     channels: channelStore,
     channelRegistry: channels,

@@ -7,6 +7,7 @@ import { WorkspaceStore } from '../workspace-store.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
 import { ApprovalStore } from '../approval-store.js';
+import { CommsDenialStore } from '../comms-denial-store.js';
 import { SecretStore } from '../auth/secret-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
@@ -69,7 +70,7 @@ describe('AgentHost', () => {
     const apiKeys = new ApiKeyStore(db);
     const approvals = new ApprovalStore(db);
     const secrets = new SecretStore(db);
-    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, secrets, stub.factory);
+    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, secrets, new CommsDenialStore(db), stub.factory);
   });
 
   it('loadAll wires every enabled definition', async () => {

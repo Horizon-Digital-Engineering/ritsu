@@ -232,6 +232,23 @@ CREATE TABLE IF NOT EXISTS tool_approvals (
 
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_pending ON tool_approvals(requested_at DESC) WHERE state = 'pending';
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_convo ON tool_approvals(conversation_id);
+
+-- Inter-agent call denials. ask_agent blocked by a guard (allowlist, capability
+-- escalation, cycle, depth, or in-flight cap) used to vanish into the log; this
+-- persists each one so a blocked delegation is visible to the operator. No FK on
+-- caller/target so a row survives agent deletion for audit. detail carries
+-- human-readable context (escalated caps, the call chain, counts).
+CREATE TABLE IF NOT EXISTS comms_denials (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  caller          TEXT NOT NULL,
+  target          TEXT NOT NULL,
+  reason          TEXT NOT NULL,   -- not_in_allowlist | escalation | cycle | depth | inflight
+  detail          TEXT,
+  conversation_id INTEGER,
+  created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_comms_denials_recent ON comms_denials(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_decided ON tool_approvals(decided_at DESC) WHERE state <> 'pending';
 
 -- Plugin secret store. Credentials for CRM/email/social and any other plugin

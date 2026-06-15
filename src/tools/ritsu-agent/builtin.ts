@@ -17,6 +17,7 @@
 import type { MemoryStore } from '../../memory-store.js';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
+import type { CommsDenialStore } from '../../comms-denial-store.js';
 import type { Workspace } from '../../workspace-store.js';
 import {
   AgentDefinitionSchema,
@@ -65,6 +66,8 @@ export interface RaToolDeps {
   capabilities?: string[];
   /** Live AgentHost reload entrypoint, needed by the admin tools. */
   adminHost?: RaAdminHost;
+  /** Records blocked inter-agent calls so the operator can see them. */
+  denials?: CommsDenialStore;
 }
 
 /** Memory: remember / list_memories / update_memory / forget.
@@ -166,7 +169,7 @@ export function buildMemoryTools(deps: RaToolDeps): RaTool[] {
  *  AsyncLocalStorage call-depth guard from agent-comms-mcp is shared so
  *  ritsu-agent → claude-direct loops are bounded too. */
 export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
-  const { agentId, defStore, conversations, host } = deps;
+  const { agentId, defStore, conversations, host, denials } = deps;
   return [
     {
       name: 'agent_comms_ask_agent',
@@ -192,6 +195,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         const allowed = def?.can_call ?? [];
         if (!allowed.includes(target)) {
           logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'not_in_allowlist' });
+          denials?.record({ caller: agentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist' });
           return buildDenialMessage(agentId, target, allowed);
         }
 
@@ -202,6 +206,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         const escalated = callerEscalatesTo(def?.capabilities ?? [], targetDef?.capabilities ?? []);
         if (escalated.length > 0) {
           logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
+          denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}` });
           return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
             `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
         }
@@ -212,11 +217,13 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         if (ctx.chain.includes(target)) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
+          denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain });
           return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
         }
         if (ctx.depth >= MAX_CALL_DEPTH) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
+          denials?.record({ caller: agentId, target, reason: 'depth', detail: chain });
           return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
         }
         const nextCtx = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };

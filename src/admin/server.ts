@@ -27,6 +27,7 @@ import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
 import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
 import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
+import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
@@ -53,6 +54,7 @@ export interface AdminDeps {
   memory: MemoryStore;
   conversations: ConversationStore;
   approvals: ApprovalStore;
+  commsDenials: CommsDenialStore;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -357,7 +359,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, memory, conversations, approvals, secrets } = deps;
+  const { defStore, host, tokens, workspaces, memory, conversations, approvals, commsDenials, secrets } = deps;
   const app = express();
   app.disable('x-powered-by');
 
@@ -778,6 +780,13 @@ export function createAdminApp(deps: AdminDeps) {
   // when SSE isn't connected.
   app.get('/admin/api/approvals/count', (_req: Request, res: Response) => {
     res.json({ pending: approvals.pendingCount() });
+  });
+
+  // Blocked inter-agent calls (ask_agent refused by a guard). Recent-first.
+  // Live updates ride the approvals SSE stream as {kind:'comms-denied'} events.
+  app.get('/admin/api/comms-denials', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    res.json({ denials: commsDenials.listRecent(limit) });
   });
 
   app.get('/admin/api/approvals/stream', (req: Request, res: Response) => {

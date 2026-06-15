@@ -8,6 +8,7 @@ import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ApprovalStore } from './approval-store.js';
+import type { CommsDenialStore } from './comms-denial-store.js';
 import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import { logger } from './util/log.js';
@@ -38,6 +39,7 @@ export class AgentHost {
     private readonly apiKeys: import('./auth/api-key-store.js').ApiKeyStore,
     private readonly approvals: ApprovalStore,
     private readonly secrets: SecretStore,
+    private readonly commsDenials: CommsDenialStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
         // ritsu-agent runtime overrides def.dispatcher when both provider +
@@ -124,6 +126,7 @@ export class AgentHost {
       memory,
       defStore: this.defStore,
       conversations: this.conversations,
+      denials: this.commsDenials,
       host: { get: (id: string) => this.get(id) },
       // Workspace + allowlist plumbing parity with claude-sdk: the same
       // tools_allowlist list ("Read", "Write", "Edit") that controls SDK
@@ -167,6 +170,7 @@ export class AgentHost {
           host: { get: (id: string) => this.get(id) },
           defStore: this.defStore,
           conversations: this.conversations,
+          denials: this.commsDenials,
         },
       },
       ...(canManage ? {
