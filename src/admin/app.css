@@ -847,3 +847,22 @@ body.panel-open { overflow: hidden; touch-action: none; }
   }
   #ch-list .row-actions button { width: 100%; padding: 10px; font-size: 0.85rem; }
 }
+
+/* Blocked inter-agent calls (Approvals → Blocked sub-tab). A denied call leaves
+   no transcript message, so this row is the only operator-visible record. */
+.denial-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: 6px; margin-bottom: 6px;
+  background: var(--panel-2, #1b2533); font-size: 0.85rem;
+  border-left: 3px solid var(--line, #2a3140);
+}
+.denial-row.denial-escalation { border-left-color: var(--danger, #b23); }
+.denial-x { color: var(--danger, #b23); font-weight: 700; }
+.denial-pair code { background: transparent; padding: 0; }
+.denial-reason {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+}
+.denial-escalation .denial-reason { color: var(--danger, #b23); border-color: var(--danger, #b23); }
+.denial-detail { color: var(--muted); font-size: 0.8rem; }
+.denial-ago { color: var(--muted); font-size: 0.78rem; margin-left: auto; }

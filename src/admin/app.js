@@ -2447,6 +2447,14 @@ async function loadApprovalsList() {
   const target = $('approvals-list');
   if (!target) return;
   try {
+    if (approvalsSubtab === 'blocked') {
+      const { denials } = await api('GET', '/admin/api/comms-denials?limit=200');
+      renderDenialsList(denials);
+      $('approvals-summary').textContent = denials.length
+        ? `${denials.length} blocked inter-agent call${denials.length === 1 ? '' : 's'} — refused by a guard, not a lying agent.`
+        : 'No blocked calls.';
+      return;
+    }
     const { approvals } = await api('GET', `/admin/api/approvals?state=${approvalsSubtab}&limit=200`);
     renderApprovalsList(approvals);
     if (approvalsSubtab === 'pending') {
@@ -2473,6 +2481,40 @@ function renderApprovalsList(list) {
   target.innerHTML = list.map(a => a.state === 'pending'
     ? approvalCardHtml(a)
     : approvalStampHtml(a)).join('');
+}
+
+/** Blocked inter-agent calls (ask_agent refused by a guard). Previously these
+ *  were invisible — a denied call writes no transcript message, only a log
+ *  line — so this is the surface that makes them visible. */
+function renderDenialsList(denials) {
+  const target = $('approvals-list');
+  if (!denials.length) {
+    target.innerHTML = '<div class="ap-empty">No blocked calls — no agent has been refused an inter-agent call.</div>';
+    return;
+  }
+  target.innerHTML = denials.map(denialRowHtml).join('');
+}
+
+function denialReasonLabel(r) {
+  return ({
+    not_in_allowlist: 'not in allowlist',
+    escalation: 'capability escalation',
+    cycle: 'call cycle',
+    depth: 'call depth',
+    inflight: 'too many in flight',
+  })[r] || r;
+}
+
+function denialRowHtml(d) {
+  const cls = d.reason === 'escalation' ? ' denial-escalation' : '';
+  const detail = d.detail ? `<span class="denial-detail">${esc(d.detail)}</span>` : '';
+  return `<div class="denial-row${cls}">`
+    + `<span class="denial-x">✗</span>`
+    + `<span class="denial-pair"><code>${esc(d.caller)}</code> → <code>${esc(d.target)}</code></span>`
+    + `<span class="denial-reason">${esc(denialReasonLabel(d.reason))}</span>`
+    + detail
+    + `<span class="denial-ago">${approvalAgo(d.created_at)}</span>`
+    + `</div>`;
 }
 
 /** Glyph for an approval, by tool name — quick visual recognition. */
