@@ -272,6 +272,18 @@
             </div>
           </div>
 
+          <label for="f-escalation-approvable">approvable escalation</label>
+          <div>
+            <label><input id="f-escalation-approvable" type="checkbox" /> route capability-escalation calls to approval</label>
+            <div class="form-hint">
+              When on, a capability-escalation <code>ask_agent</code> call (this agent reaching
+              one that holds a capability it lacks) goes to the Approvals tab instead of being
+              hard-denied. <strong>Ignored for crm/social agents</strong> — those always
+              hard-deny, since they read untrusted content. Leave off unless this is a trusted
+              internal agent.
+            </div>
+          </div>
+
           <label for="f-system-prompt">system prompt</label>
           <textarea id="f-system-prompt" name="system_prompt" required></textarea>
 

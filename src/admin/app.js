@@ -470,6 +470,7 @@ function loadAgentForm(a) {
   $('f-model').value = a.model;
   $('f-memory-backend').value = a.memory_backend;
   $('f-enabled').checked = !!a.enabled;
+  $('f-escalation-approvable').checked = !!a.escalation_approvable;
   $('f-system-prompt').value = a.system_prompt;
   $('f-provider').value = a.provider ?? '';
   renderApiKeyDropdown(a.api_key_ref ?? null);
@@ -539,6 +540,7 @@ async function submitAgent(method) {
     enabled: $('f-enabled').checked, system_prompt: $('f-system-prompt').value,
     tools_allowlist: readToolsAllowlist(),
     approval_tools: readApprovalTools(),
+    escalation_approvable: $('f-escalation-approvable').checked,
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
@@ -2628,8 +2630,25 @@ function approvalHighlightsHtml(a) {
  *  chat panel — handlers find their card via closest('.approval-card') so
  *  there are no duplicate-id collisions when the same approval shows in
  *  both places. */
+/** If this approval is a capability escalation (carries the _escalation marker
+ *  the comms guard adds to args), return the escalated capabilities; else null. */
+function approvalEscalationInfo(argsJson) {
+  try {
+    const args = JSON.parse(argsJson);
+    const caps = args && args._escalation && args._escalation.capabilities;
+    return Array.isArray(caps) ? caps : null;
+  } catch {
+    return null;
+  }
+}
+
 function approvalCardHtml(a, inline = false) {
-  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}" data-approval-id="${a.id}">
+  const escCaps = approvalEscalationInfo(a.args_json);
+  const escBanner = escCaps
+    ? `<div class="approval-escalation-banner">⚠ capability escalation — approving lets <code>${esc(a.agent_id)}</code> act through an agent holding <strong>${esc(escCaps.join(', '))}</strong> it doesn't have. Only approve if you mean to.</div>`
+    : '';
+  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}${escCaps ? ' escalation' : ''}" data-approval-id="${a.id}">
+    ${escBanner}
     <div class="approval-main">
       <span class="approval-icon">${approvalToolIcon(a.tool_name)}</span>
       <div class="approval-body">

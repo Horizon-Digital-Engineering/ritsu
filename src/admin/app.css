@@ -866,3 +866,13 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .denial-escalation .denial-reason { color: var(--danger, #b23); border-color: var(--danger, #b23); }
 .denial-detail { color: var(--muted); font-size: 0.8rem; }
 .denial-ago { color: var(--muted); font-size: 0.78rem; margin-left: auto; }
+
+/* Capability-escalation approval — louder than a normal tool approval, because
+   approving crosses a capability boundary. */
+.approval-card.escalation { border-left: 3px solid var(--danger, #b23); }
+.approval-escalation-banner {
+  background: rgba(178, 34, 51, 0.12); border: 1px solid var(--danger, #b23);
+  color: var(--danger, #b23); border-radius: 6px; padding: 6px 10px;
+  font-size: 0.8rem; margin-bottom: 8px; line-height: 1.4;
+}
+.approval-escalation-banner code, .approval-escalation-banner strong { color: inherit; }
