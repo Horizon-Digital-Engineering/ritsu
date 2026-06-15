@@ -74,7 +74,16 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
       fetchImpl: this.opts.fetchImpl,
     });
 
-    const tools: RaTool[] = this.opts.toolDeps ? buildBuiltinTools(this.opts.toolDeps) : [];
+    // Thread the approval store + this turn's conversation into the builtin
+    // tools so an approvable escalation can route to the operator (parity with
+    // the MCP path). Per-call because conversationId is per-turn.
+    const tools: RaTool[] = this.opts.toolDeps
+      ? buildBuiltinTools({
+          ...this.opts.toolDeps,
+          approvals: this.opts.approval?.store,
+          conversationId: req.conversation_id ?? null,
+        })
+      : [];
     const toolsByName = new Map(tools.map(t => [t.name, t]));
 
     // Seed messages from the ChatRequest. Roles map 1:1 to OpenAI's shape;

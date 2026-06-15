@@ -193,10 +193,12 @@ export class AgentHost {
         },
       } : {}),
       // Human-in-the-loop: tools this agent must get operator approval for.
-      // Only wired when the list is non-empty so unconfigured agents pay
-      // nothing. Re-read fresh on every addOrReplace, so editing
-      // approval_tools in the admin UI takes effect on the next reload.
-      ...(gatedTools.length > 0 ? {
+      // Wired when the gated list is non-empty OR the agent opts into
+      // approvable escalation (which needs the ApprovalStore on the comms path
+      // even with no other gated tools). Re-read fresh on every addOrReplace,
+      // so editing approval_tools / escalation_approvable in the admin UI takes
+      // effect on the next reload.
+      ...((gatedTools.length > 0 || def.escalation_approvable) ? {
         approval: {
           agentId: def.id,
           store: this.approvals,

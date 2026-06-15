@@ -400,6 +400,9 @@ export function createInMemoryDb(): Db {
 function migrate(db: Db): void {
   addColumnIfMissing(db, 'agent_definitions', 'previous_system_prompt', 'TEXT');
   addColumnIfMissing(db, 'agent_definitions', 'previous_saved_at', 'INTEGER');
+  // Opt-in: route capability-escalation ask_agent calls to the approval screen
+  // instead of hard-denying. Default 0 = hard-deny (the safe baseline).
+  addColumnIfMissing(db, 'agent_definitions', 'escalation_approvable', 'INTEGER NOT NULL DEFAULT 0');
   // Phase 7: bearer tokens carry a scope so admin and MCP tokens are
   // distinguishable. Existing rows are 'mcp' (the only kind that existed).
   addColumnIfMissing(db, 'mcp_tokens', 'scope', "TEXT NOT NULL DEFAULT 'mcp'");

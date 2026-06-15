@@ -376,6 +376,7 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         approval_tools: z.array(z.string()).default([])
           .describe('Tool names that require operator approval before each use (e.g. ["Bash","Write"]). Empty = no gating.'),
         enabled: z.boolean().default(true).describe('Whether the agent is callable.'),
+        escalation_approvable: z.boolean().default(false).describe('Route capability-escalation ask_agent calls to operator approval instead of hard-denying. Default false; ignored for crm/social agents.'),
       },
     },
     audited<z.infer<typeof AgentDefinitionSchema>>(

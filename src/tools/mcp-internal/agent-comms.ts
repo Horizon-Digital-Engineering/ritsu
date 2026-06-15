@@ -188,15 +188,41 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const targetDef = await deps.defStore.read(target);
           const escalated = callerEscalatesTo(callerDef?.capabilities ?? [], targetDef?.capabilities ?? []);
           if (escalated.length > 0) {
-            logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}`, conversationId: gate?.conversationId ?? null });
-            return {
-              content: [{
-                type: 'text',
-                text: `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${callerAgentId} does not. ` +
-                  `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`,
-              }],
-            };
+            // crm/social agents read untrusted content → injection-exposed.
+            // They ALWAYS hard-deny escalation, ignoring escalation_approvable:
+            // a prompt-injected agent must not be able to escalate even with an
+            // operator click. Otherwise, if the caller opted into approvable
+            // escalation and we have an approval gate, route to the operator.
+            const injectionExposed = (callerDef?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
+            if (!callerDef?.escalation_approvable || injectionExposed || gate === null) {
+              const note = injectionExposed && callerDef?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
+              logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
+              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, conversationId: gate?.conversationId ?? null });
+              return {
+                content: [{
+                  type: 'text',
+                  text: `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${callerAgentId} does not. ` +
+                    `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`,
+                }],
+              };
+            }
+            // Opt-in approvable escalation: block on operator approval. Approve →
+            // fall through and make the call; reject → deny with the reason.
+            logger.info('comms.escalation-approval', { caller: callerAgentId, target, escalated });
+            const decision = await gate.approvals.request({
+              agentId: callerAgentId,
+              conversationId: gate.conversationId,
+              toolName: COMMS_TOOL_NAMES[0],
+              args: { agent_id: target, message, _escalation: { capabilities: escalated } },
+            });
+            if (decision.state === 'rejected') {
+              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, conversationId: gate.conversationId });
+              const why = decision.reason?.trim()
+                ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
+                : `Operator rejected this escalated call to ${target}.`;
+              return { content: [{ type: 'text', text: why }] };
+            }
+            // approved → continue to the normal call path below.
           }
 
           const ctx = currentCallContext() ?? { depth: 0, chain: [callerAgentId] };

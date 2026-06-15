@@ -22,6 +22,7 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     capabilities: [],
     approval_tools: [],
     enabled: true,
+    escalation_approvable: false,
     ...overrides,
   };
 }
