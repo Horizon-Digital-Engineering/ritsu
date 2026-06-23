@@ -38,6 +38,7 @@ export interface CommsDenialSnapshot {
   target: string;
   reason: string;   // not_in_allowlist | escalation | cycle | depth | inflight
   detail: string | null;
+  message: string | null;   // what the caller was trying to say (truncated)
   conversation_id: number | null;
   created_at: number;
 }

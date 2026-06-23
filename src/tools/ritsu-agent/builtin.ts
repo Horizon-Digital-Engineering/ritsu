@@ -201,7 +201,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         const allowed = def?.can_call ?? [];
         if (!allowed.includes(target)) {
           logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'not_in_allowlist' });
-          denials?.record({ caller: agentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist' });
+          denials?.record({ caller: agentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist', message, conversationId: conversationId ?? null });
           return buildDenialMessage(agentId, target, allowed);
         }
 
@@ -218,7 +218,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
           if (!def?.escalation_approvable || injectionExposed || !approvals) {
             const note = injectionExposed && def?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
             logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
-            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, conversationId: conversationId ?? null });
+            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: conversationId ?? null });
             return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
               `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
           }
@@ -230,7 +230,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
             args: { agent_id: target, message, _escalation: { capabilities: escalated } },
           });
           if (decision.state === 'rejected') {
-            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, conversationId: conversationId ?? null });
+            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
             return decision.reason?.trim()
               ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
               : `Operator rejected this escalated call to ${target}.`;
@@ -244,13 +244,13 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         if (ctx.chain.includes(target)) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
-          denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain });
+          denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain, message, conversationId: conversationId ?? null });
           return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
         }
         if (ctx.depth >= MAX_CALL_DEPTH) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
-          denials?.record({ caller: agentId, target, reason: 'depth', detail: chain });
+          denials?.record({ caller: agentId, target, reason: 'depth', detail: chain, message, conversationId: conversationId ?? null });
           return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
         }
         const nextCtx = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };

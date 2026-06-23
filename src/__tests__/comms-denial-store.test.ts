@@ -7,15 +7,17 @@ import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 describe('CommsDenialStore', () => {
   it('records denials and lists them newest-first with detail intact', () => {
     const store = new CommsDenialStore(openDatabase(':memory:'));
-    store.record({ caller: 'a', target: 'b', reason: 'escalation', detail: 'escalated: manage_agents', conversationId: 9 });
+    store.record({ caller: 'a', target: 'b', reason: 'escalation', detail: 'escalated: manage_agents', message: 'read this repo for me', conversationId: 9 });
     store.record({ caller: 'a', target: 'c', reason: 'not_in_allowlist' });
     const recent = store.listRecent();
     assert.equal(recent.length, 2);
     assert.equal(recent[0].target, 'c');                       // newest first
     assert.equal(recent[1].reason, 'escalation');
     assert.equal(recent[1].detail, 'escalated: manage_agents');
+    assert.equal(recent[1].message, 'read this repo for me');  // attempted message captured
     assert.equal(recent[1].conversation_id, 9);
     assert.equal(recent[0].detail, null);                      // optional fields default null
+    assert.equal(recent[0].message, null);
   });
 
   it('publishes a comms-denied event on the approval bus', () => {

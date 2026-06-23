@@ -2510,12 +2510,18 @@ function denialReasonLabel(r) {
 function denialRowHtml(d) {
   const cls = d.reason === 'escalation' ? ' denial-escalation' : '';
   const detail = d.detail ? `<span class="denial-detail">${esc(d.detail)}</span>` : '';
+  const msg = d.message
+    ? `<div class="denial-msg" title="${esc(d.message)}">“${esc(d.message.length > 240 ? d.message.slice(0, 240) + '…' : d.message)}”</div>`
+    : '';
   return `<div class="denial-row${cls}">`
-    + `<span class="denial-x">✗</span>`
-    + `<span class="denial-pair"><code>${esc(d.caller)}</code> → <code>${esc(d.target)}</code></span>`
-    + `<span class="denial-reason">${esc(denialReasonLabel(d.reason))}</span>`
-    + detail
-    + `<span class="denial-ago">${approvalAgo(d.created_at)}</span>`
+    + `<div class="denial-head">`
+    +   `<span class="denial-x">✗</span>`
+    +   `<span class="denial-pair"><code>${esc(d.caller)}</code> → <code>${esc(d.target)}</code></span>`
+    +   `<span class="denial-reason">${esc(denialReasonLabel(d.reason))}</span>`
+    +   detail
+    +   `<span class="denial-ago">${approvalAgo(d.created_at)}</span>`
+    + `</div>`
+    + msg
     + `</div>`;
 }
 

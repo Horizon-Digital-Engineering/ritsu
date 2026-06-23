@@ -175,7 +175,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const allowed = callerDef?.can_call ?? [];
           if (!allowed.includes(target)) {
             logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'not_in_allowlist' });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist', conversationId: gate?.conversationId ?? null });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist', message, conversationId: gate?.conversationId ?? null });
             return {
               content: [{ type: 'text', text: buildDenialMessage(callerAgentId, target, allowed) }],
             };
@@ -197,7 +197,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
             if (!callerDef?.escalation_approvable || injectionExposed || gate === null) {
               const note = injectionExposed && callerDef?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
               logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
-              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, conversationId: gate?.conversationId ?? null });
+              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: gate?.conversationId ?? null });
               return {
                 content: [{
                   type: 'text',
@@ -216,7 +216,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
               args: { agent_id: target, message, _escalation: { capabilities: escalated } },
             });
             if (decision.state === 'rejected') {
-              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, conversationId: gate.conversationId });
+              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: gate.conversationId });
               const why = decision.reason?.trim()
                 ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
                 : `Operator rejected this escalated call to ${target}.`;
@@ -233,7 +233,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           if (ctx.chain.includes(target)) {
             const chain = [...ctx.chain, target].join(' → ');
             logger.warn('comms.cycle', { caller: callerAgentId, target, chain });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'cycle', detail: chain, conversationId: gate?.conversationId ?? null });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'cycle', detail: chain, message, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',
@@ -245,7 +245,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           if (ctx.depth >= MAX_CALL_DEPTH) {
             const chain = [...ctx.chain, target].join(' → ');
             logger.warn('comms.depth-exceeded', { caller: callerAgentId, target, chain });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'depth', detail: chain, conversationId: gate?.conversationId ?? null });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'depth', detail: chain, message, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',
@@ -260,7 +260,7 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
           const inflight = inflightPerCaller.get(callerAgentId) ?? 0;
           if (inflight >= MAX_PER_CALLER_INFLIGHT) {
             logger.warn('comms.inflight-exceeded', { caller: callerAgentId, target, inflight });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'inflight', detail: `${inflight}/${MAX_PER_CALLER_INFLIGHT} in flight`, conversationId: gate?.conversationId ?? null });
+            deps.denials?.record({ caller: callerAgentId, target, reason: 'inflight', detail: `${inflight}/${MAX_PER_CALLER_INFLIGHT} in flight`, message, conversationId: gate?.conversationId ?? null });
             return {
               content: [{
                 type: 'text',

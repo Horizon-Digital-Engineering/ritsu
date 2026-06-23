@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS comms_denials (
   target          TEXT NOT NULL,
   reason          TEXT NOT NULL,   -- not_in_allowlist | escalation | cycle | depth | inflight
   detail          TEXT,
+  message         TEXT,            -- what the caller was trying to say (truncated)
   conversation_id INTEGER,
   created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -403,6 +404,9 @@ function migrate(db: Db): void {
   // Opt-in: route capability-escalation ask_agent calls to the approval screen
   // instead of hard-denying. Default 0 = hard-deny (the safe baseline).
   addColumnIfMissing(db, 'agent_definitions', 'escalation_approvable', 'INTEGER NOT NULL DEFAULT 0');
+  // The message a blocked ask_agent was trying to send (added after comms_denials
+  // first shipped, so existing deploys need the column).
+  addColumnIfMissing(db, 'comms_denials', 'message', 'TEXT');
   // Phase 7: bearer tokens carry a scope so admin and MCP tokens are
   // distinguishable. Existing rows are 'mcp' (the only kind that existed).
   addColumnIfMissing(db, 'mcp_tokens', 'scope', "TEXT NOT NULL DEFAULT 'mcp'");

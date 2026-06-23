@@ -10,6 +10,8 @@ export interface CommsDenialInput {
   reason: CommsDenialReason;
   /** Human-readable context: escalated caps, call chain, counts. */
   detail?: string | null;
+  /** What the caller was trying to say (stored truncated). */
+  message?: string | null;
   conversationId?: number | null;
 }
 
@@ -24,12 +26,13 @@ export class CommsDenialStore {
 
   record(input: CommsDenialInput): void {
     try {
+      const message = input.message != null ? String(input.message).slice(0, 2000) : null;
       const r = this.db
         .prepare(
-          `INSERT INTO comms_denials (caller, target, reason, detail, conversation_id)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO comms_denials (caller, target, reason, detail, message, conversation_id)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(input.caller, input.target, input.reason, input.detail ?? null, input.conversationId ?? null);
+        .run(input.caller, input.target, input.reason, input.detail ?? null, message, input.conversationId ?? null);
       const snapshot = this.get(Number(r.lastInsertRowid));
       if (snapshot) approvalBus.publish({ kind: 'comms-denied', denial: snapshot });
     } catch (e) {
