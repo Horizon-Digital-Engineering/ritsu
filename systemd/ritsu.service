@@ -4,8 +4,8 @@ After=network-online.target litellm-proxy.service
 Wants=network-online.target
 # Host-specific extras (extra ReadWritePaths, Requires= for shared mounts,
 # etc.) live in drop-ins under /etc/systemd/system/ritsu.service.d/.
-# scripts/configure.sh writes ritsu.service.d/agent-sync.conf automatically
-# when /mnt/agent-sync is mounted on the host.
+# scripts/configure.sh writes a shared-mount drop-in automatically when a
+# shared mount is configured on the host.
 
 [Service]
 Type=simple

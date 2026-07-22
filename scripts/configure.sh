@@ -127,7 +127,7 @@ note "ok"
 
 # Note: extra filesystem paths the systemd sandbox should let ritsu write to
 # are managed via the `ritsu path` subcommand (installed below). Run e.g.
-#   sudo ritsu path add /mnt/agent-sync
+#   sudo ritsu path add /mnt/shared
 # to expose a shared mount; the CLI writes /etc/ritsu/sandbox-paths.list,
 # regenerates the drop-in, daemon-reloads and restarts.
 
