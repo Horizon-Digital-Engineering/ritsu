@@ -17,6 +17,7 @@ import { AgentHost } from '../agent-host.js';
 import { SqliteChannelStore } from '../channels/channel-store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { createAdminApp } from '../admin/server.js';
+import { BackupManager } from '../backup.js';
 
 // SEC-4: JSON body parsing is mounted AFTER admin auth, so an unauthenticated
 // POST to /admin/agents/:id/ask is rejected (401) BEFORE the 32MB parser can
@@ -49,7 +50,7 @@ describe('admin /ask pre-auth DoS ordering (SEC-4)', () => {
 
     const app = createAdminApp({
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
-      approvals, commsDenials, secrets, channels: channelStore, channelRegistry: channels,
+      approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels,
       oauth, version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
     });
     await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', () => resolve()); });

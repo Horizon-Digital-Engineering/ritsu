@@ -658,6 +658,19 @@
         <div id="plugins-list">loading…</div>
       </div>
     </section>
+
+    <section id="pane-backups" class="pane">
+      <div class="panel">
+        <h2>Backups</h2>
+        <p>The whole system is one SQLite database. A snapshot is taken automatically on every restart and daily; you can also snapshot on demand, download a copy off the box, or export your data as portable JSON. <strong>Your data is never hostage.</strong></p>
+        <div class="row" style="margin-bottom:10px">
+          <button data-action="backup-now" class="primary">Back up now</button>
+          <button data-action="backup-export">Export data (JSON)</button>
+        </div>
+        <div id="backups-list">loading…</div>
+        <p class="txt-muted" style="margin-top:10px">Restore is a break-glass operation on the box: <code>sudo ritsu service restart</code> after <code>sudo ritsu backup restore &lt;file&gt;</code> (stop the service first).</p>
+      </div>
+    </section>
   </main>
 
   <div id="toast" class="hidden"></div>
