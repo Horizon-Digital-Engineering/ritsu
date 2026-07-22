@@ -5,7 +5,12 @@ import type { Plugin, PluginContext, PluginToolContext } from '../types.js';
 import { migrate } from './migrate.js';
 import { HealthStore } from './store.js';
 import { trend, correlate } from './report.js';
-import { ObservationSchema, MedicationSchema, StopMedSchema } from './schema.js';
+import { InsuranceStore, describeBenefit } from './insurance.js';
+import { DocumentStore, searchDocuments } from './documents.js';
+import {
+  ObservationSchema, MedicationSchema, StopMedSchema,
+  PlanSchema, BenefitSchema, ProgressSchema, DocumentSchema,
+} from './schema.js';
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 const today = () => new Date().toISOString().slice(0, 10);
@@ -14,6 +19,8 @@ const fmt = (v: number, unit: string) => `${v}${unit ? ` ${unit}` : ''}`;
 // ---- agent tools (reads fenced; writes are benign self-entry, ungated) -----
 function defineTools(ctx: PluginToolContext): void {
   const store = new HealthStore(ctx.db);
+  const ins = new InsuranceStore(ctx.db);
+  const docs = new DocumentStore(ctx.db);
 
   ctx.tool({
     name: 'log_weight',
@@ -124,6 +131,117 @@ function defineTools(ctx: PluginToolContext): void {
       return text(rows.map(o => `${o.date} ${o.label}: ${fmt(o.value, o.unit)}${o.flag && o.flag !== 'normal' ? ` (${o.flag})` : ''}`).join('\n'));
     },
   });
+
+  // ---- insurance (reads fenced; writes ungated self-entry) ----
+  ctx.tool({
+    name: 'insurance_summary',
+    description: 'Your active insurance plan with deductible + out-of-pocket progress.',
+    input: {},
+    untrustedOutput: true,
+    handler: () => {
+      const p = ins.activePlan();
+      if (!p) return text('(no active insurance plan on file)');
+      const ded = p.deductible_individual != null ? `deductible: $${p.deductible_met} / $${p.deductible_individual}` : 'deductible: n/a';
+      const oop = p.oop_max_individual != null ? `out-of-pocket: $${p.oop_met} / $${p.oop_max_individual}` : 'OOP max: n/a';
+      return text(`${p.carrier} ${p.plan_name} (${p.plan_type || 'plan'}, ${p.plan_year})\n  member ${p.member_id || '—'}\n  ${ded}\n  ${oop}${p.premium_monthly != null ? `\n  premium: $${p.premium_monthly}/mo` : ''}`);
+    },
+  });
+
+  ctx.tool({
+    name: 'coverage_for',
+    description: 'What a given service costs you under the active plan (copay/coinsurance/covered) — falls back to quoting the actual benefits document for anything not in the structured list (e.g. "acupuncture").',
+    input: { service: z.string().min(1).max(80), network: z.enum(['in', 'out']).optional() },
+    untrustedOutput: true,
+    handler: (a) => {
+      const net = (a.network as 'in' | 'out') || 'in';
+      const hits = ins.findCoverage(String(a.service), net);
+      const parts: string[] = [];
+      if (hits.length) parts.push(hits.map(b => `${b.category} — ${describeBenefit(b)}`).join('\n'));
+      const passages = searchDocuments(docs.all().filter(d => d.category === 'benefits'), String(a.service), 2);
+      if (passages.length) parts.push('From your benefits document:\n' + passages.map(h => `  "${h.snippet}"`).join('\n'));
+      return text(parts.length ? parts.join('\n\n') : `Nothing on file for "${a.service}" — add a benefit or dump your plan document.`);
+    },
+  });
+
+  ctx.tool({
+    name: 'search_benefits',
+    description: 'Search your dumped insurance / benefits documents for a topic and return the relevant passages verbatim.',
+    input: { query: z.string().min(1).max(120) },
+    untrustedOutput: true,
+    handler: (a) => {
+      const hits = searchDocuments(docs.all(), String(a.query), 4);
+      if (!hits.length) return text('(nothing found in your dumped documents)');
+      return text(hits.map(h => `[${h.title}] "${h.snippet}"`).join('\n\n'));
+    },
+  });
+
+  ctx.tool({
+    name: 'set_insurance_plan',
+    description: 'Record (or replace) your insurance plan basics: carrier, plan name, year, deductible + out-of-pocket max.',
+    input: {
+      plan_year: z.number().int().min(2000).max(2100),
+      carrier: z.string().min(1).max(120),
+      plan_name: z.string().min(1).max(160),
+      plan_type: z.string().max(40).optional(),
+      deductible_individual: z.number().nonnegative().optional(),
+      oop_max_individual: z.number().nonnegative().optional(),
+      premium_monthly: z.number().nonnegative().optional(),
+    },
+    handler: (a) => {
+      const id = ins.addPlan({
+        plan_year: Number(a.plan_year), carrier: String(a.carrier), plan_name: String(a.plan_name),
+        plan_type: a.plan_type as string | undefined,
+        deductible_individual: a.deductible_individual as number | undefined,
+        oop_max_individual: a.oop_max_individual as number | undefined,
+        premium_monthly: a.premium_monthly as number | undefined,
+      });
+      return text(`saved plan ${a.carrier} ${a.plan_name} (id=${id})`);
+    },
+  });
+
+  ctx.tool({
+    name: 'add_benefit',
+    description: 'Add a coverage line to a plan: what a service category costs (copay/coinsurance/covered/not_covered), in- or out-of-network.',
+    input: {
+      plan_id: z.number().int().positive(),
+      category: z.string().min(1).max(80).describe('e.g. "Specialist", "ER", "Generic Rx", "Imaging"'),
+      cost_type: z.enum(['copay', 'coinsurance', 'covered', 'not_covered']),
+      amount: z.number().nonnegative().optional().describe('$ for copay, % for coinsurance'),
+      network: z.enum(['in', 'out']).optional(),
+      after_deductible: z.boolean().optional(),
+    },
+    handler: (a) => {
+      const id = ins.addBenefit({
+        plan_id: Number(a.plan_id), category: String(a.category), cost_type: a.cost_type as 'copay' | 'coinsurance' | 'covered' | 'not_covered',
+        amount: a.amount as number | undefined, network: a.network as 'in' | 'out' | undefined, after_deductible: a.after_deductible as boolean | undefined,
+      });
+      return text(`added benefit ${a.category} (id=${id})`);
+    },
+  });
+
+  ctx.tool({
+    name: 'add_benefits_document',
+    description: 'Dump a benefits / plan document (paste its text) so the assistant can quote the actual coverage language later.',
+    input: {
+      title: z.string().min(1).max(200),
+      text: z.string().min(1).max(500_000),
+      category: z.string().max(40).optional().describe('default "benefits"; also "lab_report", "eob", "note"'),
+    },
+    handler: (a) => {
+      const id = docs.add({ category: (a.category as string) || 'benefits', title: String(a.title), text: String(a.text), source: 'agent' });
+      return text(`stored document "${a.title}" (id=${id})`);
+    },
+  });
+
+  ctx.tool({
+    name: 'update_deductible',
+    description: "Update a plan's running deductible-met and out-of-pocket-met totals.",
+    input: { plan_id: z.number().int().positive(), deductible_met: z.number().nonnegative(), oop_met: z.number().nonnegative() },
+    handler: (a) => {
+      const ok = ins.setProgress(Number(a.plan_id), Number(a.deductible_met), Number(a.oop_met));
+      return text(ok ? `updated deductible/OOP for plan ${a.plan_id}` : `no plan with id ${a.plan_id}`);
+    },
+  });
 }
 
 // ---- admin routes ----------------------------------------------------------
@@ -135,6 +253,8 @@ function parse<T>(req: Request, res: Response, schema: z.ZodType<T>): T | null {
 
 function register(ctx: PluginContext): void {
   const store = new HealthStore(ctx.db);
+  const ins = new InsuranceStore(ctx.db);
+  const docs = new DocumentStore(ctx.db);
 
   ctx.route('get', '/overview', (_req, res) => {
     res.json({
@@ -194,6 +314,63 @@ function register(ctx: PluginContext): void {
     const seriesB = store.series(b);
     res.json({ a, b, correlation: correlate(seriesA, seriesB), seriesA, seriesB });
   });
+
+  // --- insurance ---
+  ctx.route('get', '/insurance', (_req, res) => {
+    const active = ins.activePlan();
+    res.json({ plans: ins.listPlans(), active, benefits: active ? ins.benefitsFor(active.id) : [] });
+  });
+
+  ctx.route('post', '/insurance/plans', (req, res) => {
+    const b = parse(req, res, PlanSchema); if (!b) return;
+    res.status(201).json({ id: ins.addPlan(b) });
+  });
+
+  ctx.route('delete', '/insurance/plans/:id', (req, res) => {
+    res.status(ins.deletePlan(Number(req.params.id)) ? 204 : 404).end();
+  });
+
+  ctx.route('post', '/insurance/plans/:id/progress', (req, res) => {
+    const b = parse(req, res, ProgressSchema); if (!b) return;
+    res.status(ins.setProgress(Number(req.params.id), b.deductible_met, b.oop_met) ? 204 : 404).end();
+  });
+
+  ctx.route('get', '/insurance/plans/:id/benefits', (req, res) => {
+    res.json({ benefits: ins.benefitsFor(Number(req.params.id)) });
+  });
+
+  ctx.route('post', '/insurance/benefits', (req, res) => {
+    const b = parse(req, res, BenefitSchema); if (!b) return;
+    res.status(201).json({ id: ins.addBenefit(b) });
+  });
+
+  ctx.route('delete', '/insurance/benefits/:id', (req, res) => {
+    res.status(ins.deleteBenefit(Number(req.params.id)) ? 204 : 404).end();
+  });
+
+  // --- dumped documents (assistant reference material) ---
+  ctx.route('get', '/documents', (req, res) => {
+    res.json({ documents: docs.list(typeof req.query.category === 'string' ? req.query.category : undefined) });
+  });
+
+  ctx.route('get', '/documents/search', (req, res) => {
+    res.json({ hits: searchDocuments(docs.all(), String(req.query.q ?? ''), 6) });
+  });
+
+  ctx.route('get', '/documents/:id', (req, res) => {
+    const d = docs.get(Number(req.params.id));
+    if (!d) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(d);
+  });
+
+  ctx.route('post', '/documents', (req, res) => {
+    const b = parse(req, res, DocumentSchema); if (!b) return;
+    res.status(201).json({ id: docs.add(b) });
+  });
+
+  ctx.route('delete', '/documents/:id', (req, res) => {
+    res.status(docs.delete(Number(req.params.id)) ? 204 : 404).end();
+  });
 }
 
 export const healthPlugin: Plugin = {
@@ -207,6 +384,7 @@ export const healthPlugin: Plugin = {
         { id: 'health-overview', label: 'Overview' },
         { id: 'health-log', label: 'Log' },
         { id: 'health-trends', label: 'Trends' },
+        { id: 'health-insurance', label: 'Insurance' },
       ] },
     ],
   },

@@ -27,3 +27,42 @@ export const MedicationSchema = z.object({
 });
 
 export const StopMedSchema = z.object({ end_date: dateStr });
+
+const nonNegNullable = z.number().nonnegative().nullable().optional();
+
+export const PlanSchema = z.object({
+  plan_year: z.number().int().min(2000).max(2100),
+  carrier: z.string().trim().min(1).max(120),
+  plan_name: z.string().trim().min(1).max(160),
+  plan_type: z.string().trim().max(40).optional(),
+  member_id: z.string().trim().max(80).optional(),
+  group_number: z.string().trim().max(80).optional(),
+  effective_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  effective_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  premium_monthly: nonNegNullable,
+  deductible_individual: nonNegNullable,
+  deductible_family: nonNegNullable,
+  oop_max_individual: nonNegNullable,
+  oop_max_family: nonNegNullable,
+  note: z.string().trim().max(2000).optional(),
+});
+
+export const BenefitSchema = z.object({
+  plan_id: z.number().int().positive(),
+  category: z.string().trim().min(1).max(80),
+  network: z.enum(['in', 'out']).optional(),
+  cost_type: z.enum(['copay', 'coinsurance', 'covered', 'not_covered']),
+  amount: z.number().nonnegative().optional(),
+  after_deductible: z.boolean().optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
+export const ProgressSchema = z.object({ deductible_met: z.number().nonnegative(), oop_met: z.number().nonnegative() });
+
+export const DocumentSchema = z.object({
+  category: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(1).max(200),
+  text: z.string().trim().min(1).max(500_000),
+  ref_type: z.string().trim().max(40).optional(),
+  ref_id: z.number().int().positive().nullable().optional(),
+});

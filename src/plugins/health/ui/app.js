@@ -186,10 +186,173 @@ async function delObs(id) { try { await api('DELETE', `${H}/observations/${id}`)
 async function stopMed(id) { const d = prompt('Stop date (YYYY-MM-DD):', today()); if (!d) return; try { await api('POST', `${H}/medications/${id}/stop`, { end_date: d }); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
 async function delMed(id) { if (!confirm('Delete this medication record?')) return; try { await api('DELETE', `${H}/medications/${id}`); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
 
+// ---- Insurance ------------------------------------------------------------
+const COST_TYPES = ['copay', 'coinsurance', 'covered', 'not_covered'];
+function benefitCost(b) {
+  const after = b.after_deductible ? ' after deductible' : '';
+  if (b.cost_type === 'copay') return `$${b.amount} copay${after}`;
+  if (b.cost_type === 'coinsurance') return `${b.amount}% coinsurance${after}`;
+  if (b.cost_type === 'covered') return 'covered in full';
+  return 'NOT covered';
+}
+function bar(met, total) {
+  if (total == null || total <= 0) return '';
+  const pct = Math.min(100, Math.round((met / total) * 100));
+  return `<span class="fin-bar-cell" style="display:inline-block;width:160px"><span class="fin-bar" style="width:${pct}%"></span></span> ${pct}%`;
+}
+
+function insuranceSkeleton() {
+  return `
+    <div class="panel"><h2>Active plan</h2><div id="hl-ins-active">loading…</div></div>
+    <div class="panel"><h2>Coverage</h2><div id="hl-ins-benefits"></div>
+      <form class="grid" id="hl-benefit-form" style="margin-top:10px">
+        <label>service</label><input id="hl-b-cat" required placeholder="Specialist, ER, Generic Rx…" />
+        <label>cost type</label><select id="hl-b-type">${COST_TYPES.map(t => `<option>${t}</option>`).join('')}</select>
+        <label>amount</label><input id="hl-b-amt" type="number" step="any" placeholder="$ copay or % coinsurance" />
+        <label>network</label><select id="hl-b-net"><option value="in">in-network</option><option value="out">out-of-network</option></select>
+        <label>after deductible</label><input id="hl-b-after" type="checkbox" />
+        <span></span><div class="form-actions"><button type="submit" class="primary">Add coverage</button></div>
+      </form></div>
+    <div class="panel"><h2>Add / replace plan</h2>
+      <form class="grid" id="hl-plan-form">
+        <label>year</label><input id="hl-p-year" type="number" required value="${new Date().getFullYear()}" />
+        <label>carrier</label><input id="hl-p-carrier" required placeholder="Blue Cross…" />
+        <label>plan name</label><input id="hl-p-name" required placeholder="PPO 3000" />
+        <label>plan type</label><input id="hl-p-type" placeholder="PPO / HMO / HDHP" />
+        <label>deductible</label><input id="hl-p-ded" type="number" step="any" placeholder="individual $" />
+        <label>out-of-pocket max</label><input id="hl-p-oop" type="number" step="any" placeholder="individual $" />
+        <label>premium / mo</label><input id="hl-p-prem" type="number" step="any" />
+        <span></span><div class="form-actions"><button type="submit" class="primary">Save plan</button></div>
+      </form></div>
+    <div class="panel"><h2>Benefits documents <span class="muted">(dump the raw doc; the assistant quotes it)</span></h2>
+      <div id="hl-docs"></div>
+      <form class="grid" id="hl-doc-form" style="margin-top:10px">
+        <label>title</label><input id="hl-d-title" required placeholder="2026 SBC — PPO 3000" />
+        <label>text</label><textarea id="hl-d-text" required placeholder="paste the benefits / SBC text here"></textarea>
+        <span></span><div class="form-actions"><button type="submit" class="primary">Dump document</button></div>
+      </form>
+      <div class="row" style="margin-top:10px"><input id="hl-d-q" placeholder="search dumped docs (e.g. acupuncture)" style="flex:1" />
+        <button data-action="hl-doc-search">Search</button></div>
+      <div id="hl-doc-hits"></div>
+    </div>`;
+}
+
+function renderInsurancePane(pane) {
+  pane.innerHTML = insuranceSkeleton();
+  pane.querySelector('#hl-benefit-form').addEventListener('submit', addBenefit);
+  pane.querySelector('#hl-plan-form').addEventListener('submit', savePlan);
+  pane.querySelector('#hl-doc-form').addEventListener('submit', dumpDoc);
+  loadInsurance();
+  loadDocs();
+}
+
+async function loadInsurance() {
+  try {
+    const { active, benefits } = await api('GET', `${H}/insurance`);
+    const el = document.getElementById('hl-ins-active');
+    if (!active) { el.innerHTML = '<p class="muted">No plan yet — add one below.</p>'; document.getElementById('hl-ins-benefits').innerHTML = ''; return; }
+    el.innerHTML = `
+      <p><strong>${esc(active.carrier)} ${esc(active.plan_name)}</strong> <span class="muted">${esc(active.plan_type)} · ${active.plan_year}</span></p>
+      <table><tbody>
+        <tr><td>deductible</td><td class="num">$${active.deductible_met} / ${active.deductible_individual ?? '—'}</td><td>${bar(active.deductible_met, active.deductible_individual)}</td></tr>
+        <tr><td>out-of-pocket</td><td class="num">$${active.oop_met} / ${active.oop_max_individual ?? '—'}</td><td>${bar(active.oop_met, active.oop_max_individual)}</td></tr>
+        ${active.premium_monthly != null ? `<tr><td>premium</td><td class="num">$${active.premium_monthly}/mo</td><td></td></tr>` : ''}
+      </tbody></table>
+      <div class="row" style="margin-top:8px"><span class="muted">update used:</span>
+        <input id="hl-ded-met" type="number" step="any" placeholder="deductible met" style="width:130px" value="${active.deductible_met}" />
+        <input id="hl-oop-met" type="number" step="any" placeholder="OOP met" style="width:110px" value="${active.oop_met}" />
+        <button data-action="hl-ins-progress" data-id="${active.id}">Update</button>
+        <button data-action="hl-ins-del-plan" data-id="${active.id}" class="danger">Delete plan</button></div>`;
+    document.getElementById('hl-ins-benefits').innerHTML = benefits.length
+      ? `<table><thead><tr><th>Service</th><th>Network</th><th>Your cost</th><th></th></tr></thead><tbody>${benefits.map(b =>
+          `<tr><td>${esc(b.category)}</td><td class="muted">${b.network === 'in' ? 'in' : 'out'}</td><td>${esc(benefitCost(b))}</td>
+             <td><button data-action="hl-ins-del-benefit" data-id="${b.id}">×</button></td></tr>`).join('')}</tbody></table>`
+      : '<p class="muted">No coverage lines yet. Add the common ones (PCP, Specialist, ER, Rx) or dump the SBC below.</p>';
+  } catch (e) { document.getElementById('hl-ins-active').textContent = `error: ${e.message}`; }
+}
+
+async function savePlan(e) {
+  e.preventDefault();
+  const num = (id) => { const v = document.getElementById(id).value; return v === '' ? undefined : Number(v); };
+  try {
+    await api('POST', `${H}/insurance/plans`, {
+      plan_year: Number(document.getElementById('hl-p-year').value),
+      carrier: document.getElementById('hl-p-carrier').value.trim(),
+      plan_name: document.getElementById('hl-p-name').value.trim(),
+      plan_type: document.getElementById('hl-p-type').value.trim() || undefined,
+      deductible_individual: num('hl-p-ded'), oop_max_individual: num('hl-p-oop'), premium_monthly: num('hl-p-prem'),
+    });
+    toast('plan saved', 'ok'); document.getElementById('hl-plan-form').reset(); loadInsurance();
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+async function addBenefit(e) {
+  e.preventDefault();
+  try {
+    const { active } = await api('GET', `${H}/insurance`);
+    if (!active) { toast('add a plan first', 'err'); return; }
+    const amt = document.getElementById('hl-b-amt').value;
+    await api('POST', `${H}/insurance/benefits`, {
+      plan_id: active.id, category: document.getElementById('hl-b-cat').value.trim(),
+      cost_type: document.getElementById('hl-b-type').value, amount: amt === '' ? undefined : Number(amt),
+      network: document.getElementById('hl-b-net').value, after_deductible: document.getElementById('hl-b-after').checked,
+    });
+    toast('coverage added', 'ok'); document.getElementById('hl-benefit-form').reset(); loadInsurance();
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+async function updateProgress(id) {
+  try {
+    await api('POST', `${H}/insurance/plans/${id}/progress`, {
+      deductible_met: Number(document.getElementById('hl-ded-met').value || 0),
+      oop_met: Number(document.getElementById('hl-oop-met').value || 0),
+    });
+    toast('updated', 'ok'); loadInsurance();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function delPlan(id) { if (!confirm('Delete this plan and its coverage lines?')) return; try { await api('DELETE', `${H}/insurance/plans/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
+async function delBenefit(id) { try { await api('DELETE', `${H}/insurance/benefits/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
+
+async function loadDocs() {
+  const el = document.getElementById('hl-docs'); if (!el) return;
+  try {
+    const { documents } = await api('GET', `${H}/documents`);
+    el.innerHTML = documents.length
+      ? `<table><tbody>${documents.map(d => `<tr><td>${esc(d.title)}</td><td class="muted">${esc(d.category)} · ${d.chars} chars</td><td><button data-action="hl-doc-del" data-id="${d.id}" class="danger">×</button></td></tr>`).join('')}</tbody></table>`
+      : '<p class="muted">No documents dumped yet.</p>';
+  } catch (e) { el.textContent = `error: ${e.message}`; }
+}
+
+async function dumpDoc(e) {
+  e.preventDefault();
+  try {
+    await api('POST', `${H}/documents`, { category: 'benefits', title: document.getElementById('hl-d-title').value.trim(), text: document.getElementById('hl-d-text').value });
+    toast('document stored', 'ok'); document.getElementById('hl-doc-form').reset(); loadDocs();
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+async function docSearch() {
+  const q = document.getElementById('hl-d-q').value.trim();
+  const el = document.getElementById('hl-doc-hits');
+  if (!q) { el.innerHTML = ''; return; }
+  try {
+    const { hits } = await api('GET', `${H}/documents/search?q=${encodeURIComponent(q)}`);
+    el.innerHTML = hits.length ? hits.map(h => `<div class="doc-hit"><span class="muted">[${esc(h.title)}]</span> ${esc(h.snippet)}</div>`).join('') : '<p class="muted">(no matches)</p>';
+  } catch (e) { el.textContent = `error: ${e.message}`; }
+}
+async function delDoc(id) { try { await api('DELETE', `${H}/documents/${id}`); loadDocs(); } catch (e) { toast(e.message, 'err'); } }
+
 registerTab('health-overview', renderOverviewPane);
 registerTab('health-log', renderLogPane);
 registerTab('health-trends', renderTrendsPane);
+registerTab('health-insurance', renderInsurancePane);
 registerAction('hl-del-obs', (el) => delObs(Number(el.dataset.id)));
 registerAction('hl-stop-med', (el) => stopMed(Number(el.dataset.id)));
 registerAction('hl-del-med', (el) => delMed(Number(el.dataset.id)));
 registerAction('hl-correlate', correlate);
+registerAction('hl-ins-progress', (el) => updateProgress(Number(el.dataset.id)));
+registerAction('hl-ins-del-plan', (el) => delPlan(Number(el.dataset.id)));
+registerAction('hl-ins-del-benefit', (el) => delBenefit(Number(el.dataset.id)));
+registerAction('hl-doc-search', docSearch);
+registerAction('hl-doc-del', (el) => delDoc(Number(el.dataset.id)));
