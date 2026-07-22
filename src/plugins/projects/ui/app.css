@@ -25,3 +25,11 @@
 .badge.status-doing   { color: var(--accent); border-color: #2c3a4a; }
 .badge.status-done    { color: var(--ok); border-color: #2c4a36; }
 .badge.status-blocked { color: var(--err); border-color: #4a2d2d; }
+
+/* Dashboard overview */
+.pj-stats { display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline; }
+.pj-stat { font-size: 0.9rem; }
+.pj-stat b { font-size: 1.35rem; margin-right: 3px; }
+.pj-doing b { color: var(--accent); }
+.pj-blocked b { color: var(--err); }
+td.pj-num, th.pj-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }

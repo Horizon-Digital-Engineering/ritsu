@@ -234,8 +234,40 @@ async function deleteTask(id) {
   catch (e) { toast(e.message, 'err'); }
 }
 
-registerTab('projects', renderProjectsPane);
-registerTab('backlog', renderBacklogPane);
+// ---- Dashboard ------------------------------------------------------------
+function renderDashboardPane(pane) {
+  pane.innerHTML = '<div class="panel"><h2>Overview</h2><div id="pj-dash">loading…</div></div>';
+  loadDashboard();
+}
+async function loadDashboard() {
+  const el = document.getElementById('pj-dash');
+  if (!el) return;
+  try {
+    const [{ projects }, { tasks }] = await Promise.all([api('GET', `${P}/projects`), api('GET', `${P}/tasks`)]);
+    const by = { doing: 0, blocked: 0, backlog: 0, done: 0 };
+    for (const t of tasks) by[t.status] = (by[t.status] || 0) + 1;
+    const enabled = projects.filter(p => p.enabled).length;
+    const perProj = projects.map(p => ({
+      name: p.name,
+      open: tasks.filter(t => t.project_id === p.id && t.status !== 'done').length,
+      total: tasks.filter(t => t.project_id === p.id).length,
+    }));
+    el.innerHTML = `
+      <div class="pj-stats">
+        <span class="pj-stat"><b>${projects.length}</b> projects <span class="txt-muted">(${enabled} enabled)</span></span>
+        <span class="pj-stat"><b>${tasks.length}</b> tasks</span>
+        <span class="pj-stat pj-doing"><b>${by.doing}</b> doing</span>
+        <span class="pj-stat pj-blocked"><b>${by.blocked}</b> blocked</span>
+        <span class="pj-stat"><b>${by.backlog}</b> backlog</span>
+        <span class="pj-stat txt-muted"><b>${by.done}</b> done</span>
+      </div>
+      ${perProj.length ? `<table style="margin-top:14px"><thead><tr><th>project</th><th class="pj-num">open</th><th class="pj-num">total</th></tr></thead><tbody>${perProj.map(p => `<tr><td>${esc(p.name)}</td><td class="pj-num">${p.open}</td><td class="pj-num">${p.total}</td></tr>`).join('')}</tbody></table>` : '<p class="txt-muted" style="margin-top:10px">No projects yet.</p>'}`;
+  } catch (e) { el.textContent = `error: ${e.message}`; }
+}
+
+registerTab('projects-dashboard', renderDashboardPane);
+registerTab('projects-list', renderProjectsPane);
+registerTab('projects-backlog', renderBacklogPane);
 registerAction('pj-edit', (el) => editProject(el.dataset.id));
 registerAction('pj-delete', (el) => deleteProject(el.dataset.id, el.dataset.name));
 registerAction('pj-clear', () => clearProjectForm());
