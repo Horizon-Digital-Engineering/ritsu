@@ -33,6 +33,7 @@ import { monitorReadAllowed, monitorOptOutMessage } from '../mcp-internal/agent-
 import { buildFsTools } from './fs.js';
 import { buildProcessTools } from './process.js';
 import { buildNetworkTools, type NetworkOptions } from './network.js';
+import { buildPluginTools, type PluginToolSet } from './plugin.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
@@ -75,6 +76,9 @@ export interface RaToolDeps {
    *  (this runtime is the real enforcement layer, so it must reach parity). */
   approvals?: ApprovalStore;
   conversationId?: number | null;
+  /** Agent-allowlisted plugin tool sets. Exposed to the native loop as RaTools
+   *  (parity with the claude-direct MCP plugin path). */
+  plugins?: PluginToolSet[];
 }
 
 /** Memory: remember / list_memories / update_memory / forget.
@@ -563,5 +567,8 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   }
   // Network tools don't need a workspace — they hit the network, not the FS.
   out.push(...buildNetworkTools(deps.network).filter(t => allowed.has(t.name)));
+  // Agent-allowlisted plugin tools (parity with the claude-direct MCP path).
+  // Gating/fencing mirror that path; see ./plugin.ts.
+  if (deps.plugins?.length) out.push(...buildPluginTools(deps.plugins, deps.agentId));
   return out;
 }

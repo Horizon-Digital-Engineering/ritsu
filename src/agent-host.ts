@@ -13,6 +13,7 @@ import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import type { PluginHost } from './plugins/host.js';
 import { pluginMcpProvider, pluginGatedToolNames } from './plugins/mcp-provider.js';
+import type { PluginToolSet } from './tools/ritsu-agent/plugin.js';
 import { logger } from './util/log.js';
 
 /**
@@ -137,12 +138,14 @@ export class AgentHost {
     // disabled/removed plugin makes the allowlist entry inert, not broken.
     // Every plugin flows through the same gateway; adding one needs no new code.
     const pluginProviders: ReturnType<typeof pluginMcpProvider>[] = [];
+    const pluginToolSets: PluginToolSet[] = [];
     const pluginGated: string[] = [];
     const pluginAll: string[] = [];
     for (const pid of def.plugins) {
       const tools = this.pluginHost?.isEnabled(pid) ? this.pluginHost.toolsFor(pid) : [];
       if (!tools.length) continue;
       pluginProviders.push(pluginMcpProvider(pid, tools));
+      pluginToolSets.push({ id: pid, tools });
       pluginGated.push(...pluginGatedToolNames(pid, tools));
       pluginAll.push(...tools.map(t => `mcp__${pid}__${t.name}`));
     }
@@ -178,6 +181,9 @@ export class AgentHost {
       // admin / monitor tool surfaces appear when the flag is set.
       capabilities: def.capabilities,
       adminHost: { addOrReplace: (d: AgentDefinition) => this.addOrReplace(d) },
+      // Plugin tools reach the native loop too (parity with claude-direct).
+      // The same mcp__<id>__<name> gatedTools list below gates them.
+      plugins: pluginToolSets,
     } : null;
     const dispatcher = this.dispatcherFactory(def, {
       agentId: def.id,
