@@ -53,6 +53,60 @@ async function* imageUserMessage(text: string, imageBase64: string, mediaType: s
   };
 }
 
+/**
+ * Extraction against ANY OpenAI-compatible vision endpoint — a local model
+ * (Ollama, vLLM, LM Studio) or a hosted cheap tier. Keeps grunt-work OCR/
+ * extraction OFF the frontier/Max compute (and, for a local endpoint, keeps
+ * sensitive docs on the box). Point it at whatever server you run.
+ */
+export interface OpenAiVisionOpts { baseUrl: string; model: string; apiKey?: string; fetchImpl?: typeof fetch }
+
+export class OpenAiCompatVisionExtractor implements Extractor {
+  constructor(private readonly o: OpenAiVisionOpts) {}
+  async extract(input: ExtractInput, docType: DocType): Promise<unknown> {
+    const ask = `${docType.instructions}\n\nReturn JSON only.`;
+    const content = input.imageBase64
+      ? [
+          { type: 'text', text: ask },
+          { type: 'image_url', image_url: { url: `data:${input.mediaType ?? 'image/png'};base64,${input.imageBase64}` } },
+        ]
+      : `${ask}\n\n---\n${input.text ?? ''}`;
+    const doFetch = this.o.fetchImpl ?? fetch;
+    const res = await doFetch(`${this.o.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(this.o.apiKey ? { authorization: `Bearer ${this.o.apiKey}` } : {}) },
+      body: JSON.stringify({
+        model: this.o.model,
+        temperature: 0,
+        messages: [{ role: 'system', content: EXTRACT_SYSTEM }, { role: 'user', content }],
+      }),
+    });
+    if (!res.ok) throw new Error(`extraction endpoint returned ${res.status}`);
+    const json = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+    const out = json.choices?.[0]?.message?.content;
+    if (typeof out !== 'string') throw new Error('extraction endpoint returned no content');
+    return parseModelJson(out);
+  }
+}
+
+/**
+ * Pick the extractor from the environment. A configured local/cheap endpoint
+ * (RITSU_INGEST_ENDPOINT) wins — that's the tier for trivial extraction;
+ * otherwise fall back to the Max-session vision read. Grunt work stays cheap,
+ * the frontier model is reserved for reasoning.
+ */
+export function resolveExtractor(): Extractor {
+  const endpoint = process.env.RITSU_INGEST_ENDPOINT?.trim();
+  if (endpoint) {
+    return new OpenAiCompatVisionExtractor({
+      baseUrl: endpoint,
+      model: process.env.RITSU_INGEST_MODEL?.trim() || 'qwen2.5-vl',
+      apiKey: process.env.RITSU_INGEST_API_KEY?.trim() || undefined,
+    });
+  }
+  return new SdkVisionExtractor();
+}
+
 export class SdkVisionExtractor implements Extractor {
   constructor(private readonly model = 'claude-sonnet-4-6') {}
 

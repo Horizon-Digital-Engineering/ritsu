@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { openDatabase } from '../db.js';
 import { ScopedDb } from '../plugins/host.js';
 import { IngestionStore, IngestionPipeline, migrateIngestion } from '../ingestion/pipeline.js';
-import { StaticExtractor, parseModelJson } from '../ingestion/extractors.js';
+import { StaticExtractor, parseModelJson, OpenAiCompatVisionExtractor } from '../ingestion/extractors.js';
+import type { DocType } from '../ingestion/pipeline.js';
 
 const LabSchema = z.array(z.object({ label: z.string(), value: z.number() }));
 
@@ -26,6 +27,27 @@ describe('parseModelJson', () => {
   });
   it('throws when there is no JSON', () => {
     assert.throws(() => parseModelJson('no json here'), /no JSON/);
+  });
+});
+
+describe('OpenAiCompatVisionExtractor (local / cheap tier)', () => {
+  const docType = { instructions: 'pull the labs' } as DocType;
+
+  it('posts an OpenAI vision message to the configured endpoint and parses the JSON reply', async () => {
+    let seen: { url: string; body: Record<string, unknown> } | null = null;
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      seen = { url, body: JSON.parse(init.body) as Record<string, unknown> };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '```json\n[{"label":"LDL","value":120}]\n```' } }] }) };
+    }) as unknown as typeof fetch;
+    const ex = new OpenAiCompatVisionExtractor({ baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5-vl', fetchImpl });
+    const out = await ex.extract({ title: 't', source: 'upload', imageBase64: 'AAAA', mediaType: 'image/png' }, docType);
+    assert.deepEqual(out, [{ label: 'LDL', value: 120 }]);
+    assert.equal(seen!.url, 'http://localhost:11434/v1/chat/completions');
+    assert.equal(seen!.body.model, 'qwen2.5-vl');
+    // image is sent as an OpenAI data-URL image part
+    const userMsg = (seen!.body.messages as Array<{ role: string; content: unknown }>).find(m => m.role === 'user');
+    const parts = userMsg!.content as Array<{ type: string; image_url?: { url: string } }>;
+    assert.ok(parts.some(p => p.type === 'image_url' && p.image_url!.url.startsWith('data:image/png;base64,AAAA')));
   });
 });
 
