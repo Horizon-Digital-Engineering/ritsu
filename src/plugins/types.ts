@@ -84,10 +84,34 @@ export interface PluginManifest {
   nav?: PluginNavGroup[];
 }
 
+/**
+ * A recommended agent config a plugin ships — a DEFAULT/preset, not a
+ * hardcoded agent. The operator "loads" it into a normal, fully-editable agent
+ * (one click) that already knows the plugin's tools + domain rules. This
+ * plugin is auto-added to the created agent's plugin allowlist.
+ */
+export interface PluginAgentSeed {
+  /** Agent id to create; defaults to `<pluginId>-assistant`. */
+  id?: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  dispatcher?: 'claude-direct' | 'litellm';
+  model?: string;
+  /** SDK built-in tools the agent may use (claude-direct). Usually none for a
+   *  read/answer domain assistant. */
+  tools_allowlist?: string[];
+  capabilities?: string[];
+  /** Extra plugin ids beyond this one (this plugin is always included). */
+  plugins?: string[];
+}
+
 export interface Plugin {
   manifest: PluginManifest;
   migrate?(db: PluginDb): void;
   defineTools?(ctx: PluginToolContext): void;
   register?(ctx: PluginContext): void;
   assetsDir?: string;
+  /** Optional recommended agent preset (see PluginAgentSeed). */
+  agent?: PluginAgentSeed;
 }

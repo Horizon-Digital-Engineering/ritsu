@@ -2,7 +2,7 @@ import express, { type Express } from 'express';
 import type { Db, Stmt } from '../db.js';
 import { logger } from '../util/log.js';
 import type { SecretStore } from '../auth/secret-store.js';
-import type { Plugin, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef } from './types.js';
+import type { Plugin, PluginAgentSeed, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef } from './types.js';
 
 /**
  * A table-name-prefix helper, NOT a security boundary. `prepare`/`exec` pass
@@ -56,6 +56,9 @@ export interface PluginManifestOut extends PluginManifest {
   enabled: boolean;
   installed_at?: number;
   updated_at?: number;
+  /** Lightweight info about a recommended agent preset (if the plugin ships
+   *  one), for the "load agent" button. Full seed via agentSeed(). */
+  agent?: { id: string; name: string } | null;
 }
 
 interface RegistryRow {
@@ -98,6 +101,12 @@ export class PluginHost {
 
   toolsFor(id: string): PluginToolDef[] {
     return this.pluginTools.get(id) ?? [];
+  }
+
+  /** The recommended agent preset a plugin ships (if any), for the "load
+   *  agent" flow. Full config incl. system_prompt — server-side only. */
+  agentSeed(id: string): PluginAgentSeed | undefined {
+    return this.plugins.find(p => p.manifest.id === id)?.agent;
   }
 
   private recordRegistry(plugin: Plugin, tables: string[]): void {
@@ -193,6 +202,7 @@ export class PluginHost {
         enabled: row ? row.enabled === 1 : true,
         installed_at: row?.installed_at,
         updated_at: row?.updated_at,
+        agent: p.agent ? { id: p.agent.id ?? `${p.manifest.id}-assistant`, name: p.agent.name } : null,
       };
     });
   }
