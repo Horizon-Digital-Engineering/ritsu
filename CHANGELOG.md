@@ -4,7 +4,7 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
-## [0.11.0] — 2026-07-21
+## [Unreleased]
 
 Denial visibility + opt-in escalation approval, plus a runtime-hardening pass.
 Blocked inter-agent calls used to be invisible to the operator — a real,
