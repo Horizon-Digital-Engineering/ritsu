@@ -17,6 +17,8 @@
 import type { MemoryStore } from '../../memory-store.js';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
+import type { CommsDenialStore } from '../../comms-denial-store.js';
+import type { ApprovalStore } from '../../approval-store.js';
 import type { Workspace } from '../../workspace-store.js';
 import {
   AgentDefinitionSchema,
@@ -27,9 +29,11 @@ import {
 import {
   currentCallContext, runInCallContext, MAX_CALL_DEPTH, buildDenialMessage, callerEscalatesTo,
 } from '../mcp-internal/agent-comms.js';
+import { monitorReadAllowed, monitorOptOutMessage } from '../mcp-internal/agent-monitor.js';
 import { buildFsTools } from './fs.js';
 import { buildProcessTools } from './process.js';
 import { buildNetworkTools, type NetworkOptions } from './network.js';
+import { buildPluginTools, type PluginToolSet } from './plugin.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
@@ -65,6 +69,16 @@ export interface RaToolDeps {
   capabilities?: string[];
   /** Live AgentHost reload entrypoint, needed by the admin tools. */
   adminHost?: RaAdminHost;
+  /** Records blocked inter-agent calls so the operator can see them. */
+  denials?: CommsDenialStore;
+  /** Approval store + the caller's conversation, threaded per-call by the
+   *  ritsu-agent dispatcher. Lets an approvable escalation route to the operator
+   *  (this runtime is the real enforcement layer, so it must reach parity). */
+  approvals?: ApprovalStore;
+  conversationId?: number | null;
+  /** Agent-allowlisted plugin tool sets. Exposed to the native loop as RaTools
+   *  (parity with the claude-direct MCP plugin path). */
+  plugins?: PluginToolSet[];
 }
 
 /** Memory: remember / list_memories / update_memory / forget.
@@ -166,7 +180,7 @@ export function buildMemoryTools(deps: RaToolDeps): RaTool[] {
  *  AsyncLocalStorage call-depth guard from agent-comms-mcp is shared so
  *  ritsu-agent → claude-direct loops are bounded too. */
 export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
-  const { agentId, defStore, conversations, host } = deps;
+  const { agentId, defStore, conversations, host, denials, approvals, conversationId } = deps;
   return [
     {
       name: 'agent_comms_ask_agent',
@@ -192,6 +206,7 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         const allowed = def?.can_call ?? [];
         if (!allowed.includes(target)) {
           logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'not_in_allowlist' });
+          denials?.record({ caller: agentId, target, reason: 'not_in_allowlist', detail: allowed.length ? `allowed: ${allowed.join(', ')}` : 'empty allowlist', message, conversationId: conversationId ?? null });
           return buildDenialMessage(agentId, target, allowed);
         }
 
@@ -201,9 +216,31 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         const targetDef = await defStore.read(target);
         const escalated = callerEscalatesTo(def?.capabilities ?? [], targetDef?.capabilities ?? []);
         if (escalated.length > 0) {
-          logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
-          return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
-            `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
+          // crm/social agents are injection-exposed → always hard-deny, ignoring
+          // escalation_approvable. Otherwise, if the caller opted in and we have
+          // an approval store, route to the operator instead of hard-denying.
+          const injectionExposed = (def?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
+          if (!def?.escalation_approvable || injectionExposed || !approvals) {
+            const note = injectionExposed && def?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
+            logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
+            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: conversationId ?? null });
+            return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
+              `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
+          }
+          logger.info('ra.comms.escalation-approval', { caller: agentId, target, escalated });
+          const decision = await approvals.request({
+            agentId,
+            conversationId: conversationId ?? null,
+            toolName: 'agent_comms_ask_agent',
+            args: { agent_id: target, message, _escalation: { capabilities: escalated } },
+          });
+          if (decision.state === 'rejected') {
+            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
+            return decision.reason?.trim()
+              ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
+              : `Operator rejected this escalated call to ${target}.`;
+          }
+          // approved → continue to the normal call path below.
         }
 
         // Shared call-depth guard with agent-comms-mcp so mixed-runtime chains
@@ -212,11 +249,13 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
         if (ctx.chain.includes(target)) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
+          denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain, message, conversationId: conversationId ?? null });
           return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
         }
         if (ctx.depth >= MAX_CALL_DEPTH) {
           const chain = [...ctx.chain, target].join(' → ');
           logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
+          denials?.record({ caller: agentId, target, reason: 'depth', detail: chain, message, conversationId: conversationId ?? null });
           return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
         }
         const nextCtx = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
@@ -398,7 +437,10 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         if (all.length === 0) return '(no agents registered)';
         logger.info('ra.agent-monitor.list_agents', { by: agentId, count: all.length });
         return all
-          .map(a => `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}) — ${a.description}`)
+          .map(a => {
+            const readable = a.allow_monitor_read || a.id === agentId ? 'readable' : 'opaque';
+            return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}, monitor:${readable}) — ${a.description}`;
+          })
           .join('\n');
       },
     },
@@ -420,8 +462,14 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const target = asString(args.agent_id) || undefined;
         const kind = (args.kind as 'human' | 'agent' | 'all') ?? 'all';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
-        const summaries = conversations.listSummaries(undefined, limit, kind, target);
-        if (summaries.length === 0) return '(no conversations match)';
+        if (target && !(await monitorReadAllowed(defStore, agentId, target))) {
+          return monitorOptOutMessage(target);
+        }
+        const raw = conversations.listSummaries(undefined, limit, kind, target);
+        const all = await defStore.list();
+        const readable = new Set(all.filter(a => a.allow_monitor_read || a.id === agentId).map(a => a.id));
+        const summaries = raw.filter(s => readable.has(s.agent_id));
+        if (summaries.length === 0) return '(no conversations match, or none from agents that opted into monitor reads)';
         logger.info('ra.agent-monitor.list_conversations', { by: agentId, target: target ?? null, count: summaries.length });
         return summaries
           .map(s => {
@@ -450,6 +498,9 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const convId = Number(args.conversation_id);
         if (!Number.isInteger(convId) || convId <= 0) return 'error: conversation_id required';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
+        const owner = conversations.agentIdOf(convId);
+        if (owner === null) return `(conversation ${convId} not found)`;
+        if (!(await monitorReadAllowed(defStore, agentId, owner))) return monitorOptOutMessage(owner);
         const msgs = conversations.recent(convId, limit);
         if (msgs.length === 0) return '(no messages in this conversation)';
         logger.info('ra.agent-monitor.read_conversation', { by: agentId, conv: convId, count: msgs.length });
@@ -477,6 +528,7 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const target = asString(args.agent_id);
         if (!target) return 'error: agent_id required';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
+        if (!(await monitorReadAllowed(defStore, agentId, target))) return monitorOptOutMessage(target);
         const mems = await memory.list(target, limit);
         if (mems.length === 0) return `(agent ${target} has no active memories)`;
         logger.info('ra.agent-monitor.read_memory', { by: agentId, target, count: mems.length });
@@ -515,5 +567,8 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   }
   // Network tools don't need a workspace — they hit the network, not the FS.
   out.push(...buildNetworkTools(deps.network).filter(t => allowed.has(t.name)));
+  // Agent-allowlisted plugin tools (parity with the claude-direct MCP path).
+  // Gating/fencing mirror that path; see ./plugin.ts.
+  if (deps.plugins?.length) out.push(...buildPluginTools(deps.plugins, deps.agentId));
   return out;
 }

@@ -34,6 +34,8 @@ interface Row {
   approval_tools: string | null;
   plugins: string | null;
   enabled: number;
+  escalation_approvable: number;
+  allow_monitor_read: number;
   created_at: number;
   updated_at: number;
   previous_system_prompt: string | null;
@@ -59,6 +61,8 @@ function rowToDef(r: Row): AgentDefinition {
     approval_tools: r.approval_tools ? JSON.parse(r.approval_tools) as string[] : [],
     plugins: r.plugins ? JSON.parse(r.plugins) as string[] : [],
     enabled: r.enabled === 1,
+    escalation_approvable: r.escalation_approvable === 1,
+    allow_monitor_read: r.allow_monitor_read === 1,
     created_at: r.created_at,
     updated_at: r.updated_at,
     previous_system_prompt: r.previous_system_prompt,
@@ -149,8 +153,9 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
     `INSERT INTO agent_definitions
        (id, type, name, description, system_prompt, dispatcher, model,
         memory_backend, tools_allowlist, can_call, provider, api_key_ref,
-        provider_options, capabilities, approval_tools, plugins, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        provider_options, capabilities, approval_tools, plugins, enabled, escalation_approvable,
+        allow_monitor_read)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        type            = excluded.type,
        name            = excluded.name,
@@ -178,6 +183,8 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
        approval_tools   = excluded.approval_tools,
        plugins          = excluded.plugins,
        enabled          = excluded.enabled,
+       escalation_approvable = excluded.escalation_approvable,
+       allow_monitor_read = excluded.allow_monitor_read,
        updated_at       = strftime('%s','now')`,
   ).run(
     validated.id,
@@ -197,6 +204,8 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
     JSON.stringify(validated.approval_tools),
     JSON.stringify(validated.plugins),
     validated.enabled ? 1 : 0,
+    validated.escalation_approvable ? 1 : 0,
+    validated.allow_monitor_read ? 1 : 0,
   );
 }
 
@@ -297,6 +306,8 @@ export async function seedIfEmpty(store: AgentDefinitionStore): Promise<void> {
     approval_tools: [],
     plugins: [],
     enabled: true,
+    allow_monitor_read: false,
+    escalation_approvable: false,
   });
   logger.info('def-store.seeded', { ids: ['hello-world'] });
 }

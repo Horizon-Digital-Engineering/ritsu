@@ -23,6 +23,8 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     approval_tools: [],
     plugins: [],
     enabled: true,
+    escalation_approvable: false,
+    allow_monitor_read: false,
     ...overrides,
   };
 }

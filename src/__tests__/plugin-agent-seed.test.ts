@@ -8,6 +8,7 @@ import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
 import { WorkspaceStore } from '../workspace-store.js';
 import { ApprovalStore } from '../approval-store.js';
 import { PluginHost } from '../plugins/host.js';
+import { CommsDenialStore } from '../comms-denial-store.js';
 import { SecretStore } from '../auth/secret-store.js';
 import { TokenStore } from '../auth/token-store.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
@@ -48,16 +49,17 @@ describe('plugin agent preset (CORE-2)', () => {
       const workspaces = new WorkspaceStore(db);
       const approvals = new ApprovalStore(db);
       const secrets = new SecretStore(db);
+      const commsDenials = new CommsDenialStore(db);
       const pluginHost = new PluginHost(db, secrets);
       pluginHost.register(healthPlugin);
-      const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets);
+      const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
       host.setPluginHost(pluginHost);
       const channelStore = new SqliteChannelStore(db);
       const channels = new ChannelRegistry(channelStore, { get: (id: string) => host.get(id) });
       token = tokens.mint('t', 'admin').token;
       const app = createAdminApp({
         defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
-        approvals, secrets, channels: channelStore, channelRegistry: channels, oauth,
+        approvals, commsDenials, secrets, channels: channelStore, channelRegistry: channels, oauth,
         version: 'test', authMode: 'off', mcpUrl: 'http://127.0.0.1:7333',
       });
       await new Promise<void>(r => { server = app.listen(0, '127.0.0.1', () => r()); });

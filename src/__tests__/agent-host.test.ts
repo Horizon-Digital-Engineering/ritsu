@@ -7,6 +7,7 @@ import { WorkspaceStore } from '../workspace-store.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { ApiKeyStore } from '../auth/api-key-store.js';
 import { ApprovalStore } from '../approval-store.js';
+import { CommsDenialStore } from '../comms-denial-store.js';
 import { SecretStore } from '../auth/secret-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
@@ -32,6 +33,8 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     approval_tools: [],
     plugins: [],
     enabled: true,
+    escalation_approvable: false,
+    allow_monitor_read: false,
     ...overrides,
   };
 }
@@ -73,7 +76,7 @@ describe('AgentHost', () => {
     const apiKeys = new ApiKeyStore(db);
     const approvals = new ApprovalStore(db);
     const secrets = new SecretStore(db);
-    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, secrets, stub.factory);
+    host = new AgentHost(db, convs, defStore, workspaces, apiKeys, approvals, secrets, new CommsDenialStore(db), stub.factory);
   });
 
   it('loadAll wires every enabled definition', async () => {
@@ -174,7 +177,7 @@ describe('AgentHost — plugin allowlist wiring', () => {
     defStore = new SqliteAgentDefinitionStore(db);
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
-    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
     pluginHost = new PluginHost(db, new SecretStore(db));
     pluginHost.register(projectsPlugin);
     host.setPluginHost(pluginHost);
@@ -228,7 +231,7 @@ describe('AgentHost — plugin gating hardening', () => {
     defStore = new SqliteAgentDefinitionStore(db);
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
-    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
     pluginHost = new PluginHost(db, new SecretStore(db));
     pluginHost.register(projectsPlugin);
     host.setPluginHost(pluginHost);
@@ -274,7 +277,7 @@ describe('AgentHost — conversation ownership', () => {
     defStore = new SqliteAgentDefinitionStore(db);
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
-    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
   });
 
   it('ignores a conversation_id that belongs to another agent (no cross-agent read)', async () => {

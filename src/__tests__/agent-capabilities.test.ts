@@ -31,6 +31,8 @@ function def(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     approval_tools: [],
     plugins: [],
     enabled: true,
+    escalation_approvable: false,
+    allow_monitor_read: false,
     ...overrides,
   };
 }
@@ -75,9 +77,11 @@ describe('ritsu-agent capability tool gating', () => {
     defStore = new SqliteAgentDefinitionStore(db);
     conversations = new SqliteConversationStore(db);
     memory = new SqliteMemoryStore(db);
-    // Seed two agents so monitor tools have something to look at.
+    // Seed two agents so monitor tools have something to look at. beta opts
+    // into monitor reads (SEC-2 default-deny); the opt-out path is covered in
+    // agent-monitor.test.ts.
     await defStore.upsert(def({ id: 'alpha', name: 'Alpha', description: 'alpha-desc' }));
-    await defStore.upsert(def({ id: 'beta', name: 'Beta', description: 'beta-desc' }));
+    await defStore.upsert(def({ id: 'beta', name: 'Beta', description: 'beta-desc', allow_monitor_read: true }));
     await memory.write({ agent_id: 'beta', content: 'beta knows X' });
     const conv = conversations.findOrStartHumanThread('beta');
     conversations.append(conv, 'user', 'hello beta', 'admin-ui');
