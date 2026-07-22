@@ -5,7 +5,6 @@
  *     correlated. One row = one measurement of one `label` on one `date`.
  *   - medications: the current + past med list, with start/stop so meds land
  *     on the same timeline as the observations they might move.
- * A tracker, not a diagnostician — it stores + surfaces, it doesn't advise.
  */
 import type { PluginDb } from '../types.js';
 

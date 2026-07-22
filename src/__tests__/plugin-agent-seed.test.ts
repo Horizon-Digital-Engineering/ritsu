@@ -26,7 +26,7 @@ describe('plugin agent preset (CORE-2)', () => {
     const host = new PluginHost(db, new SecretStore(db));
     host.register(healthPlugin);
     const m = host.manifests().find(p => p.id === 'health');
-    assert.deepEqual(m?.agent, { id: 'health-assistant', name: 'Health Assistant' });
+    assert.deepEqual(m?.agent, { id: 'health-assistant', name: 'Health Advisor' });
     const seed = host.agentSeed('health');
     assert.ok(seed && seed.system_prompt.length > 50);
   });
@@ -74,7 +74,7 @@ describe('plugin agent preset (CORE-2)', () => {
 
       const def = await defStore.read('health-assistant');
       assert.ok(def);
-      assert.equal(def.name, 'Health Assistant');
+      assert.equal(def.name, 'Health Advisor');
       assert.ok(def.plugins.includes('health'), 'agent should be wired to the health plugin');
 
       // second load leaves the (possibly user-edited) agent untouched
