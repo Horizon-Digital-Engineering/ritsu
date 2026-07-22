@@ -79,6 +79,7 @@
         <div class="conv-kind-tabs" id="approvals-subtabs">
           <button type="button" class="conv-kind-tab active" data-action="approvals-subtab" data-sub="pending">Pending</button>
           <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="decided">Decided</button>
+          <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="blocked">Blocked</button>
         </div>
         <div id="approvals-list">loading…</div>
       </div>
@@ -277,6 +278,18 @@
             <div class="form-hint">
               Plugins this agent may use. Each grants the plugin's agent tools
               (mutating ones stay approval-gated). Only enabled plugins are listed.
+            </div>
+          </div>
+
+          <label for="f-escalation-approvable">approvable escalation</label>
+          <div>
+            <label><input id="f-escalation-approvable" type="checkbox" /> route capability-escalation calls to approval</label>
+            <div class="form-hint">
+              When on, a capability-escalation <code>ask_agent</code> call (this agent reaching
+              one that holds a capability it lacks) goes to the Approvals tab instead of being
+              hard-denied. <strong>Ignored for crm/social agents</strong> — those always
+              hard-deny, since they read untrusted content. Leave off unless this is a trusted
+              internal agent.
             </div>
           </div>
 

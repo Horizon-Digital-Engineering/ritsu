@@ -8,6 +8,7 @@ import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ApprovalStore } from './approval-store.js';
+import type { CommsDenialStore } from './comms-denial-store.js';
 import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import type { PluginHost } from './plugins/host.js';
@@ -45,6 +46,7 @@ export class AgentHost {
     private readonly apiKeys: import('./auth/api-key-store.js').ApiKeyStore,
     private readonly approvals: ApprovalStore,
     private readonly secrets: SecretStore,
+    private readonly commsDenials: CommsDenialStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
         // ritsu-agent runtime overrides def.dispatcher when both provider +
@@ -159,6 +161,7 @@ export class AgentHost {
       memory,
       defStore: this.defStore,
       conversations: this.conversations,
+      denials: this.commsDenials,
       host: { get: (id: string) => this.get(id) },
       // Workspace + allowlist plumbing parity with claude-sdk: the same
       // tools_allowlist list ("Read", "Write", "Edit") that controls SDK
@@ -204,6 +207,7 @@ export class AgentHost {
           host: { get: (id: string) => this.get(id) },
           defStore: this.defStore,
           conversations: this.conversations,
+          denials: this.commsDenials,
         },
       },
       ...(canManage ? {
@@ -226,10 +230,12 @@ export class AgentHost {
         },
       } : {}),
       // Human-in-the-loop: tools this agent must get operator approval for.
-      // Only wired when the list is non-empty so unconfigured agents pay
-      // nothing. Re-read fresh on every addOrReplace, so editing
-      // approval_tools in the admin UI takes effect on the next reload.
-      ...(gatedTools.length > 0 ? {
+      // Wired when the gated list is non-empty OR the agent opts into
+      // approvable escalation (which needs the ApprovalStore on the comms path
+      // even with no other gated tools). Re-read fresh on every addOrReplace,
+      // so editing approval_tools / escalation_approvable in the admin UI takes
+      // effect on the next reload.
+      ...((gatedTools.length > 0 || def.escalation_approvable) ? {
         approval: {
           agentId: def.id,
           store: this.approvals,

@@ -232,6 +232,24 @@ CREATE TABLE IF NOT EXISTS tool_approvals (
 
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_pending ON tool_approvals(requested_at DESC) WHERE state = 'pending';
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_convo ON tool_approvals(conversation_id);
+
+-- Inter-agent call denials. ask_agent blocked by a guard (allowlist, capability
+-- escalation, cycle, depth, or in-flight cap) used to vanish into the log; this
+-- persists each one so a blocked delegation is visible to the operator. No FK on
+-- caller/target so a row survives agent deletion for audit. detail carries
+-- human-readable context (escalated caps, the call chain, counts).
+CREATE TABLE IF NOT EXISTS comms_denials (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  caller          TEXT NOT NULL,
+  target          TEXT NOT NULL,
+  reason          TEXT NOT NULL,   -- not_in_allowlist | escalation | cycle | depth | inflight
+  detail          TEXT,
+  message         TEXT,            -- what the caller was trying to say (truncated)
+  conversation_id INTEGER,
+  created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_comms_denials_recent ON comms_denials(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_approvals_decided ON tool_approvals(decided_at DESC) WHERE state <> 'pending';
 
 -- Plugin secret store. Credentials for CRM/email/social and any other plugin
@@ -397,6 +415,12 @@ export function createInMemoryDb(): Db {
 function migrate(db: Db): void {
   addColumnIfMissing(db, 'agent_definitions', 'previous_system_prompt', 'TEXT');
   addColumnIfMissing(db, 'agent_definitions', 'previous_saved_at', 'INTEGER');
+  // Opt-in: route capability-escalation ask_agent calls to the approval screen
+  // instead of hard-denying. Default 0 = hard-deny (the safe baseline).
+  addColumnIfMissing(db, 'agent_definitions', 'escalation_approvable', 'INTEGER NOT NULL DEFAULT 0');
+  // The message a blocked ask_agent was trying to send (added after comms_denials
+  // first shipped, so existing deploys need the column).
+  addColumnIfMissing(db, 'comms_denials', 'message', 'TEXT');
   // Phase 7: bearer tokens carry a scope so admin and MCP tokens are
   // distinguishable. Existing rows are 'mcp' (the only kind that existed).
   addColumnIfMissing(db, 'mcp_tokens', 'scope', "TEXT NOT NULL DEFAULT 'mcp'");

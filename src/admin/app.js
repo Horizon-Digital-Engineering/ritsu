@@ -489,6 +489,7 @@ function loadAgentForm(a) {
   $('f-model').value = a.model;
   $('f-memory-backend').value = a.memory_backend;
   $('f-enabled').checked = !!a.enabled;
+  $('f-escalation-approvable').checked = !!a.escalation_approvable;
   $('f-system-prompt').value = a.system_prompt;
   $('f-provider').value = a.provider ?? '';
   renderApiKeyDropdown(a.api_key_ref ?? null);
@@ -561,6 +562,7 @@ async function submitAgent(method) {
     tools_allowlist: readToolsAllowlist(),
     approval_tools: readApprovalTools(),
     plugins: readPlugins(),
+    escalation_approvable: $('f-escalation-approvable').checked,
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
@@ -2469,6 +2471,14 @@ async function loadApprovalsList() {
   const target = $('approvals-list');
   if (!target) return;
   try {
+    if (approvalsSubtab === 'blocked') {
+      const { denials } = await api('GET', '/admin/api/comms-denials?limit=200');
+      renderDenialsList(denials);
+      $('approvals-summary').textContent = denials.length
+        ? `${denials.length} blocked inter-agent call${denials.length === 1 ? '' : 's'} — refused by a guard, not a lying agent.`
+        : 'No blocked calls.';
+      return;
+    }
     const { approvals } = await api('GET', `/admin/api/approvals?state=${approvalsSubtab}&limit=200`);
     renderApprovalsList(approvals);
     if (approvalsSubtab === 'pending') {
@@ -2495,6 +2505,46 @@ function renderApprovalsList(list) {
   target.innerHTML = list.map(a => a.state === 'pending'
     ? approvalCardHtml(a)
     : approvalStampHtml(a)).join('');
+}
+
+/** Blocked inter-agent calls (ask_agent refused by a guard). Previously these
+ *  were invisible — a denied call writes no transcript message, only a log
+ *  line — so this is the surface that makes them visible. */
+function renderDenialsList(denials) {
+  const target = $('approvals-list');
+  if (!denials.length) {
+    target.innerHTML = '<div class="ap-empty">No blocked calls — no agent has been refused an inter-agent call.</div>';
+    return;
+  }
+  target.innerHTML = denials.map(denialRowHtml).join('');
+}
+
+function denialReasonLabel(r) {
+  return ({
+    not_in_allowlist: 'not in allowlist',
+    escalation: 'capability escalation',
+    cycle: 'call cycle',
+    depth: 'call depth',
+    inflight: 'too many in flight',
+  })[r] || r;
+}
+
+function denialRowHtml(d) {
+  const cls = d.reason === 'escalation' ? ' denial-escalation' : '';
+  const detail = d.detail ? `<span class="denial-detail">${esc(d.detail)}</span>` : '';
+  const msg = d.message
+    ? `<div class="denial-msg" title="${esc(d.message)}">“${esc(d.message.length > 240 ? d.message.slice(0, 240) + '…' : d.message)}”</div>`
+    : '';
+  return `<div class="denial-row${cls}">`
+    + `<div class="denial-head">`
+    +   `<span class="denial-x">✗</span>`
+    +   `<span class="denial-pair"><code>${esc(d.caller)}</code> → <code>${esc(d.target)}</code></span>`
+    +   `<span class="denial-reason">${esc(denialReasonLabel(d.reason))}</span>`
+    +   detail
+    +   `<span class="denial-ago">${approvalAgo(d.created_at)}</span>`
+    + `</div>`
+    + msg
+    + `</div>`;
 }
 
 /** Glyph for an approval, by tool name — quick visual recognition. */
@@ -2608,8 +2658,25 @@ function approvalHighlightsHtml(a) {
  *  chat panel — handlers find their card via closest('.approval-card') so
  *  there are no duplicate-id collisions when the same approval shows in
  *  both places. */
+/** If this approval is a capability escalation (carries the _escalation marker
+ *  the comms guard adds to args), return the escalated capabilities; else null. */
+function approvalEscalationInfo(argsJson) {
+  try {
+    const args = JSON.parse(argsJson);
+    const caps = args && args._escalation && args._escalation.capabilities;
+    return Array.isArray(caps) ? caps : null;
+  } catch {
+    return null;
+  }
+}
+
 function approvalCardHtml(a, inline = false) {
-  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}" data-approval-id="${a.id}">
+  const escCaps = approvalEscalationInfo(a.args_json);
+  const escBanner = escCaps
+    ? `<div class="approval-escalation-banner">⚠ capability escalation — approving lets <code>${esc(a.agent_id)}</code> act through an agent holding <strong>${esc(escCaps.join(', '))}</strong> it doesn't have. Only approve if you mean to.</div>`
+    : '';
+  return `<div class="approval-card ${inline ? 'inline' : ''} ${approvalStaleClass(a)}${escCaps ? ' escalation' : ''}" data-approval-id="${a.id}">
+    ${escBanner}
     <div class="approval-main">
       <span class="approval-icon">${approvalToolIcon(a.tool_name)}</span>
       <div class="approval-body">

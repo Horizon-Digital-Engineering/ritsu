@@ -295,7 +295,11 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null):
   // Approval gate context for in-process MCP tools — enforced INSIDE the
   // handler (the SDK can't bypass that, unlike canUseTool). Null when the
   // agent gates nothing.
-  const gate: McpGateContext | null = opts.approval && opts.approval.gatedTools.length > 0
+  // Built whenever an ApprovalStore is present (not only when gatedTools is
+  // non-empty): the comms path needs gate.approvals to route an approvable
+  // escalation even for an agent with no other gated tools. Empty gatedTools
+  // just means gateMcpTool no-ops for the normal per-tool gating.
+  const gate: McpGateContext | null = opts.approval
     ? {
         agentId: opts.approval.agentId,
         conversationId,

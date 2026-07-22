@@ -139,6 +139,8 @@ describe('ApprovalStore', () => {
       approvalBus.off('event', handler);
     }
     assert.deepEqual(events.map(e => e.kind), ['requested', 'decided']);
-    assert.equal(events[1].approval.state, 'approved');
+    const decided = events[1];
+    assert.ok(decided.kind === 'decided');           // narrows the union → .approval is present
+    assert.equal(decided.approval.state, 'approved');
   });
 });

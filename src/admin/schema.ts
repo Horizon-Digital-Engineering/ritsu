@@ -41,6 +41,12 @@ export const AgentDefinitionSchema = z.object({
    *  agent-facing tools (mutating ones stay approval-gated). Same allowlist
    *  pattern for every plugin — new plugins need no new wiring. */
   plugins: z.array(z.string()).default([]),
+  /** When true, a capability-escalation ask_agent call (caller lacks a
+   *  capability the target holds) is routed to the operator approval screen
+   *  instead of being hard-denied. Default false = hard-deny (the safe
+   *  baseline). IGNORED for injection-exposed agents (crm/social), which
+   *  always hard-deny regardless — see the comms escalation guard. */
+  escalation_approvable: z.boolean().default(false),
   enabled: z.boolean().default(true),
   created_at: z.number().int().optional(),
   updated_at: z.number().int().optional(),
