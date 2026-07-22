@@ -621,7 +621,7 @@ body.panel-open { overflow: hidden; touch-action: none; }
   border-left: 3px solid var(--accent); border-radius: 6px;
 }
 /* Staleness ladder — no auto-reject; the tint just gets louder the longer
-   a decision sits (see operations/ritsu/approval-system.md). */
+   a decision sits. */
 .approval-card.stale-4h  { border-left-color: hsl(48, 80%, 55%); }
 .approval-card.stale-24h { border-left-color: hsl(30, 85%, 55%); }
 .approval-card.stale-7d  { border-left-color: hsl(0, 80%, 58%); }
