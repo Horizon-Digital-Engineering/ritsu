@@ -41,6 +41,29 @@ export interface AgentMonitorDeps {
   memory: MemoryStore;
 }
 
+/**
+ * Whether a `monitor_agents`-capable caller may read the target agent's
+ * conversations/memory. Default-DENY: the monitor capability alone grants
+ * nothing — each target agent must set `allow_monitor_read`. A monitor can
+ * always read its OWN data (targetId === callerId), which isn't a cross-agent
+ * read. Shared by both runtimes (MCP here, ritsu-agent's builtin tools).
+ */
+export async function monitorReadAllowed(
+  defStore: AgentDefinitionStore,
+  callerAgentId: string,
+  targetAgentId: string,
+): Promise<boolean> {
+  if (targetAgentId === callerAgentId) return true;
+  const def = await defStore.read(targetAgentId);
+  return !!def?.allow_monitor_read;
+}
+
+/** Uniform opt-out message the model sees when a target hasn't opted in. */
+export function monitorOptOutMessage(targetAgentId: string): string {
+  return `agent '${targetAgentId}' has not opted into monitor reads ` +
+    '(its allow_monitor_read is off), so its conversations and memory are opaque to you.';
+}
+
 export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDeps) {
   return createSdkMcpServer({
     name: MONITOR_MCP_NAME,
@@ -57,7 +80,10 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           const text = all.length === 0
             ? '(no agents registered)'
             : all
-                .map(a => `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}) — ${a.description}`)
+                .map(a => {
+                  const readable = a.allow_monitor_read || a.id === callerAgentId ? 'readable' : 'opaque';
+                  return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}, monitor:${readable}) — ${a.description}`;
+                })
                 .join('\n');
           logger.info('agent-monitor.list_agents', { by: callerAgentId, count: all.length });
           return { content: [{ type: 'text', text }] };
@@ -74,9 +100,17 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           limit: z.number().int().positive().max(200).default(50),
         },
         async ({ agent_id, kind, limit }) => {
-          const summaries = deps.conversations.listSummaries(undefined, limit, kind, agent_id);
+          // Targeted: the named agent must have opted in. Swarm-wide: keep only
+          // conversations whose primary agent opted in (or the caller's own).
+          if (agent_id && !(await monitorReadAllowed(deps.defStore, callerAgentId, agent_id))) {
+            return { content: [{ type: 'text', text: monitorOptOutMessage(agent_id) }] };
+          }
+          const raw = deps.conversations.listSummaries(undefined, limit, kind, agent_id);
+          const all = await deps.defStore.list();
+          const readable = new Set(all.filter(a => a.allow_monitor_read || a.id === callerAgentId).map(a => a.id));
+          const summaries = raw.filter(s => readable.has(s.agent_id));
           if (summaries.length === 0) {
-            return { content: [{ type: 'text', text: '(no conversations match)' }] };
+            return { content: [{ type: 'text', text: '(no conversations match, or none from agents that opted into monitor reads)' }] };
           }
           const text = summaries
             .map(s => {
@@ -100,6 +134,13 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           limit: z.number().int().positive().max(500).default(50),
         },
         async ({ conversation_id, limit }) => {
+          const owner = deps.conversations.agentIdOf(conversation_id);
+          if (owner === null) {
+            return { content: [{ type: 'text', text: `(conversation ${conversation_id} not found)` }] };
+          }
+          if (!(await monitorReadAllowed(deps.defStore, callerAgentId, owner))) {
+            return { content: [{ type: 'text', text: monitorOptOutMessage(owner) }] };
+          }
           const msgs = deps.conversations.recent(conversation_id, limit);
           if (msgs.length === 0) {
             return { content: [{ type: 'text', text: '(no messages in this conversation)' }] };
@@ -127,6 +168,9 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           limit: z.number().int().positive().max(500).default(50),
         },
         async ({ agent_id, limit }) => {
+          if (!(await monitorReadAllowed(deps.defStore, callerAgentId, agent_id))) {
+            return { content: [{ type: 'text', text: monitorOptOutMessage(agent_id) }] };
+          }
           const mems = await deps.memory.list(agent_id, limit);
           if (mems.length === 0) {
             return { content: [{ type: 'text', text: `(agent ${agent_id} has no active memories)` }] };

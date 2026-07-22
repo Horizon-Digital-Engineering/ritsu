@@ -418,6 +418,10 @@ function migrate(db: Db): void {
   // Opt-in: route capability-escalation ask_agent calls to the approval screen
   // instead of hard-denying. Default 0 = hard-deny (the safe baseline).
   addColumnIfMissing(db, 'agent_definitions', 'escalation_approvable', 'INTEGER NOT NULL DEFAULT 0');
+  // Opt-in: let a monitor_agents-capable agent read THIS agent's conversations
+  // and memory. Default 0 = opaque; the monitor capability grants nothing until
+  // each target opts in (a monitor can always read its own data).
+  addColumnIfMissing(db, 'agent_definitions', 'allow_monitor_read', 'INTEGER NOT NULL DEFAULT 0');
   // The message a blocked ask_agent was trying to send (added after comms_denials
   // first shipped, so existing deploys need the column).
   addColumnIfMissing(db, 'comms_denials', 'message', 'TEXT');

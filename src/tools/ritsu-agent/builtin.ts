@@ -29,6 +29,7 @@ import {
 import {
   currentCallContext, runInCallContext, MAX_CALL_DEPTH, buildDenialMessage, callerEscalatesTo,
 } from '../mcp-internal/agent-comms.js';
+import { monitorReadAllowed, monitorOptOutMessage } from '../mcp-internal/agent-monitor.js';
 import { buildFsTools } from './fs.js';
 import { buildProcessTools } from './process.js';
 import { buildNetworkTools, type NetworkOptions } from './network.js';
@@ -432,7 +433,10 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         if (all.length === 0) return '(no agents registered)';
         logger.info('ra.agent-monitor.list_agents', { by: agentId, count: all.length });
         return all
-          .map(a => `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}) — ${a.description}`)
+          .map(a => {
+            const readable = a.allow_monitor_read || a.id === agentId ? 'readable' : 'opaque';
+            return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}, monitor:${readable}) — ${a.description}`;
+          })
           .join('\n');
       },
     },
@@ -454,8 +458,14 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const target = asString(args.agent_id) || undefined;
         const kind = (args.kind as 'human' | 'agent' | 'all') ?? 'all';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
-        const summaries = conversations.listSummaries(undefined, limit, kind, target);
-        if (summaries.length === 0) return '(no conversations match)';
+        if (target && !(await monitorReadAllowed(defStore, agentId, target))) {
+          return monitorOptOutMessage(target);
+        }
+        const raw = conversations.listSummaries(undefined, limit, kind, target);
+        const all = await defStore.list();
+        const readable = new Set(all.filter(a => a.allow_monitor_read || a.id === agentId).map(a => a.id));
+        const summaries = raw.filter(s => readable.has(s.agent_id));
+        if (summaries.length === 0) return '(no conversations match, or none from agents that opted into monitor reads)';
         logger.info('ra.agent-monitor.list_conversations', { by: agentId, target: target ?? null, count: summaries.length });
         return summaries
           .map(s => {
@@ -484,6 +494,9 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const convId = Number(args.conversation_id);
         if (!Number.isInteger(convId) || convId <= 0) return 'error: conversation_id required';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
+        const owner = conversations.agentIdOf(convId);
+        if (owner === null) return `(conversation ${convId} not found)`;
+        if (!(await monitorReadAllowed(defStore, agentId, owner))) return monitorOptOutMessage(owner);
         const msgs = conversations.recent(convId, limit);
         if (msgs.length === 0) return '(no messages in this conversation)';
         logger.info('ra.agent-monitor.read_conversation', { by: agentId, conv: convId, count: msgs.length });
@@ -511,6 +524,7 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         const target = asString(args.agent_id);
         if (!target) return 'error: agent_id required';
         const limit = typeof args.limit === 'number' ? args.limit : 50;
+        if (!(await monitorReadAllowed(defStore, agentId, target))) return monitorOptOutMessage(target);
         const mems = await memory.list(target, limit);
         if (mems.length === 0) return `(agent ${target} has no active memories)`;
         logger.info('ra.agent-monitor.read_memory', { by: agentId, target, count: mems.length });

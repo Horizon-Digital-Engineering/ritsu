@@ -34,6 +34,7 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     plugins: [],
     enabled: true,
     escalation_approvable: false,
+    allow_monitor_read: false,
     ...overrides,
   };
 }

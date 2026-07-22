@@ -490,6 +490,7 @@ function loadAgentForm(a) {
   $('f-memory-backend').value = a.memory_backend;
   $('f-enabled').checked = !!a.enabled;
   $('f-escalation-approvable').checked = !!a.escalation_approvable;
+  $('f-allow-monitor-read').checked = !!a.allow_monitor_read;
   $('f-system-prompt').value = a.system_prompt;
   $('f-provider').value = a.provider ?? '';
   renderApiKeyDropdown(a.api_key_ref ?? null);
@@ -563,6 +564,7 @@ async function submitAgent(method) {
     approval_tools: readApprovalTools(),
     plugins: readPlugins(),
     escalation_approvable: $('f-escalation-approvable').checked,
+    allow_monitor_read: $('f-allow-monitor-read').checked,
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),

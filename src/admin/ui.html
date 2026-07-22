@@ -293,6 +293,16 @@
             </div>
           </div>
 
+          <label for="f-allow-monitor-read">monitor-readable</label>
+          <div>
+            <label><input id="f-allow-monitor-read" type="checkbox" /> let monitor agents read this agent's data</label>
+            <div class="form-hint">
+              When on, an agent with the <code>monitor_agents</code> capability may read
+              <strong>this</strong> agent's conversations and memory. Off by default — the monitor
+              capability grants nothing until each target opts in here.
+            </div>
+          </div>
+
           <label for="f-system-prompt">system prompt</label>
           <textarea id="f-system-prompt" name="system_prompt" required></textarea>
 

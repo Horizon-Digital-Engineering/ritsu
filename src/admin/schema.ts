@@ -47,6 +47,11 @@ export const AgentDefinitionSchema = z.object({
    *  baseline). IGNORED for injection-exposed agents (crm/social), which
    *  always hard-deny regardless — see the comms escalation guard. */
   escalation_approvable: z.boolean().default(false),
+  /** When true, this agent's conversations and memory may be read by an agent
+   *  holding the `monitor_agents` capability. Default false = opaque: the
+   *  monitor capability alone grants nothing; each target must opt in. A
+   *  monitor can always read its OWN data regardless of this flag. */
+  allow_monitor_read: z.boolean().default(false),
   enabled: z.boolean().default(true),
   created_at: z.number().int().optional(),
   updated_at: z.number().int().optional(),
