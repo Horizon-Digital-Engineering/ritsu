@@ -4,6 +4,48 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [Unreleased]
+
+Denial visibility + opt-in escalation approval, plus a runtime-hardening pass.
+Blocked inter-agent calls used to be invisible to the operator — a real,
+working security block looked like a misbehaving agent. Now every `ask_agent`
+denial is recorded and surfaced live, and capability escalation can be routed
+to an operator decision instead of a flat hard-deny.
+
+### Added
+
+- **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
+  denials — caller → target, reason, detail, attempted message, age — live
+  over the approvals SSE stream. Escalation denials are visually flagged as
+  the security-relevant ones.
+- **Denied inter-agent calls are persisted.** Every `ask_agent` block
+  (allowlist / capability escalation / cycle / call-depth / in-flight) is
+  recorded in a new `comms_denials` table and pushed on the approval bus as a
+  `comms-denied` event. Recorded at every guard site in both runtimes (the
+  MCP agent-comms path and the native ritsu-agent loop). Recording is
+  best-effort — it sits on the security deny path and never throws.
+  `GET /admin/api/comms-denials` lists recent denials.
+- **Opt-in capability-escalation approval.** A new per-agent
+  `escalation_approvable` flag (default off — hard-deny stays the safe
+  baseline). When set, a capability-escalation `ask_agent` call is routed to
+  the operator approval screen instead of being hard-denied; approve → the
+  call proceeds, reject → denied with the operator's reason. Enforced in both
+  runtimes. The approval card renders a distinct warning listing which
+  capabilities approving would let the caller borrow.
+- **Attempted-message capture.** Each denial records the message the caller
+  was trying to send (truncated), rendered as a quoted line under the blocked
+  row so the operator sees intent, not just the routing.
+
+### Security
+
+- **Injection-exposed agents can never escalate.** Agents that read untrusted
+  content (the `crm` / `social` capabilities) always hard-deny capability
+  escalation, ignoring `escalation_approvable` — a prompt-injected agent
+  cannot escalate even if an operator clicks approve.
+- `escalation_approvable` defaults off, so existing agents keep the strict
+  hard-deny behavior until an operator explicitly opts a specific agent in.
+- Further hardening across the runtime, tool, auth, and plugin surfaces.
+
 ## [0.10.0] — 2026-07-21
 
 A plugin system, agents that can use plugins, and a security-hardening pass.

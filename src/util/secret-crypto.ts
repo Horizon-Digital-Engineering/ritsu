@@ -35,6 +35,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
   randomBytes,
 } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync } from 'node:fs';
@@ -169,6 +170,23 @@ function getKey(): Buffer {
 /** For tests: reset the cached key so a different env can be tried. */
 export function _resetKeyCacheForTests(): void {
   cachedKey = null;
+}
+
+/**
+ * Derive a domain-separated 32-byte subkey from the master key for a
+ * non-encryption purpose — e.g. an HMAC pepper for hashing bearer tokens.
+ *
+ * Returns null when no master key is configured, so a caller that must keep
+ * working without one (token auth predates the master key) can fall back to
+ * an unkeyed hash rather than fail closed. Goes through the same lazy getKey(),
+ * so it only bootstraps a key under the same opt-in rules encryptSecret uses.
+ * The `info` label is mixed in so distinct uses get distinct subkeys.
+ */
+export function tryDeriveSubkey(info: string): Buffer | null {
+  let key: Buffer;
+  try { key = getKey(); }
+  catch { return null; }
+  return createHmac('sha256', key).update(`ritsu/subkey/v1/${info}`).digest();
 }
 
 /**

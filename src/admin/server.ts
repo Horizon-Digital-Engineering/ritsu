@@ -28,6 +28,7 @@ import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
 import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
 import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
+import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
@@ -55,6 +56,7 @@ export interface AdminDeps {
   memory: MemoryStore;
   conversations: ConversationStore;
   approvals: ApprovalStore;
+  commsDenials: CommsDenialStore;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -359,7 +361,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, secrets } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets } = deps;
   const app = express();
   app.disable('x-powered-by');
   // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
@@ -418,30 +420,20 @@ export function createAdminApp(deps: AdminDeps) {
     next();
   });
 
-  // 256kb is plenty for admin payloads (agent system prompts can be long but
-  // not megabyte-long). The one exception is POST /ask, which can carry
-  // operator-pasted images (base64); it gets a cap matching what AskBody
-  // already enforces (≤4 images × ~6.8MB base64 ≈ 27MB) so the zod validator —
-  // not the body parser — is the gate that rejects oversize attachments (with
-  // a clean JSON error instead of a raw 413). Both caps stop a misbehaving
-  // client from blowing up RAM.
-  const jsonDefault = express.json({ limit: '256kb' });
-  const jsonAsk = express.json({ limit: '32mb' });
-  app.use((req, res, next) =>
-    req.method === 'POST' && req.path.endsWith('/ask')
-      ? jsonAsk(req, res, next)
-      : jsonDefault(req, res, next),
-  );
+  // NB: JSON body parsing is deliberately mounted LATER, after admin auth —
+  // an unauthenticated request must not be able to make the large /ask parser
+  // buffer its body. See the body-parser block below the auth middleware.
 
-  // ---- per-IP rate limit on /admin/api/* --------------------------------
+  // ---- per-IP rate limit on the admin API + agent-lifecycle routes ------
   // Tiny in-memory token-bucket. Defends against credential-stuffing on the
   // admin token, accidental hot loops from a buggy client, and trivial DoS.
-  // Health endpoints (/healthz, /readyz, /version, /metrics) are intentionally
-  // exempted so monitors can hammer them.
+  // Covers /admin/api AND /admin/agents (create/delete/ask, incl. the large
+  // image-paste /ask body). Health endpoints (/healthz, /readyz, /version,
+  // /metrics) are intentionally exempted so monitors can hammer them.
   const RATE_LIMIT_WINDOW_MS = 60_000;
   const RATE_LIMIT_MAX = 240;  // 4/sec average, room for UI bursts
   const ipBuckets = new Map<string, { count: number; resetAt: number }>();
-  app.use('/admin/api', (req, res, next) => {
+  const rateLimiter = (req: Request, res: Response, next: () => void): void => {
     const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
     const bucket = ipBuckets.get(ip);
@@ -457,7 +449,9 @@ export function createAdminApp(deps: AdminDeps) {
       return;
     }
     next();
-  });
+  };
+  app.use('/admin/api', rateLimiter);
+  app.use('/admin/agents', rateLimiter);
 
   // ---- standard server endpoints (no auth) -------------------------------
   // These are the only endpoints on this app that DON'T require the admin
@@ -572,6 +566,27 @@ export function createAdminApp(deps: AdminDeps) {
     (req as Request & { adminTokenId?: number }).adminTokenId = row.id;
     next();
   });
+
+  // ---- JSON body parsing (AFTER auth) ------------------------------------
+  // Mounted here, not earlier, so an UNAUTHENTICATED request is rejected by
+  // the admin-auth middleware above BEFORE the parser buffers its body —
+  // otherwise a single anonymous POST to /ask could make the 32MB parser
+  // allocate 32MB of RAM per request (a trivial pre-auth DoS).
+  //
+  // 256kb is plenty for admin payloads (agent system prompts can be long but
+  // not megabyte-long). The one exception is POST /ask, which can carry
+  // operator-pasted images (base64); it gets a cap matching what AskBody
+  // already enforces (≤4 images × ~6.8MB base64 ≈ 27MB) so the zod validator —
+  // not the body parser — is the gate that rejects oversize attachments (with
+  // a clean JSON error instead of a raw 413). Both caps stop a misbehaving
+  // client from blowing up RAM.
+  const jsonDefault = express.json({ limit: '256kb' });
+  const jsonAsk = express.json({ limit: '32mb' });
+  app.use((req, res, next) =>
+    req.method === 'POST' && req.path.endsWith('/ask')
+      ? jsonAsk(req, res, next)
+      : jsonDefault(req, res, next),
+  );
 
   // ---- admin action audit ------------------------------------------------
   // Runs after the auth middleware (so we have the token id) and only for
@@ -785,6 +800,13 @@ export function createAdminApp(deps: AdminDeps) {
   // when SSE isn't connected.
   app.get('/admin/api/approvals/count', (_req: Request, res: Response) => {
     res.json({ pending: approvals.pendingCount() });
+  });
+
+  // Blocked inter-agent calls (ask_agent refused by a guard). Recent-first.
+  // Live updates ride the approvals SSE stream as {kind:'comms-denied'} events.
+  app.get('/admin/api/comms-denials', (req: Request, res: Response) => {
+    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    res.json({ denials: commsDenials.listRecent(limit) });
   });
 
   app.get('/admin/api/approvals/stream', (req: Request, res: Response) => {

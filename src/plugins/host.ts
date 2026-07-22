@@ -4,22 +4,71 @@ import { logger } from '../util/log.js';
 import type { Plugin, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginToolDef } from './types.js';
 
 /**
- * A table-name-prefix helper, NOT a security boundary. `prepare`/`exec` pass
- * raw SQL straight to the shared core DB — a plugin CAN reach core tables if it
- * writes SQL to. Isolation today rests entirely on plugins being first-party,
- * compiled-in code (no dynamic/third-party loader exists). Before that ever
- * changes, this needs real enforcement (per-plugin DB file or a SQL authorizer).
+ * Textual guard: every table a plugin statement references must be one of that
+ * plugin's own `plugin_<ns>_*` tables. Rejects the obvious escapes — core-table
+ * names, other plugins' prefixes, `sqlite_*` schema tables, SQL comments (used
+ * to hide a table ref), and schema/cross-database verbs. It is defense-in-depth,
+ * NOT a kernel-enforced sandbox: a determined hostile plugin could still craft
+ * SQL a text scan misses, so a dynamic/third-party loader still needs true
+ * isolation (a per-plugin DB file). What it DOES buy today: the model-reachable
+ * surface (tool + route handlers) can't reach `agent_definitions`, `mcp_tokens`,
+ * `plugin_secrets`, or a peer plugin's tables even by accident or casual abuse.
+ */
+export function assertScopedSql(sql: string, ns: string): void {
+  const prefix = `plugin_${ns}_`;
+  if (/--|\/\*|\*\//.test(sql)) throw new Error(`ScopedDb(${ns}): SQL comments are not allowed`);
+  const banned = sql.match(/\b(ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b/i);
+  if (banned) throw new Error(`ScopedDb(${ns}): '${banned[1].toUpperCase()}' is not allowed`);
+  // Drop single-quoted string literals so their contents can't be mistaken for
+  // (or hide) a table identifier. Double-quoted identifiers stay — those ARE
+  // names and must be validated.
+  const stripped = sql.replace(/'(?:[^']|'')*'/g, "''");
+  if (/\bsqlite_/i.test(stripped)) throw new Error(`ScopedDb(${ns}): sqlite_* schema tables are off-limits`);
+  // Normalize DDL modifiers so `TABLE <name>` is scannable.
+  const norm = stripped
+    .replace(/\bif\s+not\s+exists\b/gi, '')
+    .replace(/\bif\s+exists\b/gi, '')
+    .replace(/\b(?:temp|temporary)\s+table\b/gi, 'table');
+  // Keywords that can follow FROM/INTO/UPDATE in valid SQL without naming a
+  // table (e.g. the `DO UPDATE SET` of an upsert) — not table references.
+  const NON_TABLE = new Set(['set', 'select', 'values']);
+  const re = /\b(?:from|join|into|update|table)\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(norm)) !== null) {
+    const name = m[2];
+    if (NON_TABLE.has(name.toLowerCase())) continue;
+    if (!name.startsWith(prefix)) {
+      throw new Error(`ScopedDb(${ns}): may only reference its own tables (${prefix}*), not '${name}'`);
+    }
+  }
+}
+
+/**
+ * Per-plugin DB handle. `table(name)` namespaces to `plugin_<ns>_<name>`.
+ *
+ * When `guarded` (the handle given to tool + route handlers — the surface an
+ * agent/model can drive), every prepare/exec is checked by assertScopedSql so a
+ * plugin statement can only touch its own tables. The install-time `migrate()`
+ * handle is UNguarded: it runs once at registration under operator control (and
+ * legitimately imports legacy data), the same trust level as the rest of boot.
+ * See assertScopedSql for the (honest) limits of a textual guard.
  */
 export class ScopedDb implements PluginDb {
   readonly tablesUsed = new Set<string>();
-  constructor(private readonly db: Db, private readonly ns: string) {}
+  constructor(private readonly db: Db, private readonly ns: string, private readonly guarded = false) {}
   table(name: string): string {
     const t = `plugin_${this.ns}_${name}`;
     this.tablesUsed.add(t);
     return t;
   }
-  prepare(sql: string): Stmt { return this.db.prepare(sql); }
-  exec(sql: string): void { this.db.exec(sql); }
+  prepare(sql: string): Stmt {
+    if (this.guarded) assertScopedSql(sql, this.ns);
+    return this.db.prepare(sql);
+  }
+  exec(sql: string): void {
+    if (this.guarded) assertScopedSql(sql, this.ns);
+    this.db.exec(sql);
+  }
   transaction<T>(fn: () => T): () => T { return this.db.transaction(fn); }
 }
 
@@ -69,7 +118,8 @@ export class PluginHost {
     if (plugin.migrate) plugin.migrate(scoped);
     if (plugin.defineTools) {
       const tools: PluginToolDef[] = [];
-      plugin.defineTools({ db: new ScopedDb(this.db, id), logger: scopedLogger(id), tool: (d) => tools.push(d) });
+      // Guarded handle: tool handlers run in response to agent/model actions.
+      plugin.defineTools({ db: new ScopedDb(this.db, id, true), logger: scopedLogger(id), tool: (d) => tools.push(d) });
       this.pluginTools.set(id, tools);
     }
     this.plugins.push(plugin);
@@ -129,7 +179,8 @@ export class PluginHost {
       const base = `/admin/api/plugins/${id}`;
       const ctx: PluginContext = {
         id,
-        db: new ScopedDb(this.db, id),
+        // Guarded handle: route handlers serve HTTP requests (operator UI).
+        db: new ScopedDb(this.db, id, true),
         logger: scopedLogger(id),
         route: (method, path, handler) => {
           app[method](base + path, (req, res) => {
