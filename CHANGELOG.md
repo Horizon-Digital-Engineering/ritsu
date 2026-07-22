@@ -87,8 +87,7 @@ agents can see operator-pasted screenshots.
 ## [0.8.0] — 2026-05-30
 
 Human-in-the-loop approvals — the first core capability of the plugin
-era (core slot 5; see operations/ritsu/approval-system.md). Plus a
-deploy-script change to test PR branches on the box.
+era. Plus a deploy-script change to test PR branches on the box.
 
 ### Added
 

@@ -2508,7 +2508,7 @@ function approvalToolIcon(tool) {
 }
 
 /** Staleness class — drives the row tint. No auto-reject; visibility scales
- *  with neglect (see operations/ritsu/approval-system.md). */
+ *  with neglect. */
 function approvalStaleClass(a) {
   const age = Math.floor(Date.now() / 1000) - a.requested_at;
   if (age > 7 * 86400) return 'stale-7d';
