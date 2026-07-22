@@ -114,6 +114,31 @@ export class PlaidClient {
     });
   }
 
+  /** SANDBOX ONLY: mint a public_token for a test institution with no Link UI,
+   *  so the whole exchange→sync pipeline is exercisable end-to-end in sandbox.
+   *  ins_109508 = "First Platypus Bank", Plaid's standard sandbox institution. */
+  async sandboxPublicToken(institutionId = 'ins_109508'): Promise<{ public_token: string }> {
+    return this.call<{ public_token: string }>('/sandbox/public_token/create', {
+      institution_id: institutionId,
+      initial_products: ['transactions'],
+    });
+  }
+
+  /** Fetch a Hosted Link session's results after the operator completes it, so
+   *  we don't need a public webhook (a self-hosted box behind a private network
+   *  isn't reachable by Plaid). Returns the public_token once available, else
+   *  null. Response shape varies by API version, so parse defensively. */
+  async getLinkResults(linkToken: string): Promise<{ public_token: string | null }> {
+    const r = await this.call<Record<string, unknown>>('/link/token/get', { link_token: linkToken });
+    const sessions = (r.link_sessions ?? []) as Array<{ results?: { item_add_results?: Array<{ public_token?: string }> } }>;
+    for (const s of sessions) {
+      for (const add of s.results?.item_add_results ?? []) {
+        if (add.public_token) return { public_token: add.public_token };
+      }
+    }
+    return { public_token: typeof r.public_token === 'string' ? r.public_token : null };
+  }
+
   async getInstitution(institutionId: string): Promise<{ name: string } | null> {
     try {
       const r = await this.call<{ institution: { name: string } }>('/institutions/get_by_id', {

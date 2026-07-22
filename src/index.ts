@@ -10,6 +10,7 @@ import { WorkspaceStore } from './workspace-store.js';
 import { ApprovalStore } from './approval-store.js';
 import { PluginHost } from './plugins/host.js';
 import { projectsPlugin } from './plugins/projects/plugin.js';
+import { financePlugin } from './plugins/finance/plugin.js';
 import { SecretStore } from './auth/secret-store.js';
 import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
   const secrets = new SecretStore(db);
   const pluginHost = new PluginHost(db, secrets);
   pluginHost.register(projectsPlugin);
+  pluginHost.register(financePlugin);
   // Close out any approvals left pending by a prior process — their agent
   // turns died with that process and can never resume.
   approvals.reconcileOnBoot();
