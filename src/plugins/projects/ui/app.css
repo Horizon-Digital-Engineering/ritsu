@@ -1,0 +1,27 @@
+.backlog-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.backlog-add #pj-task-title { flex: 1 1 12rem; }
+.backlog-group { margin-bottom: 18px; }
+.backlog-group-head { margin: 0 0 6px; font-size: 0.9rem; font-weight: 600; }
+.task-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 10px; border: 1px solid var(--line); border-left: 3px solid var(--line);
+  border-radius: 4px; margin-bottom: 5px; background: var(--panel);
+}
+.task-row.status-doing   { border-left-color: var(--accent); }
+.task-row.status-done    { border-left-color: var(--ok); }
+.task-row.status-blocked { border-left-color: var(--err); }
+.task-row.status-done .task-title { color: var(--muted); text-decoration: line-through; }
+.task-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.task-proj { color: var(--muted); font-size: 0.78rem; }
+.task-title { word-break: break-word; }
+.task-detail { color: var(--muted); font-size: 0.82rem; }
+.task-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.task-status-sel { font-size: 0.78rem; padding: 2px 4px; }
+.task-status-sel.status-doing   { color: var(--accent); }
+.task-status-sel.status-done    { color: var(--ok); }
+.task-status-sel.status-blocked { color: var(--err); }
+.task-del { padding: 2px 8px; line-height: 1.2; }
+.badge.status-backlog { color: var(--muted); }
+.badge.status-doing   { color: var(--accent); border-color: #2c3a4a; }
+.badge.status-done    { color: var(--ok); border-color: #2c4a36; }
+.badge.status-blocked { color: var(--err); border-color: #4a2d2d; }

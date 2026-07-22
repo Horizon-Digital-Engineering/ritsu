@@ -10,6 +10,8 @@ import { ApprovalStore } from '../approval-store.js';
 import { SecretStore } from '../auth/secret-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
+import { PluginHost } from '../plugins/host.js';
+import { projectsPlugin } from '../plugins/projects/plugin.js';
 
 function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -28,6 +30,7 @@ function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     provider_options: {},
     capabilities: [],
     approval_tools: [],
+    plugins: [],
     enabled: true,
     ...overrides,
   };
@@ -57,9 +60,10 @@ describe('AgentHost', () => {
   let defStore: SqliteAgentDefinitionStore;
   let workspaces: WorkspaceStore;
   let stub: ReturnType<typeof makeStubFactory>;
+  let db: ReturnType<typeof openDatabase>;
 
   beforeEach(() => {
-    const db = openDatabase(':memory:');
+    db = openDatabase(':memory:');
     const convs = new SqliteConversationStore(db);
     defStore = new SqliteAgentDefinitionStore(db);
     workspaces = new WorkspaceStore(db);
@@ -157,3 +161,129 @@ describe('AgentHost', () => {
     assert.ok((blocks[0].text ?? '').length > 0, 'empty image-only turn gets a non-empty text block');
   });
 });
+
+describe('AgentHost — plugin allowlist wiring', () => {
+  let host: AgentHost;
+  let defStore: SqliteAgentDefinitionStore;
+  let stub: ReturnType<typeof makeStubFactory>;
+  let pluginHost: PluginHost;
+
+  beforeEach(() => {
+    const db = openDatabase(':memory:');
+    const convs = new SqliteConversationStore(db);
+    defStore = new SqliteAgentDefinitionStore(db);
+    const workspaces = new WorkspaceStore(db);
+    stub = makeStubFactory();
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+    pluginHost = new PluginHost(db);
+    pluginHost.register(projectsPlugin);
+    host.setPluginHost(pluginHost);
+  });
+
+  function pluginsOf(i: number): string[] {
+    const opts = stub.builds[i].opts as { agentId?: string; plugins?: Array<{ namespace: string }> };
+    return (opts.plugins ?? []).map(p => p.namespace);
+  }
+
+  it('wires allowlisted plugin providers + agentId into the dispatcher', async () => {
+    const def = await defStore.upsert(sampleDef({ id: 'p1', plugins: ['projects'] }));
+    host.addOrReplace(def);
+    assert.equal((stub.builds[0].opts as { agentId?: string }).agentId, 'p1');
+    assert.deepEqual(pluginsOf(0), ['projects']);
+  });
+
+  it('no allowlist entry → no plugin providers', async () => {
+    const def = await defStore.upsert(sampleDef({ id: 'p2', plugins: [] }));
+    host.addOrReplace(def);
+    assert.deepEqual(pluginsOf(0), []);
+  });
+
+  it('disabled plugin makes the allowlist entry inert', async () => {
+    pluginHost.setEnabled('projects', false);
+    const def = await defStore.upsert(sampleDef({ id: 'p3', plugins: ['projects'] }));
+    host.addOrReplace(def);
+    assert.deepEqual(pluginsOf(0), []);
+  });
+
+  it('gates the plugin mutating tools (create/update) via approval_tools', async () => {
+    const def = await defStore.upsert(sampleDef({ id: 'p4', plugins: ['projects'] }));
+    host.addOrReplace(def);
+    const opts = stub.builds[0].opts as { approval?: { gatedTools: string[] } };
+    const gated = opts.approval?.gatedTools ?? [];
+    assert.ok(gated.includes('mcp__projects__create_task'));
+    assert.ok(gated.includes('mcp__projects__update_task'));
+    assert.ok(!gated.includes('mcp__projects__list_projects'));
+  });
+});
+
+describe('AgentHost — plugin gating hardening', () => {
+  let host: AgentHost;
+  let defStore: SqliteAgentDefinitionStore;
+  let stub: ReturnType<typeof makeStubFactory>;
+  let pluginHost: PluginHost;
+
+  beforeEach(() => {
+    const db = openDatabase(':memory:');
+    const convs = new SqliteConversationStore(db);
+    defStore = new SqliteAgentDefinitionStore(db);
+    const workspaces = new WorkspaceStore(db);
+    stub = makeStubFactory();
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+    pluginHost = new PluginHost(db);
+    pluginHost.register(projectsPlugin);
+    host.setPluginHost(pluginHost);
+  });
+
+  function gatedOf(i: number): string[] {
+    return (stub.builds[i].opts as { approval?: { gatedTools: string[] } }).approval?.gatedTools ?? [];
+  }
+
+  it('normal agent gates only the plugin mutating tools (reads free)', async () => {
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 'n', plugins: ['projects'] })));
+    const g = gatedOf(0);
+    assert.ok(g.includes('mcp__projects__create_task'));
+    assert.ok(!g.includes('mcp__projects__list_projects'));
+  });
+
+  it('injection-exposed (crm) agent force-gates EVERY plugin tool, incl. reads', async () => {
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 'c', capabilities: ['crm'], plugins: ['projects'] })));
+    const g = gatedOf(0);
+    assert.ok(g.includes('mcp__projects__list_projects'));
+    assert.ok(g.includes('mcp__projects__list_tasks'));
+    assert.ok(g.includes('mcp__projects__create_task'));
+  });
+
+  it('reloadForPlugin rebuilds only agents whose allowlist includes it', async () => {
+    await defStore.upsert(sampleDef({ id: 'uses', plugins: ['projects'] }));
+    await defStore.upsert(sampleDef({ id: 'nope', plugins: [] }));
+    await host.loadAll();
+    const before = stub.builds.length;
+    await host.reloadForPlugin('projects');
+    assert.deepEqual(stub.builds.slice(before).map(b => b.def.id), ['uses']);
+  });
+})
+
+describe('AgentHost — conversation ownership', () => {
+  let host: AgentHost;
+  let defStore: SqliteAgentDefinitionStore;
+  let stub: ReturnType<typeof makeStubFactory>;
+
+  beforeEach(() => {
+    const db = openDatabase(':memory:');
+    const convs = new SqliteConversationStore(db);
+    defStore = new SqliteAgentDefinitionStore(db);
+    const workspaces = new WorkspaceStore(db);
+    stub = makeStubFactory();
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), stub.factory);
+  });
+
+  it('ignores a conversation_id that belongs to another agent (no cross-agent read)', async () => {
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 'a' })));
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 'b' })));
+    const aResp = await host.get('a').onMessage({ message: 'SECRET-A-ONLY' });
+    const aConv = aResp.conversation_id;
+    await host.get('b').onMessage({ message: 'hi', conversation_id: aConv });
+    const bMsgs = stub.chats[stub.chats.length - 1].req.messages;
+    assert.ok(!bMsgs.some(m => m.content === 'SECRET-A-ONLY'), "B must not load A's transcript");
+  });
+})

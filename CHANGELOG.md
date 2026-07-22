@@ -4,6 +4,34 @@ All notable changes to ritsu are recorded here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semantic
 versioning per [semver](https://semver.org/).
 
+## [0.10.0] — 2026-07-21
+
+A plugin system, agents that can use plugins, and a security-hardening pass.
+
+### Added
+
+- **Plugin system** — a plugin runtime with a scoped per-plugin datastore, a
+  manifest-driven admin UI, agent-facing tools, and a registry that tracks each
+  plugin's version and owned tables. Plugins can be enabled/disabled (reversible,
+  data kept) or uninstalled, managed from a Plugins tab.
+- **Projects plugin** — a configurable multi-project manager, each project with a
+  working directory, plus per-project and aggregated task backlogs.
+- **Agents can use plugins** — a per-agent allowlist wires an allowed plugin's
+  tools into the agent's turn; write tools stay behind the approval gate.
+- **Unified tool gateway** — one mechanism assembles every agent tool group,
+  built-in and plugin alike.
+
+### Security
+
+- Hardening across the plugin, agent-management, auth, and admin surfaces:
+  tighter per-agent tool authorization, input validation and output handling on
+  the plugin surface, rate limiting, and correct client attribution behind a
+  reverse proxy.
+
+### Fixed
+
+- Column backfills for databases created before newer columns existed.
+
 ## [0.9.0] — 2026-06-05
 
 Extensions + the CRM: agents read/draft freely, every send/publish is held

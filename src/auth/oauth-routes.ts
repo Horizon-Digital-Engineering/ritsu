@@ -257,6 +257,13 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
       res.status(400).type('text/plain').send(`OAuth error: ${err.error} — ${err.description}`);
       return;
     }
+    // RFC 8707: reject an unrecognized audience rather than mint a token stamped
+    // with an attacker-chosen `resource` (it'd be rejected at /mcp anyway, but
+    // this avoids the confusing consent display + matches spec guidance).
+    if (qp.resource && stripTrailingSlashes(qp.resource) !== resourceCanonical) {
+      res.status(400).type('text/plain').send(`OAuth error: invalid_target — resource must be ${resourceCanonical}`);
+      return;
+    }
     const record = oauth.createAuthorizeRequest({
       client_id: qp.client_id!,
       redirect_uri: qp.redirect_uri!,

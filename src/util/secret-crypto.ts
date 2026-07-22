@@ -134,6 +134,12 @@ function readKeyFile(path: string): Buffer {
       `Tighten with: sudo chmod 0600 ${path}`,
     );
   }
+  // Must be owned by us (or root). A 0600 file owned by a DIFFERENT non-root
+  // uid — left by a bad install or a shared account — is not ours to trust.
+  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (myUid !== null && st.uid !== myUid && st.uid !== 0) {
+    throw new Error(`master key at ${path} is owned by uid ${st.uid}, not this process (${myUid}) or root. chown it to the ritsu service user.`);
+  }
   // Parent must not be world-writable. A 0755 dir is fine (others can't
   // modify it), 0777 / 0775 / o+w / g+w are not.
   let parentSt;

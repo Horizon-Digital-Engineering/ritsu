@@ -10,6 +10,7 @@ import type { TokenStore } from '../auth/token-store.js';
 import type { ApiKeyStore } from '../auth/api-key-store.js';
 import { API_KEY_PROVIDERS } from '../auth/api-key-store.js';
 import type { WorkspaceStore, Permission } from '../workspace-store.js';
+import type { PluginHost } from '../plugins/host.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
 import type { ApprovalStore } from '../approval-store.js';
@@ -50,6 +51,7 @@ export interface AdminDeps {
   tokens: TokenStore;
   apiKeys: ApiKeyStore;
   workspaces: WorkspaceStore;
+  pluginHost: PluginHost;
   memory: MemoryStore;
   conversations: ConversationStore;
   approvals: ApprovalStore;
@@ -357,9 +359,13 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, memory, conversations, approvals, secrets } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, secrets } = deps;
   const app = express();
   app.disable('x-powered-by');
+  // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
+  // 127.0.0.1 — otherwise the per-IP rate limiter collapses to one global bucket
+  // and every audit row logs the proxy's address instead of the caller's.
+  app.set('trust proxy', 'loopback');
 
   // ---- security headers --------------------------------------------------
   // Strict CSP for the admin UI: the page only loads same-origin scripts/
@@ -536,7 +542,8 @@ export function createAdminApp(deps: AdminDeps) {
     //
     // (Express mounts paths relative to the mount point: GET /admin
     // arrives here as req.path '/'. With trailing slash → '/index.html'.)
-    if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css') {
+    if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
+      || req.path.startsWith('/plugins/')) {
       next();
       return;
     }
@@ -1229,6 +1236,31 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   // ---- tokens ------------------------------------------------------------
+
+  app.get('/admin/api/plugins', (_req: Request, res: Response) => {
+    res.json({ plugins: pluginHost.manifests() });
+  });
+
+  app.patch('/admin/api/plugins/:id', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, z.object({ enabled: z.boolean() }));
+    if (!body) return;
+    const id = param(req.params.id);
+    const ok = pluginHost.setEnabled(id, body.enabled);
+    // Re-wire live agents so a disable revokes the plugin's tools immediately,
+    // not just at the agent's next reload.
+    if (ok) await host.reloadForPlugin(id);
+    res.status(ok ? 200 : 404).json({ ok });
+  });
+
+  app.delete('/admin/api/plugins/:id', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    const ok = pluginHost.uninstall(id);
+    if (ok) await host.reloadForPlugin(id);
+    res.status(ok ? 204 : 404).end();
+  });
+
+  pluginHost.mountApi(app);
+  pluginHost.mountAssets(app);
 
   app.get('/admin/api/tokens', (req: Request, res: Response) => {
     const scope = req.query.scope as string | undefined;

@@ -13,6 +13,9 @@ User=ritsu
 Group=ritsu
 WorkingDirectory=/opt/ritsu
 EnvironmentFile=-/etc/ritsu/env
+# Suppress Express's dev error handler (which puts stack traces in HTTP
+# responses) and put dependencies in production mode.
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node /opt/ritsu/dist/index.js
 Restart=on-failure
 RestartSec=3

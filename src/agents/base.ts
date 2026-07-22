@@ -154,7 +154,16 @@ export abstract class AgentBase {
     // Agent-to-agent calls always pass a conversation_id (resolved in
     // agent-comms-mcp via findOrStartInterAgentThread) so they don't take
     // this branch.
-    const conversationId = req.conversation_id ?? this.deps.conversations.findOrStartHumanThread(this.id);
+    //
+    // SECURITY: honor a supplied conversation_id ONLY if it belongs to THIS
+    // agent (its human thread, or an inter-agent thread whose target is this
+    // agent). A guessed id naming another agent's conversation is ignored and
+    // falls back to this agent's human thread — closing the cross-agent
+    // transcript read where an MCP caller enumerates ids to pull foreign history.
+    const conversationId = (req.conversation_id != null
+      && this.deps.conversations.agentIdOf(req.conversation_id) === this.id)
+      ? req.conversation_id
+      : this.deps.conversations.findOrStartHumanThread(this.id);
 
     const attachments = req.attachments && req.attachments.length > 0 ? req.attachments : undefined;
     this.deps.conversations.append(conversationId, 'user', req.message, req.caller_label ?? null, attachments);

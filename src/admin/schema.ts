@@ -36,6 +36,11 @@ export const AgentDefinitionSchema = z.object({
    *  (e.g. ['Bash','Write']). The agent's turn blocks on a pending approval
    *  until the operator approves or rejects. Empty = no gating. */
   approval_tools: z.array(z.string()).default([]),
+  /** Plugin ids this agent may use. Empty = no plugin access. Each id must be
+   *  an installed, enabled plugin; the agent then gets that plugin's
+   *  agent-facing tools (mutating ones stay approval-gated). Same allowlist
+   *  pattern for every plugin — new plugins need no new wiring. */
+  plugins: z.array(z.string()).default([]),
   enabled: z.boolean().default(true),
   created_at: z.number().int().optional(),
   updated_at: z.number().int().optional(),

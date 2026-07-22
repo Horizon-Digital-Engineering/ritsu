@@ -225,8 +225,9 @@ const NAV_GROUPS = [
     { id: 'oauth-clients', label: 'OAuth Clients' },
   ] },
   { id: 'system', label: 'System', tabs: [
-    { id: 'logs',  label: 'Logs' },
-    { id: 'audit', label: 'Audit' },
+    { id: 'logs',    label: 'Logs' },
+    { id: 'audit',   label: 'Audit' },
+    { id: 'plugins', label: 'Plugins' },
   ] },
 ];
 const TAB_TO_GROUP = (() => {
@@ -272,6 +273,7 @@ function switchTab(name) {
   renderNav();
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
+  if (pluginTabs[name]) pluginTabs[name](document.getElementById(`pane-${name}`));
   if (name === 'approvals') loadApprovalsTab();
   if (name === 'extensions') loadExtensionsTab();
   if (name === 'mcp') loadMcpTools();
@@ -285,6 +287,7 @@ function switchTab(name) {
   else if (name === 'tools') loadToolsTab();
   else if (name === 'logs') openLogStream();
   else if (name === 'audit') loadAuditTab();
+  else if (name === 'plugins') loadPluginsManager();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -293,9 +296,9 @@ async function refreshInfo() {
   try {
     const d = await api('GET', '/admin/api/info');
     $('version').textContent = `v${d.version}`;
-    const authChip = `<span class="chip ${d.auth_effective === 'open' ? 'warn' : 'ok'}">mcp: ${d.auth_effective}</span>`;
-    const modeChip = `<span class="chip">mode: ${d.auth_mode}</span>`;
-    const levelChip = `<span class="chip">log: ${d.log_level}</span>`;
+    const authChip = `<span class="chip ${d.auth_effective === 'open' ? 'warn' : 'ok'}">mcp: ${esc(d.auth_effective)}</span>`;
+    const modeChip = `<span class="chip">mode: ${esc(d.auth_mode)}</span>`;
+    const levelChip = `<span class="chip">log: ${esc(d.log_level)}</span>`;
     const agentsChip = `<span class="chip">${d.agent_count} agent${d.agent_count===1?'':'s'}</span>`;
     const tokensChip = `<span class="chip">${d.active_token_count} token${d.active_token_count===1?'':'s'}</span>`;
     const signOutChip = `<button type="button" class="chip action" data-action="sign-out" title="Clear admin token from this browser">sign out</button>`;
@@ -355,6 +358,22 @@ function renderApprovalToolsCheckboxes(selected) {
 }
 function readApprovalTools() {
   return [...$('f-approval-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
+}
+function renderPluginCheckboxes(selected) {
+  const set = new Set(selected || []);
+  const target = $('f-plugins');
+  if (!target) return;
+  const enabled = (installedPlugins || []).filter(p => p.enabled !== false);
+  if (!enabled.length) {
+    target.innerHTML = '<em class="txt-muted fs-md1">No enabled plugins.</em>';
+    return;
+  }
+  target.innerHTML = enabled.map(p =>
+    `<label class="row fs-md1"><input type="checkbox" value="${esc(p.id)}" ${set.has(p.id) ? 'checked' : ''} class="input-auto" /> ${esc(p.name)} <span class="txt-muted">(${(p.mcpTools || []).length} tools)</span></label>`,
+  ).join('');
+}
+function readPlugins() {
+  return [...$('f-plugins').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
 }
 function renderCanCallCheckboxes(selected) {
   const set = new Set(selected || []);
@@ -479,6 +498,7 @@ function loadAgentForm(a) {
   refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); });
   renderToolCheckboxes(a.tools_allowlist || []);
   renderApprovalToolsCheckboxes(a.approval_tools || []);
+  renderPluginCheckboxes(a.plugins || []);
   renderCanCallCheckboxes(a.can_call || []);
   const caps = new Set(a.capabilities || []);
   $('f-cap-manage').checked = caps.has('manage_agents');
@@ -511,6 +531,7 @@ function clearForm() {
   refreshApiKeyDropdown();
   renderToolCheckboxes([]);
   renderApprovalToolsCheckboxes([]);
+  renderPluginCheckboxes([]);
   renderCanCallCheckboxes([]);
   $('f-cap-manage').checked = false;
   $('f-cap-monitor').checked = false;
@@ -539,6 +560,7 @@ async function submitAgent(method) {
     enabled: $('f-enabled').checked, system_prompt: $('f-system-prompt').value,
     tools_allowlist: readToolsAllowlist(),
     approval_tools: readApprovalTools(),
+    plugins: readPlugins(),
     can_call: readCanCall(),
     capabilities: [
       ...($('f-cap-manage').checked ? ['manage_agents'] : []),
@@ -2802,6 +2824,10 @@ const ACTIONS = {
   // tokens tab
   'revoke-token':           (el) => revokeToken(Number(el.dataset.id)),
   'delete-token':           (el) => deleteToken(Number(el.dataset.id)),
+
+  'toggle-plugin':          (el) => togglePlugin(el.dataset.id, el.dataset.enabled === '1'),
+  'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
+
   'copy-mint-token':        () => {
     const text = $('token-plaintext')?.textContent || '';
     navigator.clipboard.writeText(text).then(() => toast('copied'));
@@ -2839,11 +2865,134 @@ const ACTIONS = {
   'revoke-oauth-client':    (el) => revokeOAuthClient(el.dataset.client, el.dataset.name),
 };
 
+// ---- plugin bridge ----------------------------------------------------
+// Plugins ship their own UI (served from /admin/plugins/<id>/) and register
+// tab renderers + action handlers through window.ritsu. Core stays generic:
+// it knows how to mount a plugin, not what any plugin does.
+const pluginTabs = {};
+const pluginActions = {};
+const pluginChanges = {};
+let installedPlugins = [];
+window.ritsu = {
+  api, esc, toast,
+  registerTab(tabId, fn) { pluginTabs[tabId] = fn; if (activeTab === tabId) fn(document.getElementById(`pane-${tabId}`)); },
+  registerAction(name, fn) { pluginActions[name] = fn; },
+  registerChange(name, fn) { pluginChanges[name] = fn; },
+};
+
+async function loadPlugins() {
+  let plugins = [];
+  try { ({ plugins } = await api('GET', '/admin/api/plugins')); }
+  catch { return; }
+  installedPlugins = plugins;
+  const primary = $('nav-primary');
+  const main = document.querySelector('main');
+  for (const p of plugins) {
+    if (p.enabled === false) continue;
+    for (const g of (p.nav || [])) {
+      if (!NAV_GROUPS.some(x => x.id === g.id)) NAV_GROUPS.push(g);
+      if (!primary.querySelector(`[data-group="${g.id}"]`)) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.action = 'switch-group';
+        btn.dataset.group = g.id;
+        btn.textContent = g.label;
+        primary.appendChild(btn);
+      }
+      for (const t of (g.tabs || [])) {
+        TAB_TO_GROUP.set(t.id, g.id);
+        if (!document.getElementById(`pane-${t.id}`)) {
+          const sec = document.createElement('section');
+          sec.id = `pane-${t.id}`;
+          sec.className = 'pane';
+          main.appendChild(sec);
+        }
+      }
+    }
+    if (p.assets?.css) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = p.assets.css;
+      document.head.appendChild(link);
+    }
+    if (p.assets?.js) {
+      const s = document.createElement('script');
+      s.type = 'module';
+      s.src = p.assets.js;
+      document.head.appendChild(s);
+    }
+  }
+  renderNav();
+  renderPluginCheckboxes(readPlugins());
+}
+
+// System → Plugins: the plugin manager (core — it manages plugins, isn't one).
+// Lists every installed plugin with its version, surfaces, owned tables, and
+// an enable/disable toggle. Disable is reversible (data kept); uninstall drops
+// the plugin's tables.
+async function loadPluginsManager() {
+  try {
+    const { plugins } = await api('GET', '/admin/api/plugins');
+    renderPluginsManager(plugins);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function pluginSurfaces(p) {
+  const s = [];
+  if (p.nav?.length) s.push('UI');
+  s.push('REST');
+  return s.join(', ');
+}
+
+function renderPluginsManager(plugins) {
+  const target = $('plugins-list');
+  if (!plugins.length) { target.innerHTML = '<em class="txt-muted">No plugins installed.</em>'; return; }
+  const rows = plugins.map(p => `
+    <tr class="${p.enabled ? '' : 'disabled'}">
+      <td class="id-cell">${esc(p.name)}</td>
+      <td><code>${esc(p.id)}</code></td>
+      <td>${esc(p.version || '—')}</td>
+      <td>${pluginSurfaces(p)}</td>
+      <td title="${esc((p.tables || []).join(', '))}">${(p.tables || []).length}</td>
+      <td>${p.installed_at ? new Date(p.installed_at * 1000).toISOString().slice(0, 10) : '—'}</td>
+      <td>${p.enabled ? '<span class="badge ok-tint">enabled</span>' : '<span class="badge">disabled</span>'}</td>
+      <td class="row-actions">
+        <button data-action="toggle-plugin" data-id="${esc(p.id)}" data-enabled="${p.enabled ? 1 : 0}">${p.enabled ? 'disable' : 'enable'}</button>
+        <button class="danger" data-action="uninstall-plugin" data-id="${esc(p.id)}" data-name="${esc(p.name)}" data-tables="${(p.tables || []).length}">uninstall</button>
+      </td>
+    </tr>`).join('');
+  target.innerHTML = `<table><thead><tr><th>name</th><th>id</th><th>version</th><th>surfaces</th><th>tables</th><th>installed</th><th>state</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function togglePlugin(id, currentlyEnabled) {
+  try {
+    await api('PATCH', `/admin/api/plugins/${encodeURIComponent(id)}`, { enabled: !currentlyEnabled });
+    toast(`Plugin ${currentlyEnabled ? 'disabled' : 'enabled'} — reload to apply it to the nav.`);
+    loadPluginsManager();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function uninstallPlugin(id, name, tableCount) {
+  if (!confirm(`Uninstall "${name}"? This DROPS its ${tableCount} data table(s) permanently — not the same as disabling. Continue?`)) return;
+  try {
+    await api('DELETE', `/admin/api/plugins/${encodeURIComponent(id)}`);
+    toast(`Uninstalled ${name}.`);
+    loadPluginsManager();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;
-  const handler = ACTIONS[action];
+  const handler = ACTIONS[action] || pluginActions[action];
+  if (handler) handler(el, e);
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-change]');
+  if (!el) return;
+  const handler = pluginChanges[el.dataset.change];
   if (handler) handler(el, e);
 });
 
@@ -2854,7 +3003,7 @@ renderNav();
 // promises / .then() chains. refreshAgents depends on agent-types finishing
 // first, so it's a sequential await after loadAgentTypes.
 await loadAgentTypes();
-await Promise.all([refreshAgents(), loadAvailableTools(), loadLogLevels(), refreshInfo()]);
+await Promise.all([refreshAgents(), loadAvailableTools(), loadLogLevels(), refreshInfo(), loadPlugins()]);
 setInterval(refreshInfo, 5000);
 
 // Approvals: open the live stream + seed the nav badge so a pending

@@ -4,7 +4,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { AgentDefinitionSchema, AgentDefinitionPatchSchema, DispatcherKindSchema, MemoryBackendSchema, assertGrantableCapabilities } from './admin/schema.js';
+import { AgentDefinitionSchema, AgentDefinitionPatchSchema, DispatcherKindSchema, MemoryBackendSchema } from './admin/schema.js';
 import type { AgentHost } from './agent-host.js';
 import type { MemoryStore } from './memory-store.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
@@ -107,6 +107,33 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
   const app = createMcpExpressApp({
     host: deps.bindHost,
     ...(allowedHosts ? { allowedHosts } : {}),
+  });
+  app.set('trust proxy', 'loopback');
+
+  // Per-IP rate limit on the protocol surface, BEFORE auth — each ask_agent is a
+  // real model invocation (cost), and neither a valid-token spray nor an
+  // unauthenticated credential-stuffing loop should be unthrottled. Mirrors the
+  // admin limiter. OAuth/DCR endpoints have their own limiter; health lives on
+  // the admin port.
+  const MCP_RATE_WINDOW_MS = 60_000;
+  const MCP_RATE_MAX = 120;
+  const mcpBuckets = new Map<string, { count: number; resetAt: number }>();
+  app.use('/mcp', (req, res, next) => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const now = Date.now();
+    const bucket = mcpBuckets.get(ip);
+    if (!bucket || bucket.resetAt < now) {
+      mcpBuckets.set(ip, { count: 1, resetAt: now + MCP_RATE_WINDOW_MS });
+      next();
+      return;
+    }
+    bucket.count++;
+    if (bucket.count > MCP_RATE_MAX) {
+      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+      res.status(429).json({ jsonrpc: '2.0', error: { code: -32000, message: 'rate limit exceeded' }, id: null });
+      return;
+    }
+    next();
   });
 
   // MCP port serves the protocol surface (/mcp) plus the OAuth 2.1 endpoints
@@ -375,6 +402,8 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
           .describe('Per-agent capabilities. Empty by default.'),
         approval_tools: z.array(z.string()).default([])
           .describe('Tool names that require operator approval before each use (e.g. ["Bash","Write"]). Empty = no gating.'),
+        plugins: z.array(z.string()).default([])
+          .describe('Plugin ids this agent may use (its agent-facing tools get wired in). Empty = none.'),
         enabled: z.boolean().default(true).describe('Whether the agent is callable.'),
       },
     },
@@ -383,7 +412,11 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
       a => a.id,
       async (args) => {
         const validated = AgentDefinitionSchema.parse(args);
-        assertGrantableCapabilities(validated.capabilities); // crm/social are operator-API-only
+        // SECURITY: an MCP token is strictly below admin (threat model: "an MCP
+        // token cannot reach admin"). Capabilities are privilege grants — minting
+        // a manage_agents/monitor_agents agent would be admin-equivalent power —
+        // so MCP-created agents get NONE. Grant capabilities via the admin UI.
+        validated.capabilities = [];
         const existing = await deps.defStore.read(validated.id);
         if (existing) throw new Error(`agent ${validated.id} already exists; use update_agent`);
         const saved = await deps.defStore.upsert(validated);
@@ -421,9 +454,16 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
       async (args) => {
         const current = await deps.defStore.read(args.agent_id);
         if (!current) throw new Error(`agent ${args.agent_id} not found`);
+        // SECURITY: MCP tokens can't manage privileged agents. Refuse to edit an
+        // agent that holds any capability (operator-managed), and never let an
+        // MCP patch add/change capabilities — so an MCP caller can't commandeer a
+        // crm/social/manage agent or self-escalate via update.
+        if (current.capabilities.length > 0) {
+          throw new Error(`agent ${args.agent_id} holds operator-only capabilities; edit it from the admin UI`);
+        }
         const patch = AgentDefinitionPatchSchema.parse(args.patch);
-        assertGrantableCapabilities(patch.capabilities); // crm/social are operator-API-only
-        const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id });
+        delete patch.capabilities;
+        const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id, capabilities: current.capabilities });
         const saved = await deps.defStore.upsert(merged);
         deps.host.addOrReplace(saved);
         return { structured: saved, text: `updated ${saved.id}` };

@@ -253,6 +253,20 @@ CREATE TABLE IF NOT EXISTS plugin_secrets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_plugin_secrets_ns ON plugin_secrets(namespace);
+
+-- Plugin registry. One row per installed plugin; the tables column is a JSON
+-- array of the physical table names that plugin owns (all prefixed plugin_). Lets
+-- us cleanly uninstall a plugin — drop exactly its tables, never core — and
+-- always answer "is this table plugin-owned or core?".
+CREATE TABLE IF NOT EXISTS plugin_registry (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  version      TEXT NOT NULL DEFAULT '',
+  tables       TEXT NOT NULL DEFAULT '[]',
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  installed_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
 `;
 
 /**
@@ -418,6 +432,12 @@ function migrate(db: Db): void {
   // approval for before each use (e.g. ["Bash","Write"]). Empty = no gating
   // (current behavior for every existing agent).
   addColumnIfMissing(db, 'agent_definitions', 'approval_tools', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, 'agent_definitions', 'plugins', "TEXT NOT NULL DEFAULT '[]'");
+  // plugin_registry gained version + enabled after its first release; existing
+  // DBs created plugin_registry without them, and CREATE TABLE IF NOT EXISTS
+  // won't backfill columns — so add them here.
+  addColumnIfMissing(db, 'plugin_registry', 'version', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'plugin_registry', 'enabled', 'INTEGER NOT NULL DEFAULT 1');
 }
 
 /** API keys for the ritsu-agent runtime (Phase B). Stored AES-256-GCM

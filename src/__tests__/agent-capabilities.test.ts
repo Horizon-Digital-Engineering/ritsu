@@ -29,6 +29,7 @@ function def(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     provider_options: {},
     capabilities: [],
     approval_tools: [],
+    plugins: [],
     enabled: true,
     ...overrides,
   };

@@ -10,6 +10,8 @@ import type { WorkspaceStore } from './workspace-store.js';
 import type { ApprovalStore } from './approval-store.js';
 import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
+import type { PluginHost } from './plugins/host.js';
+import { pluginMcpProvider, pluginGatedToolNames } from './plugins/mcp-provider.js';
 import { logger } from './util/log.js';
 
 /**
@@ -29,6 +31,11 @@ export type DispatcherFactory = (
  */
 export class AgentHost {
   private readonly agents = new Map<string, AgentBase>();
+  private pluginHost?: PluginHost;
+
+  /** Injected after construction (pluginHost is built alongside AgentHost in
+   *  index.ts). When unset, agents simply get no plugin tools. */
+  setPluginHost(h: PluginHost): void { this.pluginHost = h; }
 
   constructor(
     private readonly db: Db,
@@ -53,6 +60,15 @@ export class AgentHost {
     const defs = await this.defStore.list();
     for (const def of defs) this.addOrReplace(def);
     logger.info('host.loaded', { count: defs.length });
+  }
+
+  /** Rebuild every agent whose allowlist includes `pluginId`, so a plugin
+   *  enable/disable/uninstall revokes (or restores) its tools on live agents —
+   *  not just at next reload. Called by the plugin admin endpoints. */
+  async reloadForPlugin(pluginId: string): Promise<void> {
+    const affected = (await this.defStore.list()).filter(d => d.plugins.includes(pluginId));
+    for (const def of affected) this.addOrReplace(def);
+    if (affected.length) logger.info('host.reloaded-for-plugin', { plugin: pluginId, agents: affected.length });
   }
 
   /** Idempotent. Builds the agent fresh from `def` and swaps the instance. */
@@ -114,7 +130,26 @@ export class AgentHost {
         }
       }
     }
-    const gatedTools = [...new Set([...def.approval_tools, ...autoGated])];
+    // Resolve the agent's plugin allowlist into MCP providers. A plugin that
+    // isn't installed, isn't enabled, or has no agent tools is skipped — so a
+    // disabled/removed plugin makes the allowlist entry inert, not broken.
+    // Every plugin flows through the same gateway; adding one needs no new code.
+    const pluginProviders: ReturnType<typeof pluginMcpProvider>[] = [];
+    const pluginGated: string[] = [];
+    const pluginAll: string[] = [];
+    for (const pid of def.plugins) {
+      const tools = this.pluginHost?.isEnabled(pid) ? this.pluginHost.toolsFor(pid) : [];
+      if (!tools.length) continue;
+      pluginProviders.push(pluginMcpProvider(pid, tools));
+      pluginGated.push(...pluginGatedToolNames(pid, tools));
+      pluginAll.push(...tools.map(t => `mcp__${pid}__${t.name}`));
+    }
+    // Injection-exposed agents (crm/social) get NO ungated plugin egress: every
+    // plugin tool they can call is force-gated, not just the ones a plugin author
+    // flagged needsApproval — the same hard rail the built-in egress tools get.
+    // Normal agents gate only the plugin's declared-mutating tools.
+    const pluginGating = readsUntrusted ? pluginAll : pluginGated;
+    const gatedTools = [...new Set([...def.approval_tools, ...autoGated, ...pluginGating])];
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -142,6 +177,8 @@ export class AgentHost {
       adminHost: { addOrReplace: (d: AgentDefinition) => this.addOrReplace(d) },
     } : null;
     const dispatcher = this.dispatcherFactory(def, {
+      agentId: def.id,
+      plugins: pluginProviders,
       cwd,
       // tools_allowlist on the definition IS the list of SDK tool names
       // exposed to claude-direct (e.g. ['Read', 'Bash']). Empty array =

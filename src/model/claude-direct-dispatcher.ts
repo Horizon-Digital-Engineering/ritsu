@@ -5,23 +5,15 @@ import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
-import { buildAgentMemoryMcp, MEMORY_TOOL_NAMES, MEMORY_MCP_NAME } from '../tools/mcp-internal/memory.js';
-import { buildAgentEmailMcp, EMAIL_TOOL_NAMES, EMAIL_MCP_NAME } from '../tools/mcp-internal/email.js';
-import { buildAgentSocialMcp, SOCIAL_TOOL_NAMES, SOCIAL_MCP_NAME } from '../tools/mcp-internal/social.js';
 import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
+import { assembleMcp, type McpProvider, type SdkMcpServer } from '../tools/mcp-gateway.js';
+import {
+  memoryProvider, commsProvider, adminProvider, monitorProvider, emailProvider, socialProvider,
+} from '../tools/builtin-providers.js';
 import type { SecretStore } from '../auth/secret-store.js';
-import {
-  buildAgentCommsMcp, COMMS_TOOL_NAMES, COMMS_MCP_NAME,
-  type AgentCommsDeps,
-} from '../tools/mcp-internal/agent-comms.js';
-import {
-  buildAgentAdminMcp, ADMIN_TOOL_NAMES, ADMIN_MCP_NAME,
-  type AgentAdminDeps,
-} from '../tools/mcp-internal/agent-admin.js';
-import {
-  buildAgentMonitorMcp, MONITOR_TOOL_NAMES, MONITOR_MCP_NAME,
-  type AgentMonitorDeps,
-} from '../tools/mcp-internal/agent-monitor.js';
+import type { AgentCommsDeps } from '../tools/mcp-internal/agent-comms.js';
+import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
+import type { AgentMonitorDeps } from '../tools/mcp-internal/agent-monitor.js';
 import { logger } from '../util/log.js';
 
 /**
@@ -34,12 +26,20 @@ import { logger } from '../util/log.js';
  * Web*→network) and denies with a reason the model will see in the result.
  */
 export interface ClaudeDirectOpts {
+  /** The agent this dispatcher serves. Used to scope plugin tool calls. */
+  agentId?: string;
   /** Working directory the agent operates in (taken from its workspaces[0].path). */
   cwd?: string;
   /** Allowlist of SDK tool names. Empty/undefined = no tools. */
   tools?: string[];
   /** Per-agent workspaces. Used to authorize each tool call. */
   workspaces?: Workspace[];
+  /**
+   * MCP tool providers for the plugins this agent is allowlisted for. Each is
+   * assembled through the MCP gateway alongside the built-in tool groups. The
+   * gateway is the general mechanism; core built-ins migrate onto it over time.
+   */
+  plugins?: McpProvider[];
   /**
    * Wire ritsu's per-agent memory tools (remember / update_memory / forget /
    * list_memories) into this agent's SDK invocation. When provided, an
@@ -114,8 +114,8 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null);
     const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null, new Set(allowedTools));
 
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
@@ -219,17 +219,6 @@ export async function* imagePrompt(text: string, images: AnthropicImageBlock[]):
   } as SDKUserMessage;
 }
 
-/** Names of in-process MCP tools that are pre-authorized by their per-agent
- *  servers. Memoised at module load — these never change at runtime. */
-const IN_PROCESS_MCP_TOOLS = new Set<string>([
-  ...MEMORY_TOOL_NAMES,
-  ...COMMS_TOOL_NAMES,
-  ...ADMIN_TOOL_NAMES,
-  ...MONITOR_TOOL_NAMES,
-  ...EMAIL_TOOL_NAMES,
-  ...SOCIAL_TOOL_NAMES,
-]);
-
 /**
  * Build the SDK's `canUseTool` callback. Returns undefined when no gate is
  * needed at all (no workspaces, no in-process MCP servers, no approval gating).
@@ -246,13 +235,17 @@ function buildCanUseToolCallback(
   workspaces: Workspace[],
   opts: ClaudeDirectOpts,
   conversationId: number | null,
+  inProcessTools: Set<string>,
 ): CanUseTool | undefined {
   const gating = opts.approval && opts.approval.gatedTools.length > 0 ? opts.approval : undefined;
-  if (workspaces.length === 0 && !opts.memory && !opts.comms && !opts.admin && !opts.monitor && !gating) {
+  if (workspaces.length === 0 && inProcessTools.size === 0 && !gating) {
     return undefined;
   }
   return async (toolName, input) => {
-    if (IN_PROCESS_MCP_TOOLS.has(toolName)) {
+    // In-process MCP tools (memory, comms, plugins, …) are pre-authorized here
+    // — their own handlers do the allowlist, loop-guard, and approval-gating.
+    // The set is the agent's assembled tool list, so it covers plugins too.
+    if (inProcessTools.has(toolName)) {
       return { behavior: 'allow' as const, updatedInput: input };
     }
     // Observability: every built-in tool call (Bash/Read/Write/Web*) that
@@ -296,11 +289,9 @@ function buildCanUseToolCallback(
  * is registered.
  */
 function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null): {
-  mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>>;
+  mcpServers: Record<string, SdkMcpServer>;
   allowedTools: string[];
 } {
-  const mcpServers: Record<string, ReturnType<typeof buildAgentMemoryMcp>> = {};
-  const allowedTools: string[] = [];
   // Approval gate context for in-process MCP tools — enforced INSIDE the
   // handler (the SDK can't bypass that, unlike canUseTool). Null when the
   // agent gates nothing.
@@ -312,41 +303,22 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null):
         approvals: opts.approval.store,
       }
     : null;
-  if (opts.memory) {
-    mcpServers[MEMORY_MCP_NAME] = buildAgentMemoryMcp(opts.memory.agentId, opts.memory.store, gate);
-    allowedTools.push(...MEMORY_TOOL_NAMES);
-  }
-  if (opts.comms) {
-    mcpServers[COMMS_MCP_NAME] = buildAgentCommsMcp(opts.comms.callerAgentId, opts.comms.deps, gate);
-    allowedTools.push(...COMMS_TOOL_NAMES);
-  }
-  if (opts.admin) {
-    mcpServers[ADMIN_MCP_NAME] = buildAgentAdminMcp(opts.admin.callerAgentId, opts.admin.deps);
-    allowedTools.push(...ADMIN_TOOL_NAMES);
-  }
-  if (opts.monitor) {
-    mcpServers[MONITOR_MCP_NAME] = buildAgentMonitorMcp(opts.monitor.callerAgentId, opts.monitor.deps);
-    allowedTools.push(...MONITOR_TOOL_NAMES);
-  }
-  if (opts.email) {
-    mcpServers[EMAIL_MCP_NAME] = buildAgentEmailMcp({
-      agentId: opts.email.agentId,
-      secrets: opts.email.secrets,
-      approvals: opts.email.approvals,
-      conversationId,
-    });
-    allowedTools.push(...EMAIL_TOOL_NAMES);
-  }
-  if (opts.social) {
-    mcpServers[SOCIAL_MCP_NAME] = buildAgentSocialMcp({
-      agentId: opts.social.agentId,
-      secrets: opts.social.secrets,
-      approvals: opts.social.approvals,
-      conversationId,
-    });
-    allowedTools.push(...SOCIAL_TOOL_NAMES);
-  }
-  return { mcpServers, allowedTools };
+  // Every tool group — built-in and plugin — is a provider assembled through
+  // the one gateway. Selection here mirrors the agent's wiring (memory/comms
+  // always on; admin/monitor/email/social set only when the capability is);
+  // adding a new built-in group is a new provider, not a new assembly branch.
+  const providers: McpProvider[] = [];
+  if (opts.memory) providers.push(memoryProvider(opts.memory.store));
+  if (opts.comms) providers.push(commsProvider(opts.comms.deps));
+  if (opts.admin) providers.push(adminProvider(opts.admin.deps));
+  if (opts.monitor) providers.push(monitorProvider(opts.monitor.deps));
+  if (opts.email) providers.push(emailProvider(opts.email.secrets, opts.email.approvals));
+  if (opts.social) providers.push(socialProvider(opts.social.secrets, opts.social.approvals));
+  if (opts.plugins) providers.push(...opts.plugins);
+
+  const agentId = opts.agentId ?? opts.memory?.agentId ?? opts.approval?.agentId ?? 'unknown';
+  const asm = assembleMcp(providers, { agentId, conversationId, gate });
+  return { mcpServers: asm.mcpServers, allowedTools: asm.allowedTools };
 }
 
 /**

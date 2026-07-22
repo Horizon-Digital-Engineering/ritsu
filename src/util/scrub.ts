@@ -8,6 +8,7 @@
  */
 const PATTERNS: RegExp[] = [
   /Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,   // Authorization: Bearer <token>
+  /Basic\s+[A-Za-z0-9+/=]{4,}/gi,        // Authorization: Basic <base64(user:pass)> — any length
   /oauth_[a-z_]+="?[^&\s"']+"?/gi,        // OAuth 1.0a params (signature/nonce/token) — Twitter
   /\b[A-Za-z0-9_-]{40,}\b/g,             // long opaque tokens / API keys
   /[A-Za-z0-9+/]{40,}={0,2}/g,           // base64 blobs (e.g. an oauth_signature) the `_-` class misses

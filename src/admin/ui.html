@@ -271,6 +271,15 @@
             </div>
           </div>
 
+          <label for="f-plugins">plugins</label>
+          <div>
+            <div id="f-plugins" class="row-wrap"></div>
+            <div class="form-hint">
+              Plugins this agent may use. Each grants the plugin's agent tools
+              (mutating ones stay approval-gated). Only enabled plugins are listed.
+            </div>
+          </div>
+
           <label for="f-system-prompt">system prompt</label>
           <textarea id="f-system-prompt" name="system_prompt" required></textarea>
 
@@ -615,6 +624,15 @@
           <button data-action="audit-refresh">Refresh</button>
         </div>
         <div class="log-table" id="audit-table"><table><thead><tr><th>time</th><th>token</th><th>ip</th><th>method</th><th>path</th><th>status</th><th>ms</th></tr></thead><tbody id="audit-tbody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ============ PLUGINS ============ -->
+    <section id="pane-plugins" class="pane">
+      <div class="panel">
+        <h2>Plugins</h2>
+        <p>Installed plugins and the surfaces they expose. <strong>Disable</strong> darkens a plugin's routes and UI but keeps its data — reversible. <strong>Uninstall</strong> drops the plugin's data tables permanently. Reload after toggling to update the nav.</p>
+        <div id="plugins-list">loading…</div>
       </div>
     </section>
   </main>

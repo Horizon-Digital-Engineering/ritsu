@@ -44,14 +44,14 @@ The defense posture ritsu was built for. Read alongside [SECURITY.md](./SECURITY
 **Defense:**
 - `tools_allowlist` + `workspaces` mean the agent only has access to what you explicitly gave it. An agent with no Bash + no writable workspace cannot exfiltrate files even if perfectly socially-engineered.
 - `can_call` allowlist means an agent can only delegate to other agents you've approved. No "the prompt told me to ask the sensitive-data agent" escape.
-- Per-tool permission enforcement via `canUseTool` is at the SDK level — happens BEFORE the SDK invokes the tool. A prompt-injected attempt to `Read /etc/shadow` from an agent whose workspace is `/home/$USER/projects` is denied without the read ever firing.
+- **Runtime caveat (important).** `tools_allowlist` controls tool *availability* on both runtimes — an agent not granted `Bash`/`Read` genuinely can't call them. But **per-path workspace containment is only enforced on the `ritsu-agent` runtime.** On the default `claude-direct` runtime, the Max-session SDK runs its built-in Bash/Read/Write/Edit *itself* and does NOT consult `canUseTool`, so a `claude-direct` agent you granted `Bash` to can, if injected, run `env`/read outside its workspace at service-user scope. **Hard filesystem/exec containment (workspace realpath scoping, the Bash env-allowlist, and the opt-in bwrap sandbox `RITSU_BASH_SANDBOX=1`) is a `ritsu-agent`-runtime guarantee** — use it for any agent that needs `Bash` with untrusted input. (crm/social agents already have these built-ins stripped on claude-direct.)
 - `MAX_CALL_DEPTH` = 3 caps recursive delegation chains. A→B→C→D returns an error to the model, which the model sees in its tool result.
 
 ### A6. Lateral movement from a compromised agent
 **Capability:** Suppose an agent's prompt injection succeeds enough to issue tool calls of its choice.
 **Defense:**
 - The agent only has the in-process MCP servers wired for it (memory + agent-comms). It cannot register new servers.
-- All FS tool calls go through `canUseTool` → only writable inside allowed workspaces.
+- FS tool calls are per-path workspace-scoped **on the ritsu-agent runtime**; on claude-direct the SDK's built-ins bypass `canUseTool` (see the A5 runtime caveat) — grant `Bash`/`Write` to claude-direct agents accordingly.
 - All agent-to-agent calls go through `can_call` → only allowed agents reachable.
 - Bash is treated as privilege escalation: the Bash-enabled agents have minimal workspace scope.
 - Per-message audit means every tool call is logged with token id + agent id.

@@ -56,6 +56,9 @@ export interface ConversationStore {
     attachments?: MessageAttachment[],
   ): number;
   recent(conversation_id: number, limit?: number): ConversationMessage[];
+  /** The agent a conversation belongs to, or null if it doesn't exist. Used to
+   *  reject a caller-supplied conversation_id that names another agent's thread. */
+  agentIdOf(conversation_id: number): string | null;
   /**
    * List conversations (newest first). Optional `agent_id` matches c.agent_id;
    * `involves` is the wider filter that returns threads where the id appears
@@ -127,6 +130,13 @@ export class SqliteConversationStore implements ConversationStore {
       ts: Math.floor(Date.now() / 1000),
     });
     return messageId;
+  }
+
+  agentIdOf(conversation_id: number): string | null {
+    const row = this.db
+      .prepare('SELECT agent_id FROM conversations WHERE id = ?')
+      .get(conversation_id) as { agent_id: string } | undefined;
+    return row ? row.agent_id : null;
   }
 
   recent(conversation_id: number, limit = 50): ConversationMessage[] {

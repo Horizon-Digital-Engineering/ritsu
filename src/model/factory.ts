@@ -12,15 +12,19 @@ import type { AgentCommsDeps } from '../tools/mcp-internal/agent-comms.js';
 import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
 import type { AgentMonitorDeps } from '../tools/mcp-internal/agent-monitor.js';
 import type { ApprovalStore } from '../approval-store.js';
+import type { McpProvider } from '../tools/mcp-gateway.js';
 
 /**
  * Per-agent dispatcher options. claude-direct consumes the SDK opts;
  * ritsu-agent consumes the ritsuAgent opts. Both are filled by AgentHost.
  */
 export interface DispatcherOpts {
+  agentId?: string;
   cwd?: string;
   tools?: string[];
   workspaces?: Workspace[];
+  /** MCP providers for the plugins this agent is allowlisted for. */
+  plugins?: McpProvider[];
   /**
    * Wire ritsu's memory tools (remember/update_memory/forget/list_memories)
    * into the agent's SDK invocation as MCP tools. Pass the agent_id and
@@ -100,6 +104,8 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.approval   !== undefined) out.approval   = opts.approval;
   if (opts.email      !== undefined) out.email      = opts.email;
   if (opts.social     !== undefined) out.social     = opts.social;
+  if (opts.agentId    !== undefined) out.agentId    = opts.agentId;
+  if (opts.plugins    !== undefined) out.plugins    = opts.plugins;
   return out;
 }
 

@@ -32,6 +32,7 @@ interface Row {
   provider_options: string | null;
   capabilities: string | null;
   approval_tools: string | null;
+  plugins: string | null;
   enabled: number;
   created_at: number;
   updated_at: number;
@@ -56,6 +57,7 @@ function rowToDef(r: Row): AgentDefinition {
     provider_options: r.provider_options ? JSON.parse(r.provider_options) as Record<string, unknown> : {},
     capabilities: r.capabilities ? JSON.parse(r.capabilities) as string[] : [],
     approval_tools: r.approval_tools ? JSON.parse(r.approval_tools) as string[] : [],
+    plugins: r.plugins ? JSON.parse(r.plugins) as string[] : [],
     enabled: r.enabled === 1,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -147,8 +149,8 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
     `INSERT INTO agent_definitions
        (id, type, name, description, system_prompt, dispatcher, model,
         memory_backend, tools_allowlist, can_call, provider, api_key_ref,
-        provider_options, capabilities, approval_tools, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        provider_options, capabilities, approval_tools, plugins, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        type            = excluded.type,
        name            = excluded.name,
@@ -174,6 +176,7 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
        provider_options = excluded.provider_options,
        capabilities     = excluded.capabilities,
        approval_tools   = excluded.approval_tools,
+       plugins          = excluded.plugins,
        enabled          = excluded.enabled,
        updated_at       = strftime('%s','now')`,
   ).run(
@@ -192,6 +195,7 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
     JSON.stringify(validated.provider_options),
     JSON.stringify(validated.capabilities),
     JSON.stringify(validated.approval_tools),
+    JSON.stringify(validated.plugins),
     validated.enabled ? 1 : 0,
   );
 }
@@ -291,6 +295,7 @@ export async function seedIfEmpty(store: AgentDefinitionStore): Promise<void> {
     provider_options: {},
     capabilities: [],
     approval_tools: [],
+    plugins: [],
     enabled: true,
   });
   logger.info('def-store.seeded', { ids: ['hello-world'] });
