@@ -1,5 +1,6 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, createHmac } from 'node:crypto';
 import type { Db } from '../db.js';
+import { tryDeriveSubkey } from '../util/secret-crypto.js';
 
 export type TokenScope = 'mcp' | 'admin';
 
@@ -56,8 +57,38 @@ function hasKnownPrefix(token: string): boolean {
   return ALL_PREFIXES.some(p => token.startsWith(p));
 }
 
-function hashToken(token: string): string {
+/**
+ * Token-at-rest hashing. A stolen DB alone should not let an attacker verify
+ * tokens offline, so when a master key is configured we hash with an HMAC
+ * keyed by a pepper derived from it — brute-forcing then also needs the key
+ * (kept out of the DB). Deployments with no master key (token auth predates
+ * it) transparently fall back to bare sha256 — no worse than before, since
+ * there's no separate key to withhold anyway.
+ *
+ *   hashForStorage()  — what a freshly-minted token is stored as (peppered
+ *                       when a key exists, else sha256).
+ *   candidateHashes() — every hash a presented token could match, so legacy
+ *                       sha256 rows AND peppered rows both verify regardless
+ *                       of when they were minted.
+ * verify() upgrades a matched legacy row to the peppered hash in place, so the
+ * table drifts forward without operator action.
+ */
+function pepper(): Buffer | null {
+  return tryDeriveSubkey('token-hash-pepper');
+}
+function sha256Hash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+function hmacHash(token: string, key: Buffer): string {
+  return createHmac('sha256', key).update(token).digest('hex');
+}
+function hashForStorage(token: string): string {
+  const p = pepper();
+  return p ? hmacHash(token, p) : sha256Hash(token);
+}
+function candidateHashes(token: string): string[] {
+  const p = pepper();
+  return p ? [hmacHash(token, p), sha256Hash(token)] : [sha256Hash(token)];
 }
 
 /**
@@ -80,7 +111,7 @@ export class TokenStore {
       throw new Error('ttl_seconds must be a positive integer or omitted');
     }
     const token = generateToken(scope);
-    const hash = hashToken(token);
+    const hash = hashForStorage(token);
     const prefix = token.slice(0, PREFIX[scope].length + 8);
     const expiresAt = ttlSeconds ? Math.floor(Date.now() / 1000) + Math.floor(ttlSeconds) : null;
     const r = this.db
@@ -106,19 +137,29 @@ export class TokenStore {
    */
   verify(token: string, scope: TokenScope = 'mcp'): { id: number; name: string; scope: TokenScope } | null {
     if (!hasKnownPrefix(token)) return null;
-    const hash = hashToken(token);
+    // Match a peppered OR a legacy sha256 row (candidates differ only in count).
     // Expiry is checked in SQL so the verify path stays one round-trip.
     // NULL expires_at = never expires (legacy behavior preserved).
+    const candidates = candidateHashes(token);
+    const placeholders = candidates.map(() => '?').join(', ');
     const row = this.db
       .prepare(
-        `SELECT id, name, scope FROM mcp_tokens
-         WHERE token_hash = ?
+        `SELECT id, name, scope, token_hash FROM mcp_tokens
+         WHERE token_hash IN (${placeholders})
            AND revoked_at IS NULL
            AND scope = ?
            AND (expires_at IS NULL OR expires_at > strftime('%s','now'))`,
       )
-      .get(hash, scope) as { id: number; name: string; scope: TokenScope } | undefined;
-    return row ?? null;
+      .get(...candidates, scope) as { id: number; name: string; scope: TokenScope; token_hash: string } | undefined;
+    if (!row) return null;
+    // Rehash-on-verify: drift a legacy sha256 row up to the peppered hash once
+    // a master key is available. Best-effort — verification already succeeded.
+    const preferred = hashForStorage(token);
+    if (row.token_hash !== preferred) {
+      try { this.db.prepare('UPDATE mcp_tokens SET token_hash = ? WHERE id = ?').run(preferred, row.id); }
+      catch { /* upgrade is opportunistic; never fail a good verify on it */ }
+    }
+    return { id: row.id, name: row.name, scope: row.scope };
   }
 
   /** Bump usage counters and append an audit row. */
