@@ -16,6 +16,7 @@ import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
 import { OAuthStore } from './auth/oauth-store.js';
 import { AgentHost } from './agent-host.js';
+import { BackupManager } from './backup.js';
 import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
@@ -59,6 +60,18 @@ async function main(): Promise<void> {
   approvalSweep.unref();
   const commsDenials = new CommsDenialStore(db);
 
+  // Data safety: a consistent DB snapshot on boot (pre-deploy safety) + daily,
+  // keeping the newest N. Best-effort — a backup failure never blocks startup.
+  const backup = new BackupManager(db, cfg.dbPath, process.env.RITSU_BACKUP_DIR?.trim() || undefined);
+  const BACKUP_KEEP = Number(process.env.RITSU_BACKUP_KEEP ?? 14) || 14;
+  const runBackup = (): void => {
+    try { backup.createBackup(); backup.prune(BACKUP_KEEP); }
+    catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
+  };
+  runBackup();
+  const backupSweep = setInterval(runBackup, 24 * 3_600_000);
+  backupSweep.unref();
+
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
 
@@ -99,6 +112,7 @@ async function main(): Promise<void> {
     approvals,
     commsDenials,
     secrets,
+    backup,
     channels: channelStore,
     channelRegistry: channels,
     oauth,

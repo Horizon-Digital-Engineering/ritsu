@@ -228,6 +228,7 @@ const NAV_GROUPS = [
     { id: 'logs',    label: 'Logs' },
     { id: 'audit',   label: 'Audit' },
     { id: 'plugins', label: 'Plugins' },
+    { id: 'backups', label: 'Backups' },
   ] },
 ];
 const TAB_TO_GROUP = (() => {
@@ -288,6 +289,7 @@ function switchTab(name) {
   else if (name === 'logs') openLogStream();
   else if (name === 'audit') loadAuditTab();
   else if (name === 'plugins') loadPluginsManager();
+  else if (name === 'backups') loadBackupsTab();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -2897,6 +2899,10 @@ const ACTIONS = {
   'toggle-plugin':          (el) => togglePlugin(el.dataset.id, el.dataset.enabled === '1'),
   'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
+  'backup-now':             () => backupNow(),
+  'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
+  'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
+  'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
 
   'copy-mint-token':        () => {
     const text = $('token-plaintext')?.textContent || '';
@@ -3040,6 +3046,49 @@ async function togglePlugin(id, currentlyEnabled) {
     await api('PATCH', `/admin/api/plugins/${encodeURIComponent(id)}`, { enabled: !currentlyEnabled });
     toast(`Plugin ${currentlyEnabled ? 'disabled' : 'enabled'} — reload to apply it to the nav.`);
     loadPluginsManager();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ---- Backups --------------------------------------------------------------
+async function loadBackupsTab() {
+  const el = document.getElementById('backups-list');
+  if (!el) return;
+  try {
+    const { backups, dir } = await api('GET', '/admin/api/backups');
+    el.innerHTML = backups.length
+      ? `<p class="txt-muted">Stored on the box at <code>${esc(dir)}</code></p>
+         <table><thead><tr><th>when</th><th>size</th><th></th></tr></thead><tbody>${backups.map(b => `
+           <tr><td>${new Date(b.created_at * 1000).toLocaleString()}</td>
+               <td>${(b.size / 1024).toFixed(0)} KB</td>
+               <td class="row-actions">
+                 <button data-action="backup-download" data-name="${esc(b.name)}">download</button>
+                 <button class="danger" data-action="backup-delete" data-name="${esc(b.name)}">delete</button>
+               </td></tr>`).join('')}</tbody></table>`
+      : '<em class="txt-muted">No backups yet — one is taken automatically on restart. Or click “Back up now”.</em>';
+  } catch (e) { el.textContent = `error: ${e.message}`; }
+}
+
+async function backupNow() {
+  try { const b = await api('POST', '/admin/api/backup'); toast(`backed up (${(b.size / 1024).toFixed(0)} KB)`, 'ok'); loadBackupsTab(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteBackupFile(name) {
+  if (!confirm(`Delete backup ${name}?`)) return;
+  try { await api('DELETE', `/admin/api/backups/${encodeURIComponent(name)}`); loadBackupsTab(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+// Authed downloads: a plain <a download> can't carry the admin token header, so
+// fetch the file with auth, then trigger the download from a blob URL.
+async function downloadWithAuth(path, filename) {
+  try {
+    const res = await fetch(path, { headers: { 'X-Ritsu-Admin-Token': getAdminToken() } });
+    if (!res.ok) { toast(`download failed (${res.status})`, 'err'); return; }
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
   } catch (e) { toast(e.message, 'err'); }
 }
 

@@ -15,6 +15,7 @@ import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
 import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
+import type { BackupManager } from '../backup.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
@@ -57,6 +58,7 @@ export interface AdminDeps {
   conversations: ConversationStore;
   approvals: ApprovalStore;
   commsDenials: CommsDenialStore;
+  backup: BackupManager;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -361,7 +363,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup } = deps;
   const app = express();
   app.disable('x-powered-by');
   // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
@@ -1304,6 +1306,35 @@ export function createAdminApp(deps: AdminDeps) {
     const saved = await defStore.upsert(def);
     host.addOrReplace(saved);
     res.status(201).json({ created: true, id: agentId });
+  });
+
+  // ---- backups + export (data safety) ------------------------------------
+  app.get('/admin/api/backups', (_req: Request, res: Response) => {
+    res.json({ backups: backup.listBackups(), dir: backup.dir() });
+  });
+
+  app.post('/admin/api/backup', (_req: Request, res: Response) => {
+    try { res.status(201).json(backup.createBackup()); }
+    catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  });
+
+  // Download a snapshot .db off the box.
+  app.get('/admin/api/backups/:name', (req: Request, res: Response) => {
+    const p = backup.pathFor(param(req.params.name));
+    if (!p) { res.status(404).json({ error: 'not found' }); return; }
+    res.download(p, param(req.params.name));
+  });
+
+  app.delete('/admin/api/backups/:name', (req: Request, res: Response) => {
+    res.status(backup.deleteBackup(param(req.params.name)) ? 204 : 404).end();
+  });
+
+  // Portable JSON of your meaningful data (no secrets/tokens) — "never hostage".
+  app.get('/admin/api/export', (_req: Request, res: Response) => {
+    const data = backup.exportJson();
+    res.setHeader('Content-Disposition', `attachment; filename="ritsu-export-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify(data, null, 2));
   });
 
   pluginHost.mountApi(app);

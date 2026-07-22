@@ -6,6 +6,7 @@ import { masterKeyCommand } from './commands/master-key.js';
 import { envCommand } from './commands/env.js';
 import { urlCommand } from './commands/url.js';
 import { doctorCommand } from './commands/doctor.js';
+import { backupCommand } from './commands/backup.js';
 
 export interface CommandContext {
   subcommand: string | null;
@@ -31,4 +32,5 @@ export const ALL_COMMANDS: Command[] = [
   envCommand,
   urlCommand,
   doctorCommand,
+  backupCommand,
 ];
