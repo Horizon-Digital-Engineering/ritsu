@@ -1,4 +1,6 @@
-import { query, type CanUseTool, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query, type CanUseTool, type SDKUserMessage, type HookCallback, type PreToolUseHookInput,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
 import { messageText, messageImages } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
@@ -20,10 +22,12 @@ import { logger } from '../util/log.js';
  * Uses @anthropic-ai/claude-agent-sdk, which reads the Max-plan CLI session
  * from ~/.claude/. $0 marginal cost.
  *
- * V0.4: per-agent `cwd`, tool allowlist, AND per-tool permission enforcement
- * via the SDK's canUseTool callback. checkToolUse maps each call to a
- * required workspace permission (Read→'read', Write→'write', Bash→'exec',
- * Web*→network) and denies with a reason the model will see in the result.
+ * V0.4: per-agent `cwd`, tool allowlist, AND per-tool permission enforcement.
+ * checkToolUse maps each call to a required workspace permission (Read→'read',
+ * Write→'write', Bash→'exec', Web*→network) and denies with a reason the model
+ * sees in the result. Built-in tools (Bash/Read/Write/Edit/…) are enforced by a
+ * PreToolUse hook — canUseTool never sees them on the Max-plan subprocess path;
+ * in-process MCP tools gate inside their own handlers.
  */
 export interface ClaudeDirectOpts {
   /** The agent this dispatcher serves. Used to scope plugin tool calls. */
@@ -115,7 +119,9 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 
     const workspaces = this.opts.workspaces ?? [];
     const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
-    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null, new Set(allowedTools));
+    const inProcessTools = new Set(allowedTools);
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
+    const preToolUseHook = buildPreToolUseHook(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
 
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
@@ -140,14 +146,16 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         // CAVEAT (learned the hard way): on the Max-plan session path the
         // spawned `claude` subprocess runs its BUILT-IN tools itself and does
         // NOT route them through canUseTool regardless of these options —
-        // proven by tracing the event stream. So built-in Bash/Read/Write are
-        // ungovernable here. We therefore gate at the layer we DO own: the
-        // in-process MCP tool handlers (see approval-gate.ts), and we hand
-        // governed agents OUR MCP-wrapped tools instead of the SDK's built-ins.
-        // The ritsu-agent runtime (our own loop) gates reliably and is the
-        // home for agents that need hard tool approval.
+        // proven by tracing the event stream. PreToolUse HOOKS, however, DO
+        // fire for built-in tools, so we install one (buildPreToolUseHook) to
+        // enforce workspace permissions + operator approval on Bash/Read/Write/
+        // Edit/… — the same policy canUseTool intends, applied where it bites.
+        // In-process MCP tools still gate in their own handlers (approval-
+        // gate.ts), the layer the SDK can't bypass. The ritsu-agent runtime
+        // (our own loop) remains the fully-owned path.
         settingSources: [],
         permissionMode: 'default',
+        hooks: { PreToolUse: [{ hooks: [preToolUseHook] }] },
         ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
         ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
@@ -248,36 +256,88 @@ function buildCanUseToolCallback(
     if (inProcessTools.has(toolName)) {
       return { behavior: 'allow' as const, updatedInput: input };
     }
-    // Observability: every built-in tool call (Bash/Read/Write/Web*) that
-    // routes through permission. Tells us whether the model is actually
-    // invoking a tool vs answering from memory — and whether a gated tool
-    // is being recognized as gated.
+    // Built-in tool. On the Max-plan path canUseTool is a no-op for built-ins,
+    // so the PreToolUse hook is the real enforcement — this branch is the
+    // defense-in-depth twin, sharing enforceBuiltinTool so the two can't drift.
+    const verdict = await enforceBuiltinTool(toolName, input, workspaces, gating, conversationId);
+    return verdict.ok
+      ? { behavior: 'allow' as const, updatedInput: input }
+      : { behavior: 'deny' as const, message: verdict.message };
+  };
+}
+
+/**
+ * Shared built-in-tool enforcement: workspace permission (checkToolUse), then,
+ * when the tool is in the agent's approval list, block on operator approval.
+ * Used by BOTH canUseTool and the PreToolUse hook so the two apply an identical
+ * policy. Returns a normalized verdict the callers map to their own shapes.
+ */
+async function enforceBuiltinTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  workspaces: Workspace[],
+  gating: { agentId: string; store: ApprovalStore; gatedTools: string[] } | undefined,
+  conversationId: number | null,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const result = checkToolUse(toolName, input, workspaces);
+  if (!result.ok) {
+    logger.warn('tool.denied', { tool: toolName, reason: result.reason });
+    return { ok: false, message: result.reason };
+  }
+  if (gating && gating.gatedTools.includes(toolName)) {
+    logger.info('approval.gate', { agent_id: gating.agentId, tool: toolName, conversation_id: conversationId });
+    const decision = await gating.store.request({ agentId: gating.agentId, conversationId, toolName, args: input });
+    if (decision.state === 'rejected') {
+      const why = decision.reason?.trim()
+        ? `Operator rejected this ${toolName} call: ${decision.reason.trim()}`
+        : `Operator rejected this ${toolName} call.`;
+      return { ok: false, message: why };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * PreToolUse hook — the enforcement layer for the SDK's BUILT-IN tools
+ * (Bash/Read/Write/Edit/…). Unlike canUseTool (MCP-only on the Max-plan
+ * subprocess path), PreToolUse hooks DO fire for built-in tools, so this is
+ * where workspace-permission + approval gating actually bites for them. MCP /
+ * in-process tools gate themselves inside their handlers, so the hook waves
+ * them through. Always installed: when `tools` is unset the SDK exposes its
+ * full default built-in toolset — exactly the surface that must not run
+ * ungoverned.
+ */
+export function buildPreToolUseHook(
+  workspaces: Workspace[],
+  opts: ClaudeDirectOpts,
+  conversationId: number | null,
+  inProcessTools: Set<string>,
+): HookCallback {
+  const gating = opts.approval && opts.approval.gatedTools.length > 0 ? opts.approval : undefined;
+  return async (input) => {
+    const pre = input as PreToolUseHookInput;
+    const toolName = pre.tool_name;
+    if (toolName.startsWith('mcp__') || inProcessTools.has(toolName)) {
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+    }
+    const toolInput = pre.tool_input && typeof pre.tool_input === 'object'
+      ? pre.tool_input as Record<string, unknown>
+      : {};
     logger.info('tool.check', {
       tool: toolName,
       gated: !!(gating && gating.gatedTools.includes(toolName)),
+      via: 'pretooluse-hook',
     });
-    const result = checkToolUse(toolName, input, workspaces);
-    if (!result.ok) {
-      logger.warn('tool.denied', { tool: toolName, reason: result.reason });
-      return { behavior: 'deny' as const, message: result.reason };
-    }
-    if (gating && gating.gatedTools.includes(toolName)) {
-      logger.info('approval.gate', { agent_id: gating.agentId, tool: toolName, conversation_id: conversationId });
-      const decision = await gating.store.request({
-        agentId: gating.agentId,
-        conversationId,
-        toolName,
-        args: input,
-      });
-      if (decision.state === 'rejected') {
-        const why = decision.reason?.trim()
-          ? `Operator rejected this ${toolName} call: ${decision.reason.trim()}`
-          : `Operator rejected this ${toolName} call.`;
-        return { behavior: 'deny' as const, message: why };
-      }
-      return { behavior: 'allow' as const, updatedInput: input };
-    }
-    return { behavior: 'allow' as const, updatedInput: input };
+    const verdict = await enforceBuiltinTool(toolName, toolInput, workspaces, gating, conversationId);
+    return verdict.ok
+      ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }
+      : {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: verdict.message,
+          },
+        };
   };
 }
 
