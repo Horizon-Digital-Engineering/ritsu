@@ -6,7 +6,7 @@ describe('plugin auto-discovery', () => {
   it('finds every first-party plugin with no index.ts registration', async () => {
     const plugins = await discoverPlugins();
     const ids = plugins.map(p => p.manifest.id).sort();
-    assert.deepEqual(ids, ['finance', 'projects']);
+    assert.deepEqual(ids, ['finance', 'health', 'projects']);
     assert.ok(plugins.every(p => typeof p.manifest.id === 'string' && !!p.manifest.version));
   });
 });
