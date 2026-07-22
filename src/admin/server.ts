@@ -1281,6 +1281,31 @@ export function createAdminApp(deps: AdminDeps) {
     res.status(ok ? 204 : 404).end();
   });
 
+  // Load a plugin's recommended agent preset into a real, editable agent.
+  // Non-destructive: if the target agent already exists we leave it alone.
+  app.post('/admin/api/plugins/:id/agent', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    const seed = pluginHost.agentSeed(id);
+    if (!seed) { res.status(404).json({ error: 'this plugin has no agent preset' }); return; }
+    const agentId = seed.id ?? `${id}-assistant`;
+    if (await defStore.read(agentId)) { res.json({ created: false, id: agentId }); return; }
+    const def = AgentDefinitionSchema.parse({
+      id: agentId,
+      type: 'generic',
+      name: seed.name,
+      description: seed.description,
+      system_prompt: seed.system_prompt,
+      dispatcher: seed.dispatcher ?? 'claude-direct',
+      model: seed.model ?? 'claude-sonnet-4-6',
+      tools_allowlist: seed.tools_allowlist ?? [],
+      capabilities: seed.capabilities ?? [],
+      plugins: [...new Set([id, ...(seed.plugins ?? [])])],
+    });
+    const saved = await defStore.upsert(def);
+    host.addOrReplace(saved);
+    res.status(201).json({ created: true, id: agentId });
+  });
+
   pluginHost.mountApi(app);
   pluginHost.mountAssets(app);
 

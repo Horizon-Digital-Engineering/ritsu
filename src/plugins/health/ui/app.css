@@ -1,0 +1,15 @@
+td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.ok { color: var(--ok); }
+.err { color: var(--err); }
+
+/* time-series bars (shared shape with the finance reporting bars) */
+.fin-bar-cell { width: 55%; padding-right: 12px; }
+.fin-bar {
+  display: inline-block; height: 10px; min-width: 2px; border-radius: 3px;
+  background: var(--accent); vertical-align: middle;
+}
+.doc-hit {
+  border-left: 3px solid var(--accent); background: var(--panel-2);
+  padding: 6px 10px; margin: 6px 0; border-radius: 0 4px 4px 0; font-size: 0.85rem;
+}

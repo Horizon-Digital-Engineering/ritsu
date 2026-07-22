@@ -9,7 +9,7 @@ import { SqliteAgentDefinitionStore, seedIfEmpty } from './agent-definition-stor
 import { WorkspaceStore } from './workspace-store.js';
 import { ApprovalStore } from './approval-store.js';
 import { PluginHost } from './plugins/host.js';
-import { projectsPlugin } from './plugins/projects/plugin.js';
+import { discoverPlugins } from './plugins/discover.js';
 import { CommsDenialStore } from './comms-denial-store.js';
 import { SecretStore } from './auth/secret-store.js';
 import { TokenStore } from './auth/token-store.js';
@@ -42,8 +42,9 @@ async function main(): Promise<void> {
   const oauth = new OAuthStore(db);
   const workspaces = new WorkspaceStore(db);
   const approvals = new ApprovalStore(db);
-  const pluginHost = new PluginHost(db);
-  pluginHost.register(projectsPlugin);
+  const secrets = new SecretStore(db);
+  const pluginHost = new PluginHost(db, secrets);
+  for (const plugin of await discoverPlugins()) pluginHost.register(plugin);
   // Close out any approvals left pending by a prior process — their agent
   // turns died with that process and can never resume.
   approvals.reconcileOnBoot();
@@ -56,7 +57,6 @@ async function main(): Promise<void> {
     catch (err) { logger.warn('approval.sweep-error', { err: (err as Error).message }); }
   }, 3_600_000); // hourly
   approvalSweep.unref();
-  const secrets = new SecretStore(db);
   const commsDenials = new CommsDenialStore(db);
 
   bootstrapAdminToken(tokens, cfg);

@@ -178,7 +178,7 @@ describe('AgentHost — plugin allowlist wiring', () => {
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
     host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
-    pluginHost = new PluginHost(db);
+    pluginHost = new PluginHost(db, new SecretStore(db));
     pluginHost.register(projectsPlugin);
     host.setPluginHost(pluginHost);
   });
@@ -232,7 +232,7 @@ describe('AgentHost — plugin gating hardening', () => {
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
     host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
-    pluginHost = new PluginHost(db);
+    pluginHost = new PluginHost(db, new SecretStore(db));
     pluginHost.register(projectsPlugin);
     host.setPluginHost(pluginHost);
   });

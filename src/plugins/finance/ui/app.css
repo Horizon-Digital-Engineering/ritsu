@@ -1,0 +1,15 @@
+.fin-nw { display: flex; flex-direction: column; margin-bottom: 10px; }
+.fin-nw-net { font-size: 1.6rem; font-weight: 700; }
+.fin-nw-sub { color: var(--muted); font-size: 0.85rem; }
+
+td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.ok { color: var(--ok); }
+.err { color: var(--err); }
+
+/* horizontal spend bars in the reporting tab */
+.fin-bar-cell { width: 55%; padding-right: 12px; }
+.fin-bar {
+  display: inline-block; height: 10px; min-width: 2px; border-radius: 3px;
+  background: var(--accent); vertical-align: middle;
+}

@@ -1,7 +1,8 @@
 import express, { type Express } from 'express';
 import type { Db, Stmt } from '../db.js';
 import { logger } from '../util/log.js';
-import type { Plugin, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginToolDef } from './types.js';
+import type { SecretStore } from '../auth/secret-store.js';
+import type { Plugin, PluginAgentSeed, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef } from './types.js';
 
 /**
  * Textual guard: every table a plugin statement references must be one of that
@@ -78,6 +79,20 @@ function scopedLogger(id: string): PluginLogger {
   return { info: wrap('info'), warn: wrap('warn'), error: wrap('error'), debug: wrap('debug') };
 }
 
+/** Secret accessor bound to ONE plugin's namespace in the core SecretStore, so
+ *  a plugin can only touch its own secrets. Values are for in-process handler
+ *  use; list() returns names only. */
+function scopedSecrets(secrets: SecretStore, id: string): PluginSecrets {
+  const ns = `plugin:${id}`;
+  return {
+    get: (name) => secrets.get(ns, name),
+    set: (name, value) => secrets.set(ns, name, value),
+    has: (name) => secrets.has(ns, name),
+    delete: (name) => secrets.delete(ns, name),
+    list: () => secrets.list(ns).map(m => m.name),
+  };
+}
+
 /** Built-in MCP tool-group namespaces a plugin id may not shadow — assembleMcp
  *  is last-writer-wins, and plugins assemble after built-ins, so a plugin named
  *  'memory'/'email'/etc. would overwrite that group's server. */
@@ -90,6 +105,9 @@ export interface PluginManifestOut extends PluginManifest {
   enabled: boolean;
   installed_at?: number;
   updated_at?: number;
+  /** Lightweight info about a recommended agent preset (if the plugin ships
+   *  one), for the "load agent" button. Full seed via agentSeed(). */
+  agent?: { id: string; name: string } | null;
 }
 
 interface RegistryRow {
@@ -104,7 +122,7 @@ export class PluginHost {
   private readonly plugins: Plugin[] = [];
   private readonly pluginTools = new Map<string, PluginToolDef[]>();
 
-  constructor(private readonly db: Db) {}
+  constructor(private readonly db: Db, private readonly secrets: SecretStore) {}
 
   register(plugin: Plugin): void {
     const id = plugin.manifest.id;
@@ -119,7 +137,12 @@ export class PluginHost {
     if (plugin.defineTools) {
       const tools: PluginToolDef[] = [];
       // Guarded handle: tool handlers run in response to agent/model actions.
-      plugin.defineTools({ db: new ScopedDb(this.db, id, true), logger: scopedLogger(id), tool: (d) => tools.push(d) });
+      plugin.defineTools({
+        db: new ScopedDb(this.db, id, true),
+        logger: scopedLogger(id),
+        secrets: scopedSecrets(this.secrets, id),
+        tool: (d) => tools.push(d),
+      });
       this.pluginTools.set(id, tools);
     }
     this.plugins.push(plugin);
@@ -128,6 +151,12 @@ export class PluginHost {
 
   toolsFor(id: string): PluginToolDef[] {
     return this.pluginTools.get(id) ?? [];
+  }
+
+  /** The recommended agent preset a plugin ships (if any), for the "load
+   *  agent" flow. Full config incl. system_prompt — server-side only. */
+  agentSeed(id: string): PluginAgentSeed | undefined {
+    return this.plugins.find(p => p.manifest.id === id)?.agent;
   }
 
   private recordRegistry(plugin: Plugin, tables: string[]): void {
@@ -182,6 +211,7 @@ export class PluginHost {
         // Guarded handle: route handlers serve HTTP requests (operator UI).
         db: new ScopedDb(this.db, id, true),
         logger: scopedLogger(id),
+        secrets: scopedSecrets(this.secrets, id),
         route: (method, path, handler) => {
           app[method](base + path, (req, res) => {
             if (!this.isEnabled(id)) { res.status(404).json({ error: `plugin '${id}' is disabled` }); return; }
@@ -223,6 +253,7 @@ export class PluginHost {
         enabled: row ? row.enabled === 1 : true,
         installed_at: row?.installed_at,
         updated_at: row?.updated_at,
+        agent: p.agent ? { id: p.agent.id ?? `${p.manifest.id}-assistant`, name: p.agent.name } : null,
       };
     });
   }

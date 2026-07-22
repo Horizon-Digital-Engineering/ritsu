@@ -19,10 +19,28 @@ export interface PluginLogger {
 export type RouteMethod = 'get' | 'post' | 'patch' | 'put' | 'delete';
 export type RouteHandler = (req: Request, res: Response) => void | Promise<void>;
 
+/**
+ * Encrypted secret storage scoped to ONE plugin (its own namespace in the core
+ * SecretStore — a plugin can't touch another's secrets). For connector
+ * credentials like a Plaid client secret or per-item access token.
+ *
+ * `get()` returns plaintext for IN-PROCESS handler use only (calling the
+ * upstream API). Handlers MUST NOT return a secret value to a model or log it —
+ * same contract as the core SecretStore. `list()` returns names only.
+ */
+export interface PluginSecrets {
+  get(name: string): string | null;
+  set(name: string, value: string): void;
+  has(name: string): boolean;
+  delete(name: string): boolean;
+  list(): string[];
+}
+
 export interface PluginContext {
   id: string;
   db: PluginDb;
   logger: PluginLogger;
+  secrets: PluginSecrets;
   route(method: RouteMethod, path: string, handler: RouteHandler): void;
 }
 
@@ -43,6 +61,7 @@ export interface PluginToolDef {
 export interface PluginToolContext {
   db: PluginDb;
   logger: PluginLogger;
+  secrets: PluginSecrets;
   tool(def: PluginToolDef): void;
 }
 
@@ -65,10 +84,34 @@ export interface PluginManifest {
   nav?: PluginNavGroup[];
 }
 
+/**
+ * A recommended agent config a plugin ships — a DEFAULT/preset, not a
+ * hardcoded agent. The operator "loads" it into a normal, fully-editable agent
+ * (one click) that already knows the plugin's tools + domain rules. This
+ * plugin is auto-added to the created agent's plugin allowlist.
+ */
+export interface PluginAgentSeed {
+  /** Agent id to create; defaults to `<pluginId>-assistant`. */
+  id?: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  dispatcher?: 'claude-direct' | 'litellm';
+  model?: string;
+  /** SDK built-in tools the agent may use (claude-direct). Usually none for a
+   *  read/answer domain assistant. */
+  tools_allowlist?: string[];
+  capabilities?: string[];
+  /** Extra plugin ids beyond this one (this plugin is always included). */
+  plugins?: string[];
+}
+
 export interface Plugin {
   manifest: PluginManifest;
   migrate?(db: PluginDb): void;
   defineTools?(ctx: PluginToolContext): void;
   register?(ctx: PluginContext): void;
   assetsDir?: string;
+  /** Optional recommended agent preset (see PluginAgentSeed). */
+  agent?: PluginAgentSeed;
 }

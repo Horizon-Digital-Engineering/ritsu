@@ -2896,6 +2896,7 @@ const ACTIONS = {
 
   'toggle-plugin':          (el) => togglePlugin(el.dataset.id, el.dataset.enabled === '1'),
   'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
+  'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
 
   'copy-mint-token':        () => {
     const text = $('token-plaintext')?.textContent || '';
@@ -3026,6 +3027,7 @@ function renderPluginsManager(plugins) {
       <td>${p.installed_at ? new Date(p.installed_at * 1000).toISOString().slice(0, 10) : '—'}</td>
       <td>${p.enabled ? '<span class="badge ok-tint">enabled</span>' : '<span class="badge">disabled</span>'}</td>
       <td class="row-actions">
+        ${p.agent ? `<button data-action="load-plugin-agent" data-id="${esc(p.id)}" title="create the ${esc(p.agent.name)} agent from this plugin's preset">load agent</button>` : ''}
         <button data-action="toggle-plugin" data-id="${esc(p.id)}" data-enabled="${p.enabled ? 1 : 0}">${p.enabled ? 'disable' : 'enable'}</button>
         <button class="danger" data-action="uninstall-plugin" data-id="${esc(p.id)}" data-name="${esc(p.name)}" data-tables="${(p.tables || []).length}">uninstall</button>
       </td>
@@ -3038,6 +3040,14 @@ async function togglePlugin(id, currentlyEnabled) {
     await api('PATCH', `/admin/api/plugins/${encodeURIComponent(id)}`, { enabled: !currentlyEnabled });
     toast(`Plugin ${currentlyEnabled ? 'disabled' : 'enabled'} — reload to apply it to the nav.`);
     loadPluginsManager();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadPluginAgent(id) {
+  try {
+    const r = await api('POST', `/admin/api/plugins/${encodeURIComponent(id)}/agent`, {});
+    if (r.created) toast(`Created agent "${r.id}" — find it under Agents to edit or chat.`, 'ok');
+    else toast(`Agent "${r.id}" already exists — left it untouched.`, 'warn');
   } catch (e) { toast(e.message, 'err'); }
 }
 

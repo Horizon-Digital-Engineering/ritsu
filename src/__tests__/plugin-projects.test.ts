@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { openDatabase } from '../db.js';
 import { ScopedDb, PluginHost } from '../plugins/host.js';
+import { SecretStore } from '../auth/secret-store.js';
 import type { PluginDb } from '../plugins/types.js';
 import { projectsPlugin } from '../plugins/projects/plugin.js';
 import { ProjectStore, TaskStore } from '../plugins/projects/store.js';
@@ -100,7 +101,7 @@ describe('TaskStore (scoped)', () => {
 describe('PluginHost registry + version + uninstall', () => {
   it('records version and owned tables on install', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     const m = host.manifests().find(x => x.id === 'projects');
     assert.ok(m);
@@ -112,10 +113,10 @@ describe('PluginHost registry + version + uninstall', () => {
 
   it('re-registering a bumped version updates in place, preserving install time', () => {
     const db = openDatabase(':memory:');
-    new PluginHost(db).register(projectsPlugin);
+    new PluginHost(db, new SecretStore(db)).register(projectsPlugin);
     const first = db.prepare('SELECT installed_at FROM plugin_registry WHERE id = ?').get('projects') as { installed_at: number };
     const bumped = { ...projectsPlugin, manifest: { ...projectsPlugin.manifest, version: '1.1.0' } };
-    new PluginHost(db).register(bumped);
+    new PluginHost(db, new SecretStore(db)).register(bumped);
     const after = db.prepare('SELECT installed_at, version FROM plugin_registry WHERE id = ?').get('projects') as { installed_at: number; version: string };
     assert.equal(after.version, '1.1.0');
     assert.equal(after.installed_at, first.installed_at);
@@ -124,7 +125,7 @@ describe('PluginHost registry + version + uninstall', () => {
 
   it('uninstall drops exactly the plugin tables + registry row, never core', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     assert.doesNotThrow(() => db.prepare('SELECT * FROM plugin_projects_projects').all());
     const coreTables = count(db, "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('mcp_tokens','agent_definitions','plugin_registry')");
@@ -139,7 +140,7 @@ describe('PluginHost registry + version + uninstall', () => {
 describe('PluginHost enable/disable', () => {
   it('toggles enabled state, reflected in isEnabled + manifests', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     assert.equal(host.isEnabled('projects'), true);
     assert.equal(host.setEnabled('projects', false), true);
@@ -152,7 +153,7 @@ describe('PluginHost enable/disable', () => {
 
   it('disable is non-destructive; uninstall is what drops tables', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     host.setEnabled('projects', false);
     assert.doesNotThrow(() => db.prepare('SELECT * FROM plugin_projects_projects').all());
@@ -182,7 +183,7 @@ describe('plugin_registry migration (existing DBs)', () => {
 describe('projects plugin — agent tools (MCP surface)', () => {
   it('declares list/create/update tools; mutations need approval; manifest lists them', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     const tools = host.toolsFor('projects');
     assert.deepEqual(tools.map(t => t.name), ['list_projects', 'create_project', 'list_tasks', 'create_task', 'update_task']);
@@ -199,7 +200,7 @@ describe('projects plugin — agent tools (MCP surface)', () => {
 
   it('tool handlers operate on the plugin scoped data', async () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     const by = Object.fromEntries(host.toolsFor('projects').map(t => [t.name, t]));
     new ProjectStore(new ScopedDb(db, 'projects')).upsert({ id: 'alpha', name: 'Alpha' });
@@ -211,7 +212,7 @@ describe('projects plugin — agent tools (MCP surface)', () => {
 
   it('buildPluginToolServer assembles an SDK server without throwing', () => {
     const db = openDatabase(':memory:');
-    const host = new PluginHost(db);
+    const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
     assert.doesNotThrow(() => buildPluginToolServer('projects', host.toolsFor('projects'), 'a1', null));
   });
@@ -219,13 +220,13 @@ describe('projects plugin — agent tools (MCP surface)', () => {
 
 describe('plugin security hardening', () => {
   it('rejects a plugin id that shadows a built-in tool group', () => {
-    const host = new PluginHost(openDatabase(':memory:'));
+    const host = new PluginHost(openDatabase(':memory:'), new SecretStore(openDatabase(':memory:')));
     const shadow = { ...projectsPlugin, manifest: { ...projectsPlugin.manifest, id: 'memory' } };
     assert.throws(() => host.register(shadow), /reserved/);
   });
 
   it('flags read tools untrustedOutput (fenced) but not write confirmations', () => {
-    const host = new PluginHost(openDatabase(':memory:'));
+    const host = new PluginHost(openDatabase(':memory:'), new SecretStore(openDatabase(':memory:')));
     host.register(projectsPlugin);
     const by = Object.fromEntries(host.toolsFor('projects').map(t => [t.name, t]));
     assert.equal(by.list_projects.untrustedOutput, true);

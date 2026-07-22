@@ -38,8 +38,8 @@ describe('admin /ask pre-auth DoS ordering (SEC-4)', () => {
     const oauth = new OAuthStore(db);
     const workspaces = new WorkspaceStore(db);
     const approvals = new ApprovalStore(db);
-    const pluginHost = new PluginHost(db);
     const secrets = new SecretStore(db);
+    const pluginHost = new PluginHost(db, secrets);
     const commsDenials = new CommsDenialStore(db);
     const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
     host.setPluginHost(pluginHost);
