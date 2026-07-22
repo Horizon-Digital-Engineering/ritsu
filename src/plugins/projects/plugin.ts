@@ -204,8 +204,11 @@ export const projectsPlugin: Plugin = {
     version: '1.0.0',
     description: 'Multi-project manager with per-project and aggregated task backlogs.',
     nav: [
-      { id: 'projects', label: 'Projects', tabs: [{ id: 'projects', label: 'Projects' }] },
-      { id: 'backlog', label: 'Backlog', tabs: [{ id: 'backlog', label: 'Backlog' }] },
+      { id: 'projects', label: 'Projects', tabs: [
+        { id: 'projects-dashboard', label: 'Dashboard' },
+        { id: 'projects-list', label: 'Projects' },
+        { id: 'projects-backlog', label: 'Backlog' },
+      ] },
     ],
   },
   migrate,
