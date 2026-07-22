@@ -19,10 +19,28 @@ export interface PluginLogger {
 export type RouteMethod = 'get' | 'post' | 'patch' | 'put' | 'delete';
 export type RouteHandler = (req: Request, res: Response) => void | Promise<void>;
 
+/**
+ * Encrypted secret storage scoped to ONE plugin (its own namespace in the core
+ * SecretStore — a plugin can't touch another's secrets). For connector
+ * credentials like a Plaid client secret or per-item access token.
+ *
+ * `get()` returns plaintext for IN-PROCESS handler use only (calling the
+ * upstream API). Handlers MUST NOT return a secret value to a model or log it —
+ * same contract as the core SecretStore. `list()` returns names only.
+ */
+export interface PluginSecrets {
+  get(name: string): string | null;
+  set(name: string, value: string): void;
+  has(name: string): boolean;
+  delete(name: string): boolean;
+  list(): string[];
+}
+
 export interface PluginContext {
   id: string;
   db: PluginDb;
   logger: PluginLogger;
+  secrets: PluginSecrets;
   route(method: RouteMethod, path: string, handler: RouteHandler): void;
 }
 
@@ -43,6 +61,7 @@ export interface PluginToolDef {
 export interface PluginToolContext {
   db: PluginDb;
   logger: PluginLogger;
+  secrets: PluginSecrets;
   tool(def: PluginToolDef): void;
 }
 

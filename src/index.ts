@@ -41,7 +41,8 @@ async function main(): Promise<void> {
   const oauth = new OAuthStore(db);
   const workspaces = new WorkspaceStore(db);
   const approvals = new ApprovalStore(db);
-  const pluginHost = new PluginHost(db);
+  const secrets = new SecretStore(db);
+  const pluginHost = new PluginHost(db, secrets);
   pluginHost.register(projectsPlugin);
   // Close out any approvals left pending by a prior process — their agent
   // turns died with that process and can never resume.
@@ -55,7 +56,6 @@ async function main(): Promise<void> {
     catch (err) { logger.warn('approval.sweep-error', { err: (err as Error).message }); }
   }, 3_600_000); // hourly
   approvalSweep.unref();
-  const secrets = new SecretStore(db);
 
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);
