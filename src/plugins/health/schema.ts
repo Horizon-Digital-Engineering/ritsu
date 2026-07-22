@@ -66,3 +66,13 @@ export const DocumentSchema = z.object({
   ref_type: z.string().trim().max(40).optional(),
   ref_id: z.number().int().positive().nullable().optional(),
 });
+
+export const IngestSchema = z.object({
+  doc_type: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(1).max(200),
+  text: z.string().max(500_000).optional(),
+  image: z.string().max(20_000_000).optional().describe('base64 image data'),
+  media_type: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']).optional(),
+}).refine(b => !!b.text || !!b.image, { message: 'text or image required' });
+
+export const ConfirmSchema = z.object({ data: z.unknown().optional() });

@@ -356,3 +356,93 @@ registerAction('hl-ins-del-plan', (el) => delPlan(Number(el.dataset.id)));
 registerAction('hl-ins-del-benefit', (el) => delBenefit(Number(el.dataset.id)));
 registerAction('hl-doc-search', docSearch);
 registerAction('hl-doc-del', (el) => delDoc(Number(el.dataset.id)));
+
+// ---- Import (ingestion) ---------------------------------------------------
+function importSkeleton() {
+  return `
+    <div class="panel"><h2>Import a document</h2>
+      <p class="muted">Paste text or upload a photo (lab report, SBC/benefits). It's read into structured data you review before it's saved.</p>
+      <form class="grid" id="hl-ingest-form">
+        <label>type</label><select id="hl-i-type"></select>
+        <label>title</label><input id="hl-i-title" required placeholder="e.g. Quest labs 2026-07 or 2026 SBC" />
+        <label>paste text</label><textarea id="hl-i-text" placeholder="paste the document text… or choose an image below"></textarea>
+        <label>or image</label><input id="hl-i-file" type="file" accept="image/*" />
+        <span></span><div class="form-actions"><button type="submit" class="primary">Extract</button></div>
+      </form>
+      <div id="hl-ingest-review"></div>
+    </div>
+    <div class="panel"><h2>Recent imports</h2><div id="hl-ingest-list">loading…</div></div>`;
+}
+function renderImportPane(pane) {
+  pane.innerHTML = importSkeleton();
+  pane.querySelector('#hl-ingest-form').addEventListener('submit', submitIngest);
+  loadIngestTypes();
+  loadIngestList();
+}
+async function loadIngestTypes() {
+  try {
+    const { types } = await api('GET', `${H}/ingest/types`);
+    document.getElementById('hl-i-type').innerHTML = types.map(t => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1]); r.onerror = reject; r.readAsDataURL(file); });
+}
+async function submitIngest(e) {
+  e.preventDefault();
+  const body = { doc_type: document.getElementById('hl-i-type').value, title: document.getElementById('hl-i-title').value.trim() };
+  const text = document.getElementById('hl-i-text').value.trim();
+  const file = document.getElementById('hl-i-file').files[0];
+  if (file) { body.image = await fileToBase64(file); body.media_type = file.type; }
+  else if (text) { body.text = text; }
+  else { toast('paste text or choose an image', 'err'); return; }
+  const review = document.getElementById('hl-ingest-review');
+  review.innerHTML = '<p class="muted">extracting… (a vision read can take a few seconds)</p>';
+  try { renderReview(await api('POST', `${H}/ingest`, body)); loadIngestList(); }
+  catch (err) { review.innerHTML = ''; toast(err.message, 'err'); }
+}
+function renderReview(rec) {
+  const review = document.getElementById('hl-ingest-review');
+  if (rec.status === 'error') { review.innerHTML = `<p class="err">Extraction failed: ${esc(rec.error || '')}</p>`; return; }
+  review.innerHTML = `
+    <div class="test-pane" style="margin-top:12px"><h3>Review extraction #${rec.id}</h3>
+      <p class="muted">Fix anything the model misread, then commit.</p>
+      <textarea id="hl-i-extracted" style="min-height:200px;font-family:ui-monospace,monospace">${esc(rec.extracted || '')}</textarea>
+      <div class="form-actions" style="margin-top:8px">
+        <button data-action="hl-ingest-confirm" data-id="${rec.id}" class="primary">Commit</button>
+        <button data-action="hl-ingest-reject" data-id="${rec.id}" class="danger">Discard</button>
+      </div></div>`;
+}
+async function confirmIngest(id) {
+  const ta = document.getElementById('hl-i-extracted');
+  let data;
+  try { data = ta ? JSON.parse(ta.value) : undefined; } catch { toast('the extracted JSON is invalid — fix it first', 'err'); return; }
+  try { await api('POST', `${H}/ingest/${id}/confirm`, { data }); toast('committed', 'ok'); document.getElementById('hl-ingest-review').innerHTML = ''; loadIngestList(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function rejectIngest(id) {
+  try { await api('POST', `${H}/ingest/${id}/reject`, {}); document.getElementById('hl-ingest-review').innerHTML = ''; loadIngestList(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function openIngest(id) { try { renderReview(await api('GET', `${H}/ingest/${id}`)); } catch (e) { toast(e.message, 'err'); } }
+async function delIngest(id) { try { await api('DELETE', `${H}/ingest/${id}`); loadIngestList(); } catch (e) { toast(e.message, 'err'); } }
+async function loadIngestList() {
+  const el = document.getElementById('hl-ingest-list'); if (!el) return;
+  try {
+    const { ingestions } = await api('GET', `${H}/ingest`);
+    el.innerHTML = ingestions.length
+      ? `<table><tbody>${ingestions.map(i => `<tr>
+          <td class="muted">${i.created_at ? new Date(i.created_at * 1000).toISOString().slice(0, 10) : ''}</td>
+          <td>${esc(i.title)}</td><td class="muted">${esc(i.doc_type)}</td>
+          <td class="${i.status === 'error' ? 'err' : i.status === 'committed' ? 'ok' : ''}">${esc(i.status)}</td>
+          <td>${i.status === 'pending' ? `<button data-action="hl-ingest-open" data-id="${i.id}">review</button> ` : ''}<button data-action="hl-ingest-del" data-id="${i.id}" class="danger">×</button></td>
+        </tr>`).join('')}</tbody></table>`
+      : '<p class="muted">No imports yet.</p>';
+  } catch (e) { el.textContent = `error: ${e.message}`; }
+}
+
+registerTab('health-import', renderImportPane);
+registerAction('hl-ingest-confirm', (el) => confirmIngest(Number(el.dataset.id)));
+registerAction('hl-ingest-reject', (el) => rejectIngest(Number(el.dataset.id)));
+registerAction('hl-ingest-open', (el) => openIngest(Number(el.dataset.id)));
+registerAction('hl-ingest-del', (el) => delIngest(Number(el.dataset.id)));

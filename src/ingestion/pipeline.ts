@@ -31,8 +31,10 @@ export interface DocType<T = unknown> {
   schema: ZodType<T>;           // shape the extractor must produce
   /** Guidance handed to the extractor about what to pull out. */
   instructions: string;
-  /** Route the reviewed, validated data into the domain's own tables. */
-  commit(data: T, ctx: { ingestionId: number }): void;
+  /** Route the reviewed, validated data into the domain's own tables. `record`
+   *  gives the handler the original + metadata (e.g. to also keep the raw doc
+   *  searchable). */
+  commit(data: T, ctx: { ingestionId: number; record: IngestionRecord }): void;
 }
 
 export interface Extractor {
@@ -147,7 +149,7 @@ export class IngestionPipeline {
     const source = edited ?? (rec.extracted ? JSON.parse(rec.extracted) : undefined);
     if (source === undefined) throw new Error('nothing to commit — no extracted data');
     const data = t.schema.parse(source);
-    t.commit(data, { ingestionId: id });
+    t.commit(data, { ingestionId: id, record: rec });
     this.store.setCommitted(id);
     return this.store.get(id)!;
   }

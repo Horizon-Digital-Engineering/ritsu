@@ -7,9 +7,12 @@ import { HealthStore } from './store.js';
 import { trend, correlate } from './report.js';
 import { InsuranceStore, describeBenefit } from './insurance.js';
 import { DocumentStore, searchDocuments } from './documents.js';
+import { buildHealthPipeline } from './ingest.js';
+import { IngestionStore } from '../../ingestion/pipeline.js';
 import {
   ObservationSchema, MedicationSchema, StopMedSchema,
   PlanSchema, BenefitSchema, ProgressSchema, DocumentSchema,
+  IngestSchema, ConfirmSchema,
 } from './schema.js';
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
@@ -371,6 +374,40 @@ function register(ctx: PluginContext): void {
   ctx.route('delete', '/documents/:id', (req, res) => {
     res.status(docs.delete(Number(req.params.id)) ? 204 : 404).end();
   });
+
+  // --- ingestion: dump a doc / photo -> extract -> review -> commit ---
+  const pipeline = buildHealthPipeline(ctx.db);
+  const ingestStore = new IngestionStore(ctx.db);
+  const trimOriginal = (r: ReturnType<IngestionStore['get']>) =>
+    r ? { ...r, original: r.media_type.startsWith('image/') ? '[image]' : r.original } : r;
+
+  ctx.route('get', '/ingest/types', (_req, res) => { res.json({ types: pipeline.docTypes() }); });
+  ctx.route('get', '/ingest', (_req, res) => { res.json({ ingestions: ingestStore.list() }); });
+  ctx.route('get', '/ingest/:id', (req, res) => {
+    const r = trimOriginal(ingestStore.get(Number(req.params.id)));
+    if (!r) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(r);
+  });
+
+  ctx.route('post', '/ingest', async (req, res) => {
+    const b = parse(req, res, IngestSchema); if (!b) return;
+    try {
+      const rec = await pipeline.submit(
+        { title: b.title, source: b.image ? 'upload' : 'paste', text: b.text, imageBase64: b.image, mediaType: b.media_type },
+        b.doc_type,
+      );
+      res.status(201).json(trimOriginal(rec));
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+
+  ctx.route('post', '/ingest/:id/confirm', (req, res) => {
+    const b = parse(req, res, ConfirmSchema); if (!b) return;
+    try { res.json(trimOriginal(pipeline.confirm(Number(req.params.id), b.data))); }
+    catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+
+  ctx.route('post', '/ingest/:id/reject', (req, res) => { pipeline.reject(Number(req.params.id)); res.status(204).end(); });
+  ctx.route('delete', '/ingest/:id', (req, res) => { res.status(ingestStore.delete(Number(req.params.id)) ? 204 : 404).end(); });
 }
 
 export const healthPlugin: Plugin = {
@@ -385,6 +422,7 @@ export const healthPlugin: Plugin = {
         { id: 'health-log', label: 'Log' },
         { id: 'health-trends', label: 'Trends' },
         { id: 'health-insurance', label: 'Insurance' },
+        { id: 'health-import', label: 'Import' },
       ] },
     ],
   },

@@ -1,6 +1,8 @@
 import type { PluginDb } from '../types.js';
+import { migrateIngestion } from '../../ingestion/pipeline.js';
 
 export function migrate(db: PluginDb): void {
+  migrateIngestion(db);
   const obs = db.table('observations');
   const meds = db.table('medications');
   const plans = db.table('insurance_plans');
