@@ -45,7 +45,11 @@ describe('admin static assets parse cleanly', () => {
     // references app.js MUST carry type="module" because app.js uses
     // top-level await. A classic `<script src=… defer>` would parse-
     // error in the browser.
+    // No XSS sink here: `html` is a static test fixture read from disk and the
+    // match is only asserted on, never rendered. semgrep's script-tag rule
+    // can't see that, so suppress it on the line it reports (the assert).
     const tagMatch = html.match(/<script[^>]*\bsrc=["'][^"']*app\.js[^"']*["'][^>]*>/);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
     assert.ok(tagMatch, 'no <script src="…app.js"> tag found in ui.html');
     const tag = tagMatch[0];
     assert.match(

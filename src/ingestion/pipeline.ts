@@ -146,7 +146,7 @@ export class IngestionPipeline {
     if (!rec) throw new Error(`ingestion ${id} not found`);
     const t = this.types.get(rec.doc_type);
     if (!t) throw new Error(`unknown document type '${rec.doc_type}'`);
-    const source = edited ?? (rec.extracted ? JSON.parse(rec.extracted) : undefined);
+    const source: unknown = edited ?? (rec.extracted ? JSON.parse(rec.extracted) : undefined);
     if (source === undefined) throw new Error('nothing to commit — no extracted data');
     const data = t.schema.parse(source);
     t.commit(data, { ingestionId: id, record: rec });

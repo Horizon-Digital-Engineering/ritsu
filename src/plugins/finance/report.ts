@@ -103,7 +103,7 @@ export function detectSubscriptions(txns: Transaction[]): Subscription[] {
     const amounts = list.map(t => t.amount);
     const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
     if (!amounts.every(a => Math.abs(a - avg) <= Math.max(1, avg * 0.25))) continue;
-    const dates = list.map(t => t.date).sort();
+    const dates = list.map(t => t.date).sort((a, b) => a.localeCompare(b));
     const gaps: number[] = [];
     for (let i = 1; i < dates.length; i++) gaps.push(dayGap(dates[i - 1], dates[i]));
     const cadence = classifyCadence(gaps.reduce((a, b) => a + b, 0) / gaps.length);

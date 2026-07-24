@@ -72,9 +72,10 @@ export class PlaidClient {
     });
     const json = await res.json().catch(() => ({})) as Record<string, unknown>;
     if (!res.ok) {
+      const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
       throw new PlaidError(
-        String(json.error_code ?? 'PLAID_ERROR'),
-        String(json.error_message ?? json.display_message ?? `Plaid ${path} failed (${res.status})`),
+        str(json.error_code) ?? 'PLAID_ERROR',
+        str(json.error_message) ?? str(json.display_message) ?? `Plaid ${path} failed (${res.status})`,
         res.status,
       );
     }
