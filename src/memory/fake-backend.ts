@@ -4,7 +4,7 @@
  * append-only, supersede-as-forward-pointer, ttl expiry, scope filtering.
  */
 import { randomUUID, createHash } from 'node:crypto';
-import { orderChain } from './sqlite-backend.js';
+import { orderChain, LITE_CANDIDATE_CAP } from './sqlite-backend.js';
 import type {
   MemoryBackend, RawRecord, RawRecordInput, Scope, QueryFilter, AssembledContext,
 } from './backend.js';
@@ -19,13 +19,17 @@ export class FakeMemoryBackend implements MemoryBackend {
     const now = nowSec();
     this.rows.push({
       id, type: rec.type, content: rec.content,
-      content_hash: createHash('sha256').update(rec.content).digest('hex'),
+      content_hash: createHash('md5').update(rec.content).digest('hex'),
       event_time: rec.event_time ?? now, ingest_time: now, source: rec.source,
       source_ref: rec.source_ref ?? null, user_id: rec.scope.user_id,
       project_id: rec.scope.project_id ?? null, session_id: rec.scope.session_id ?? null,
       mode: rec.scope.mode ?? null, importance: rec.importance ?? null,
-      supersedes: rec.supersedes ?? null, acl: rec.acl ?? null, ttl: rec.ttl ?? null,
-      payload: rec.payload ?? null,
+      supersedes: rec.supersedes ?? null,
+      // JSON round-trip so acl/payload match sqlite's serialize-then-parse
+      // semantics (drops undefined keys, NaN->null) and aren't stored by reference.
+      acl: rec.acl != null ? JSON.parse(JSON.stringify(rec.acl)) : null,
+      ttl: rec.ttl ?? null,
+      payload: rec.payload != null ? JSON.parse(JSON.stringify(rec.payload)) : null,
     });
     return { id };
   }
@@ -45,10 +49,14 @@ export class FakeMemoryBackend implements MemoryBackend {
   async getContext(
     scope: Scope, query: string, opts: { budget?: number; limit?: number } = {},
   ): Promise<AssembledContext> {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const scored = this.active(scope).map(r => ({
-      r, score: terms.reduce((s, t) => s + (r.content.toLowerCase().includes(t) ? 1 : 0), 0),
-    }));
+    const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
+    const candidates = this.active(scope)
+      .sort((a, b) => b.event_time - a.event_time)
+      .slice(0, LITE_CANDIDATE_CAP);
+    const scored = candidates.map(r => {
+      const words = new Set(r.content.toLowerCase().split(/\W+/).filter(Boolean));
+      return { r, score: terms.reduce((s, t) => s + (words.has(t) ? 1 : 0), 0) };
+    });
     scored.sort((a, b) => b.score - a.score || b.r.event_time - a.r.event_time);
     return { records: scored.slice(0, opts.limit ?? 50).map(x => x.r) };
   }
@@ -81,8 +89,11 @@ export class FakeMemoryBackend implements MemoryBackend {
     while (added) {
       added = false;
       for (const rid of [...seen.keys()]) {
-        const newer = this.rows.find(r => r.supersedes === rid);
-        if (newer && !seen.has(newer.id)) { seen.set(newer.id, newer); added = true; }
+        // .filter(): a branch has multiple rows superseding the same id; .find()
+        // would grab only one and silently drop the siblings.
+        for (const newer of this.rows.filter(r => r.supersedes === rid)) {
+          if (!seen.has(newer.id)) { seen.set(newer.id, newer); added = true; }
+        }
       }
     }
     return orderChain([...seen.values()]);

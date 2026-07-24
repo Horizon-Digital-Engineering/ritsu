@@ -78,6 +78,10 @@ function scopeClause(scope: Scope): { sql: string; args: (string)[] } {
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+/** Lite-mode getContext bounds its candidate fetch (most-recent N) to avoid an
+ *  unbounded scan + full JS sort. The smart, unbounded path is flashback's job. */
+export const LITE_CANDIDATE_CAP = 500;
+
 export class SqliteMemoryBackend implements MemoryBackend {
   constructor(private readonly db: Db) {
     this.db.exec(SCHEMA);
@@ -86,7 +90,9 @@ export class SqliteMemoryBackend implements MemoryBackend {
   async record(rec: RawRecordInput): Promise<{ id: string }> {
     const id = randomUUID();
     const now = nowSec();
-    const content_hash = createHash('sha256').update(rec.content).digest('hex');
+    // md5 to match flashback's generated content_hash column (integrity/dedup,
+    // not security) so the hash agrees across backends.
+    const content_hash = createHash('md5').update(rec.content).digest('hex');
     this.db.prepare(
       `INSERT INTO raw_records
         (id, type, content, content_hash, event_time, ingest_time, source, source_ref,
@@ -122,11 +128,13 @@ export class SqliteMemoryBackend implements MemoryBackend {
     scope: Scope, query: string, opts: { budget?: number; limit?: number } = {},
   ): Promise<AssembledContext> {
     const limit = opts.limit ?? 50;
-    const all = await this.query(scope, {});
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const scored = all.map(r => {
-      const c = r.content.toLowerCase();
-      const score = terms.reduce((s, t) => s + (c.includes(t) ? 1 : 0), 0);
+    const candidates = await this.query(scope, { limit: LITE_CANDIDATE_CAP });
+    // De-duped query terms, matched at WORD boundaries (so "at" doesn't hit
+    // "cat" and a repeated term can't inflate the score).
+    const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
+    const scored = candidates.map(r => {
+      const words = new Set(r.content.toLowerCase().split(/\W+/).filter(Boolean));
+      const score = terms.reduce((s, t) => s + (words.has(t) ? 1 : 0), 0);
       return { r, score };
     });
     scored.sort((a, b) => b.score - a.score || b.r.event_time - a.r.event_time);
@@ -156,8 +164,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
     while (added) {
       added = false;
       for (const rid of [...seen.keys()]) {
-        const newer = this.db.prepare('SELECT * FROM raw_records WHERE supersedes = ?').get(rid) as RawRow | undefined;
-        if (newer && !seen.has(newer.id)) { seen.set(newer.id, rowToRecord(newer)); added = true; }
+        // .all(): a branch has MULTIPLE rows superseding the same id; .get()
+        // would grab only one and silently drop the siblings.
+        const newers = this.db.prepare('SELECT * FROM raw_records WHERE supersedes = ?').all(rid) as RawRow[];
+        for (const newer of newers) {
+          if (!seen.has(newer.id)) { seen.set(newer.id, rowToRecord(newer)); added = true; }
+        }
       }
     }
     // order oldest -> newest by WALKING the chain (deterministic; ingest_time is
@@ -166,16 +178,28 @@ export class SqliteMemoryBackend implements MemoryBackend {
   }
 }
 
-/** Order a set of supersede-linked records oldest-first by chain structure. */
+/** Order a set of supersede-linked records oldest-first. Emits EVERY node —
+ *  a topological sort over the supersede edges (a node comes after the one it
+ *  supersedes), so branched/multi-head histories keep all versions instead of
+ *  the linear walk dropping siblings. Tie-breaks by ingest_time; cycle-safe. */
 export function orderChain(nodes: RawRecord[]): RawRecord[] {
   const byId = new Map(nodes.map(n => [n.id, n]));
-  let cur: RawRecord | undefined = nodes.find(n => n.supersedes == null || !byId.has(n.supersedes)) ?? nodes[0];
-  const ordered: RawRecord[] = [];
-  const guard = new Set<string>();
-  while (cur && !guard.has(cur.id)) {
-    guard.add(cur.id);
-    ordered.push(cur);
-    cur = nodes.find(n => n.supersedes === cur!.id);
+  const remaining = new Set(nodes.map(n => n.id));
+  const out: RawRecord[] = [];
+  const oldestFirst = (a: RawRecord, b: RawRecord) =>
+    a.ingest_time - b.ingest_time || a.id.localeCompare(b.id);
+  while (remaining.size) {
+    const ready = [...remaining]
+      .map(id => byId.get(id)!)
+      .filter(n => n.supersedes == null || !remaining.has(n.supersedes)) // predecessor emitted or external
+      .sort(oldestFirst);
+    if (ready.length === 0) {
+      // supersede cycle — emit the rest deterministically instead of looping.
+      out.push(...[...remaining].map(id => byId.get(id)!).sort(oldestFirst));
+      break;
+    }
+    out.push(ready[0]);
+    remaining.delete(ready[0].id);
   }
-  return ordered;
+  return out;
 }

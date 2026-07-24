@@ -23,7 +23,7 @@ function suite(name: string, make: () => MemoryBackend) {
       assert.equal(rows.length, 1);
       assert.equal(rows[0].content, 'took 5mg lisinopril');
       assert.equal(rows[0].type, 'episodic');
-      assert.ok(rows[0].content_hash.length === 64);   // sha256 hex
+      assert.ok(rows[0].content_hash.length === 32);   // md5 hex (matches flashback)
       assert.ok(rows[0].ingest_time > 0);
     });
 
@@ -50,6 +50,14 @@ function suite(name: string, make: () => MemoryBackend) {
 
       const line = await mem.lineage(v2);
       assert.deepEqual(line.map(r => r.id), [v1, v2]);       // full chain, oldest first
+    });
+
+    it('lineage keeps ALL versions when history branches (no dropped siblings)', async () => {
+      const { id: v1 } = await mem.record({ type: 'semantic', content: 'weight 180', source: 's', scope });
+      const { id: a } = await mem.record({ type: 'semantic', content: 'weight 178', source: 's', scope, supersedes: v1 });
+      const { id: b } = await mem.record({ type: 'semantic', content: 'weight 179', source: 's', scope, supersedes: v1 });
+      const ids = (await mem.lineage(v1)).map(r => r.id).sort();
+      assert.deepEqual(ids, [v1, a, b].sort());  // all three; the branch sibling is not dropped
     });
 
     it('scopes by project', async () => {
