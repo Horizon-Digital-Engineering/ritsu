@@ -204,5 +204,11 @@ describe('health plugin HTTP routes', () => {
     assert.equal(r.status, 201);
     r = await call('get /documents/search', mockReq({ query: { q: 'acupuncture' } }));
     assert.ok((r.body as { hits: unknown[] }).hits.length >= 1);
+
+    // labels + correlate read their inputs off the query string
+    r = await call('get /labels');
+    assert.ok(Array.isArray((r.body as { labels: unknown[] }).labels));
+    r = await call('get /correlate', mockReq({ query: { a: 'LDL', b: 'LDL' } }));
+    assert.equal((r.body as { a: string; b: string }).a, 'LDL');
   });
 });
