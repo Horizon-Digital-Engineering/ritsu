@@ -23,7 +23,7 @@ describe('buildPluginTools (ritsu-agent plugin parity)', () => {
     assert.equal(t.name, 'mcp__projects__list_things');
     assert.equal((t.parameters as { type?: string }).type, 'object');
     // The zod raw shape converted to JSON schema; no leftover $schema meta key.
-    assert.equal((t.parameters as Record<string, unknown>).$schema, undefined);
+    assert.equal(t.parameters.$schema, undefined);
     assert.deepEqual(Object.keys((t.parameters as { properties: object }).properties), ['q']);
   });
 

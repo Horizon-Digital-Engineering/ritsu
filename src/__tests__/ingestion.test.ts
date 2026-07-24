@@ -57,7 +57,7 @@ describe('IngestionPipeline', () => {
     const rec = await p.submit({ title: 'Labs 2026-07', source: 'paste', text: 'LDL 120 HDL 55' }, 'lab_report');
     assert.equal(rec.status, 'pending');
     assert.equal(rec.original, 'LDL 120 HDL 55');
-    assert.ok(rec.extracted && JSON.parse(rec.extracted).length === 2);
+    assert.ok(rec.extracted && (JSON.parse(rec.extracted) as unknown[]).length === 2);
     assert.equal(committed.length, 0); // not committed until confirmed
 
     const done = p.confirm(rec.id);
