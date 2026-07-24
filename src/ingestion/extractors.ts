@@ -11,10 +11,11 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Extractor, ExtractInput, DocType } from './pipeline.js';
 
 /** Test / passthrough extractor — returns a fixed object (or a per-call fn). */
+type ExtractorFn = (i: ExtractInput, d: DocType) => unknown;
 export class StaticExtractor implements Extractor {
-  constructor(private readonly out: unknown | ((i: ExtractInput, d: DocType) => unknown)) {}
+  constructor(private readonly out: unknown) {}
   async extract(input: ExtractInput, docType: DocType): Promise<unknown> {
-    return typeof this.out === 'function' ? (this.out as (i: ExtractInput, d: DocType) => unknown)(input, docType) : this.out;
+    return typeof this.out === 'function' ? (this.out as ExtractorFn)(input, docType) : this.out;
   }
 }
 
@@ -117,7 +118,7 @@ export class SdkVisionExtractor implements Extractor {
       : `${ask}\n\n---\n${input.text ?? ''}`;
     let out = '';
     for await (const ev of query({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
       prompt: prompt as any,
       options: {
         systemPrompt: EXTRACT_SYSTEM,

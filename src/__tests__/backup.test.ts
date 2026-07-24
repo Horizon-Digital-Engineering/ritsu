@@ -37,7 +37,7 @@ describe('BackupManager', () => {
 
   it('export includes your data but excludes secrets/tokens', () => {
     const exp = mgr.exportJson();
-    assert.equal((exp.tables.memories as unknown[]).length, 1);
+    assert.equal(exp.tables.memories.length, 1);
     assert.equal(exp.tables.agent_definitions !== undefined, true);
     assert.equal(exp.tables.mcp_tokens, undefined);       // excluded
     assert.equal(exp.tables.plugin_secrets, undefined);   // excluded

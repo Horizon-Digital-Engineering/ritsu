@@ -8,6 +8,11 @@ updates:
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
+    # Wait a week before proposing a freshly published version — a newly
+    # published package can be malicious or unstable; the delay lets bad
+    # releases get yanked before they reach a PR.
+    cooldown:
+      default-days: 7
     groups:
       npm:
         patterns:
@@ -21,6 +26,8 @@ updates:
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns:
