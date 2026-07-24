@@ -6,7 +6,7 @@ import type { Plugin } from './types.js';
 
 function isPlugin(x: unknown): x is Plugin {
   const m = (x as { manifest?: { id?: unknown } } | null)?.manifest;
-  return !!m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string';
+  return !!m && typeof m === 'object' && typeof m.id === 'string';
 }
 
 /**
@@ -26,7 +26,7 @@ export async function discoverPlugins(): Promise<Plugin[]> {
   const dirs = readdirSync(here, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .map(e => e.name)
-    .sort();  // deterministic registration order
+    .sort((a, b) => a.localeCompare(b));  // deterministic registration order
   const out: Plugin[] = [];
   for (const name of dirs) {
     const file = ['plugin.js', 'plugin.ts'].map(f => join(here, name, f)).find(existsSync);

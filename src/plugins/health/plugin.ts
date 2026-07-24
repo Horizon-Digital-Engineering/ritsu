@@ -18,6 +18,8 @@ import {
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 const today = () => new Date().toISOString().slice(0, 10);
 const fmt = (v: number, unit: string) => `${v}${unit ? ` ${unit}` : ''}`;
+// Express query values are string | ParsedQs | array | undefined; only trust a plain string.
+const qstr = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 // ---- agent tools (reads fenced; writes are benign self-entry, ungated) -----
 function defineTools(ctx: PluginToolContext): void {
@@ -53,7 +55,7 @@ function defineTools(ctx: PluginToolContext): void {
         date: (a.date as string) || today(), kind: (a.kind as string) || 'other', label: String(a.label), value: Number(a.value),
         unit: a.unit as string | undefined, ref_low: a.ref_low as number | undefined, ref_high: a.ref_high as number | undefined, note: a.note as string | undefined,
       });
-      return text(`logged ${a.label} = ${fmt(Number(a.value), (a.unit as string) || '')} (id=${id})`);
+      return text(`logged ${String(a.label)} = ${fmt(Number(a.value), (a.unit as string) || '')} (id=${id})`);
     },
   });
 
@@ -69,7 +71,7 @@ function defineTools(ctx: PluginToolContext): void {
     },
     handler: (a) => {
       const id = store.addMedication({ name: String(a.name), dose: a.dose as string | undefined, frequency: a.frequency as string | undefined, start_date: (a.start_date as string) || today(), note: a.note as string | undefined });
-      return text(`added medication ${a.name} (id=${id})`);
+      return text(`added medication ${String(a.name)} (id=${id})`);
     },
   });
 
@@ -104,7 +106,7 @@ function defineTools(ctx: PluginToolContext): void {
     untrustedOutput: true,
     handler: (a) => {
       const t = trend(store.series(String(a.label)));
-      if (t.count === 0 || !t.first || !t.last) return text(`(no data for "${a.label}")`);
+      if (t.count === 0 || !t.first || !t.last) return text(`(no data for "${String(a.label)}")`);
       const dir = t.change == null ? '' : t.change > 0 ? '▲' : t.change < 0 ? '▼' : '→';
       return text(`${t.label} (${t.count} points): ${fmt(t.first.value, t.unit)} (${t.first.date}) → ${fmt(t.last.value, t.unit)} (${t.last.date}) ${dir} ${t.change?.toFixed(1)}${t.pctChange != null ? ` (${t.pctChange.toFixed(1)}%)` : ''}\n  min ${t.min} · max ${t.max} · avg ${t.avg.toFixed(1)}`);
     },
@@ -117,9 +119,9 @@ function defineTools(ctx: PluginToolContext): void {
     untrustedOutput: true,
     handler: (a) => {
       const c = correlate(store.series(String(a.label_a)), store.series(String(a.label_b)));
-      if (c.r == null) return text(`Not enough overlapping data to correlate ${a.label_a} and ${a.label_b} (paired ${c.n} points).`);
+      if (c.r == null) return text(`Not enough overlapping data to correlate ${String(a.label_a)} and ${String(a.label_b)} (paired ${c.n} points).`);
       const strength = Math.abs(c.r) > 0.7 ? 'strong' : Math.abs(c.r) > 0.4 ? 'moderate' : 'weak';
-      return text(`${a.label_a} vs ${a.label_b}: r = ${c.r.toFixed(2)} (${strength} ${c.r < 0 ? 'inverse' : 'positive'}), ${c.n} paired points.`);
+      return text(`${String(a.label_a)} vs ${String(a.label_b)}: r = ${c.r.toFixed(2)} (${strength} ${c.r < 0 ? 'inverse' : 'positive'}), ${c.n} paired points.`);
     },
   });
 
@@ -162,7 +164,7 @@ function defineTools(ctx: PluginToolContext): void {
       if (hits.length) parts.push(hits.map(b => `${b.category} — ${describeBenefit(b)}`).join('\n'));
       const passages = searchDocuments(docs.all().filter(d => d.category === 'benefits'), String(a.service), 2);
       if (passages.length) parts.push('From your benefits document:\n' + passages.map(h => `  "${h.snippet}"`).join('\n'));
-      return text(parts.length ? parts.join('\n\n') : `Nothing on file for "${a.service}" — add a benefit or dump your plan document.`);
+      return text(parts.length ? parts.join('\n\n') : `Nothing on file for "${String(a.service)}" — add a benefit or dump your plan document.`);
     },
   });
 
@@ -198,7 +200,7 @@ function defineTools(ctx: PluginToolContext): void {
         oop_max_individual: a.oop_max_individual as number | undefined,
         premium_monthly: a.premium_monthly as number | undefined,
       });
-      return text(`saved plan ${a.carrier} ${a.plan_name} (id=${id})`);
+      return text(`saved plan ${String(a.carrier)} ${String(a.plan_name)} (id=${id})`);
     },
   });
 
@@ -218,7 +220,7 @@ function defineTools(ctx: PluginToolContext): void {
         plan_id: Number(a.plan_id), category: String(a.category), cost_type: a.cost_type as 'copay' | 'coinsurance' | 'covered' | 'not_covered',
         amount: a.amount as number | undefined, network: a.network as 'in' | 'out' | undefined, after_deductible: a.after_deductible as boolean | undefined,
       });
-      return text(`added benefit ${a.category} (id=${id})`);
+      return text(`added benefit ${String(a.category)} (id=${id})`);
     },
   });
 
@@ -232,7 +234,7 @@ function defineTools(ctx: PluginToolContext): void {
     },
     handler: (a) => {
       const id = docs.add({ category: (a.category as string) || 'benefits', title: String(a.title), text: String(a.text), source: 'agent' });
-      return text(`stored document "${a.title}" (id=${id})`);
+      return text(`stored document "${String(a.title)}" (id=${id})`);
     },
   });
 
@@ -242,7 +244,7 @@ function defineTools(ctx: PluginToolContext): void {
     input: { plan_id: z.number().int().positive(), deductible_met: z.number().nonnegative(), oop_met: z.number().nonnegative() },
     handler: (a) => {
       const ok = ins.setProgress(Number(a.plan_id), Number(a.deductible_met), Number(a.oop_met));
-      return text(ok ? `updated deductible/OOP for plan ${a.plan_id}` : `no plan with id ${a.plan_id}`);
+      return text(ok ? `updated deductible/OOP for plan ${String(a.plan_id)}` : `no plan with id ${String(a.plan_id)}`);
     },
   });
 }
@@ -275,7 +277,7 @@ function register(ctx: PluginContext): void {
   });
 
   ctx.route('get', '/series', (req, res) => {
-    const label = String(req.query.label ?? '');
+    const label = qstr(req.query.label);
     const s = store.series(label);
     res.json({ label, series: s, trend: trend(s) });
   });
@@ -311,8 +313,8 @@ function register(ctx: PluginContext): void {
   ctx.route('get', '/labels', (_req, res) => { res.json({ labels: store.labels() }); });
 
   ctx.route('get', '/correlate', (req, res) => {
-    const a = String(req.query.a ?? '');
-    const b = String(req.query.b ?? '');
+    const a = qstr(req.query.a);
+    const b = qstr(req.query.b);
     const seriesA = store.series(a);
     const seriesB = store.series(b);
     res.json({ a, b, correlation: correlate(seriesA, seriesB), seriesA, seriesB });
@@ -357,7 +359,7 @@ function register(ctx: PluginContext): void {
   });
 
   ctx.route('get', '/documents/search', (req, res) => {
-    res.json({ hits: searchDocuments(docs.all(), String(req.query.q ?? ''), 6) });
+    res.json({ hits: searchDocuments(docs.all(), qstr(req.query.q), 6) });
   });
 
   ctx.route('get', '/documents/:id', (req, res) => {
