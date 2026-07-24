@@ -36,7 +36,7 @@ describe('admin static assets parse cleanly', () => {
       // errors past the parse stage — they're EXPECTED in Node and
       // do not indicate a broken script in the browser.
     }
-    assert.equal(syntaxError, null, syntaxError?.message);
+    assert.equal(syntaxError, null, syntaxError ?? undefined);
   });
 
   it('admin/ui.html loads app.js with type="module"', () => {
