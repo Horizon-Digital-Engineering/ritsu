@@ -14,6 +14,7 @@ import type { Db } from './db.js';
 import type { PluginHost } from './plugins/host.js';
 import { pluginMcpProvider, pluginGatedToolNames } from './plugins/mcp-provider.js';
 import type { PluginToolSet } from './tools/ritsu-agent/plugin.js';
+import type { MemoryService } from './memory/service.js';
 import { logger } from './util/log.js';
 
 /**
@@ -34,10 +35,16 @@ export type DispatcherFactory = (
 export class AgentHost {
   private readonly agents = new Map<string, AgentBase>();
   private pluginHost?: PluginHost;
+  private memoryService?: MemoryService;
 
   /** Injected after construction (pluginHost is built alongside AgentHost in
    *  index.ts). When unset, agents simply get no plugin tools. */
   setPluginHost(h: PluginHost): void { this.pluginHost = h; }
+
+  /** Flow-level memory over the MemoryBackend seam. Injected after
+   *  construction (built alongside AgentHost in index.ts). When unset, agents
+   *  keep exactly today's static-RAG behavior — no getContext, no turn record. */
+  setMemoryService(s: MemoryService): void { this.memoryService = s; }
 
   constructor(
     private readonly db: Db,
@@ -281,7 +288,12 @@ export class AgentHost {
         },
       } : {}),
     });
-    const deps: AgentDeps = { memory, conversations: this.conversations, dispatcher };
+    const deps: AgentDeps = {
+      memory, conversations: this.conversations, dispatcher,
+      // Flow-level memory: wired only when a MemoryService is set on the host.
+      // Absent => today's static-RAG behavior, unchanged.
+      ...(this.memoryService ? { memoryService: this.memoryService } : {}),
+    };
     this.agents.set(def.id, buildAgent(def, deps));
     const effectiveDispatcher = def.provider && def.api_key_ref ? 'ritsu-agent' : def.dispatcher;
     logger.info('agent.wired', {

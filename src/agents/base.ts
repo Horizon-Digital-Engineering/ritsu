@@ -3,7 +3,13 @@ import type { ConversationStore } from '../conversation-store.js';
 import type { ChatMessage, ChatRequest, ChatContentBlock, DispatcherKind, ModelDispatcher } from '../model/dispatcher.js';
 import type { MessageAttachment } from '../conversation-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
+import type { MemoryService } from '../memory/service.js';
+import type { Scope } from '../memory/backend.js';
 import { logger } from '../util/log.js';
+
+/** How many flashback-retrieved records to inject as relevant context. Bounded
+ *  so a large store can't blow the prompt budget. */
+const CONTEXT_RECORD_LIMIT = 20;
 
 export interface AgentRequest {
   message: string;
@@ -29,6 +35,17 @@ export interface AgentDeps {
   memory: MemoryStore;
   conversations: ConversationStore;
   dispatcher: ModelDispatcher;
+  /**
+   * Flow-level memory over the MemoryBackend seam. Optional: when absent (or in
+   * sqlite mode) the agent behaves exactly as it always has — the static
+   * MemoryStore.list dump is the only context and no turn record is written.
+   * When present, each turn additionally pulls query-relevant context and
+   * records the user + assistant messages through the configured backend(s).
+   */
+  memoryService?: MemoryService;
+  /** The human this agent's turns are attributed to (memory scope user_id).
+   *  Defaults to 'operator' when unset — a single-operator install. */
+  userId?: string;
 }
 
 /**
@@ -47,6 +64,16 @@ export abstract class AgentBase {
   get description(): string { return this.definition.description; }
   get systemPrompt(): string { return this.definition.system_prompt; }
 
+  /** Memory scope for this agent's turns: the human is the user, the agent is
+   *  the project, the conversation is the session. */
+  private memoryScope(conversationId: number): Scope {
+    return {
+      user_id: this.deps.userId ?? 'operator',
+      project_id: this.id,
+      session_id: String(conversationId),
+    };
+  }
+
   /**
    * Hook: assemble context messages from memories + inter-agent comms.
    *
@@ -60,7 +87,7 @@ export abstract class AgentBase {
    * for them when the user says "go ask X about Y" instead of replying
    * conversationally as if it had no way to do that.
    */
-  protected async loadContext(): Promise<ChatMessage[]> {
+  protected async loadContext(userMessage?: string, conversationId?: number): Promise<ChatMessage[]> {
     const out: ChatMessage[] = [];
     out.push({
       role: 'system',
@@ -134,12 +161,50 @@ export abstract class AgentBase {
         .join('\n');
       out.push({ role: 'system', content: `Active memories for this agent:\n${body}` });
     }
+
+    // Flow-level retrieval: on top of the static dump above, pull the records
+    // most relevant to THIS turn's message from the configured backend(s).
+    // getContext never throws (the service backstops flashback with sqlite),
+    // so a remote outage degrades to zero extra records — never a failed turn.
+    if (this.deps.memoryService && userMessage && conversationId != null) {
+      const scope = this.memoryScope(conversationId);
+      const { records } = await this.deps.memoryService.getContext(scope, userMessage, { limit: CONTEXT_RECORD_LIMIT });
+      if (records.length > 0) {
+        const body = records
+          .map(r => `(${new Date(r.event_time * 1000).toISOString()}) ${r.content}`)
+          .join('\n');
+        out.push({ role: 'system', content: `Relevant context retrieved for this message:\n${body}` });
+      }
+    }
     return out;
   }
 
   /** Hook: decide what (if anything) to persist after a turn. */
   protected async persistAfterTurn(_userMsg: string, _assistantMsg: string): Promise<number[]> {
     return [];
+  }
+
+  /**
+   * Record the user + assistant messages of a completed turn through the
+   * memory service, so the next turn's getContext can retrieve them. No-op
+   * when no memory service is wired (today's default). record() is
+   * sqlite-authoritative + flashback fire-and-forget, so this never blocks or
+   * fails the turn on a remote outage — but we still wrap it defensively so a
+   * local write hiccup can't fail an already-sent response either.
+   */
+  private async recordTurn(conversationId: number, userMsg: string, assistantMsg: string): Promise<void> {
+    if (!this.deps.memoryService) return;
+    const scope = this.memoryScope(conversationId);
+    try {
+      await this.deps.memoryService.record({
+        type: 'episodic', content: userMsg, source: `ritsu:${this.id}:user`, scope,
+      });
+      await this.deps.memoryService.record({
+        type: 'episodic', content: assistantMsg, source: `ritsu:${this.id}:assistant`, scope,
+      });
+    } catch (err) {
+      logger.warn('agent.record-turn-failed', { agent: this.id, err: (err as Error).message });
+    }
   }
 
   /** Hook: choose the dispatcher for this turn. Override to escalate. */
@@ -171,7 +236,7 @@ export abstract class AgentBase {
     const history: ChatMessage[] = this.deps.conversations
       .recent(conversationId, 50)
       .map(m => ({ role: m.role, content: m.content }));
-    const contextMsgs = await this.loadContext();
+    const contextMsgs = await this.loadContext(req.message, conversationId);
 
     // Attach THIS turn's images to the current user message (the last one in
     // history — we just appended it). Images ride along only on the turn they
@@ -209,6 +274,7 @@ export abstract class AgentBase {
 
     this.deps.conversations.append(conversationId, 'assistant', resp.content);
     const written = await this.persistAfterTurn(req.message, resp.content);
+    await this.recordTurn(conversationId, req.message, resp.content);
 
     return {
       conversation_id: conversationId,

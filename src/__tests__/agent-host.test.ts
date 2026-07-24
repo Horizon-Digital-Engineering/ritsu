@@ -13,6 +13,8 @@ import type { AgentDefinition } from '../admin/schema.js';
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispatcher.js';
 import { PluginHost } from '../plugins/host.js';
 import { projectsPlugin } from '../plugins/projects/plugin.js';
+import { MemoryService } from '../memory/service.js';
+import { FakeMemoryBackend } from '../memory/fake-backend.js';
 
 function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
@@ -265,6 +267,59 @@ describe('AgentHost — plugin gating hardening', () => {
     assert.deepEqual(stub.builds.slice(before).map(b => b.def.id), ['uses']);
   });
 })
+
+describe('AgentHost — flow-level memory wiring', () => {
+  let host: AgentHost;
+  let defStore: SqliteAgentDefinitionStore;
+  let stub: ReturnType<typeof makeStubFactory>;
+
+  function build(): { db: ReturnType<typeof openDatabase> } {
+    const db = openDatabase(':memory:');
+    const convs = new SqliteConversationStore(db);
+    defStore = new SqliteAgentDefinitionStore(db);
+    const workspaces = new WorkspaceStore(db);
+    stub = makeStubFactory();
+    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
+    return { db };
+  }
+
+  it('default (no MemoryService): behavior unchanged — no retrieved-context block', async () => {
+    build();
+    host.addOrReplace(await defStore.upsert(sampleDef()));
+    await host.get('alice').onMessage({ message: 'hello' });
+    const sys = stub.chats[0].req.messages.filter(m => m.role === 'system').map(m => m.content);
+    assert.ok(!sys.some(c => typeof c === 'string' && c.startsWith('Relevant context retrieved')),
+      'no flow-level context block when no MemoryService is wired');
+  });
+
+  it('with a MemoryService: records the turn AND injects retrieved context on the next turn', async () => {
+    build();
+    const svc = new MemoryService({ mode: 'sqlite', sqlite: new FakeMemoryBackend() });
+    host.setMemoryService(svc);
+    host.addOrReplace(await defStore.upsert(sampleDef()));
+
+    // First turn seeds the memory with the (distinctive) user + assistant text.
+    await host.get('alice').onMessage({ message: 'remember zephyrantine dosage' });
+
+    // Second turn's getContext should retrieve the seeded record and inject it.
+    await host.get('alice').onMessage({ message: 'what about zephyrantine' });
+    const sys = stub.chats[1].req.messages
+      .filter(m => m.role === 'system')
+      .map(m => (typeof m.content === 'string' ? m.content : ''));
+    const ctxBlock = sys.find(c => c.startsWith('Relevant context retrieved'));
+    assert.ok(ctxBlock, 'the retrieved-context block is present on turn 2');
+    assert.match(ctxBlock, /zephyrantine/);
+  });
+
+  it('a MemoryService in sqlite mode never blocks the turn (record + getContext both local)', async () => {
+    build();
+    const svc = new MemoryService({ mode: 'sqlite', sqlite: new FakeMemoryBackend() });
+    host.setMemoryService(svc);
+    host.addOrReplace(await defStore.upsert(sampleDef()));
+    const r = await host.get('alice').onMessage({ message: 'hi' });
+    assert.equal(r.reply, 'stub reply for alice'); // turn completes normally
+  });
+});
 
 describe('AgentHost — conversation ownership', () => {
   let host: AgentHost;
