@@ -668,6 +668,41 @@
       </div>
     </section>
 
+    <section id="pane-memory" class="pane">
+      <div class="panel">
+        <h2>Memory</h2>
+        <p>The core memory system. SQLite is always on — it's the floor and the backstop. Point ritsu at a Flashback server to opt into the dual-run: <strong>dual</strong> keeps sqlite authoritative and mirrors writes to Flashback; <strong>flashback</strong> makes the remote authoritative for retrieval with sqlite still written as the backstop. Config applies on the next restart.</p>
+        <div id="memory-state" class="mb-3">loading…</div>
+        <form class="grid" id="memory-form">
+          <label for="mem-url">flashback url</label>
+          <input id="mem-url" placeholder="http://127.0.0.1:8080" />
+
+          <label for="mem-token">flashback token</label>
+          <input id="mem-token" type="password" autocomplete="off" placeholder="paste once; encrypted at rest" />
+
+          <label for="mem-mode">mode</label>
+          <select id="mem-mode">
+            <option value="">auto — dual once url + token are set</option>
+            <option value="dual">dual — sqlite authoritative, mirror to flashback</option>
+            <option value="flashback">flashback — remote reads, sqlite backstop</option>
+            <option value="sqlite">sqlite — remote off</option>
+          </select>
+
+          <label for="mem-timeout">timeout ms</label>
+          <input id="mem-timeout" placeholder="5000" />
+
+          <label for="mem-poll">proposal poll ms</label>
+          <input id="mem-poll" placeholder="60000" />
+
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="memory-save">Save</button>
+            <button type="button" data-action="memory-probe">Probe flashback</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
     <section id="pane-backups" class="pane">
       <div class="panel">
         <h2>Backups</h2>

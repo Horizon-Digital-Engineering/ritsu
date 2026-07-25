@@ -155,6 +155,7 @@ async function main(): Promise<void> {
     version: VERSION,
     authMode: cfg.authMode,
     mcpUrl: `http://${cfg.mcpHost === '0.0.0.0' ? '127.0.0.1' : cfg.mcpHost}:${cfg.mcpPort}`,
+    memoryBoot: { mode: memoryConfig.mode, remote: memoryConfig.flashback?.endpoint ?? null },
   });
 
   const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, () => {

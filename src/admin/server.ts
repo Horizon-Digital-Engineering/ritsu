@@ -17,7 +17,7 @@ import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { BackupManager } from '../backup.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
-import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS } from '../memory/config.js';
+import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS, loadMemoryConfig } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
@@ -71,6 +71,9 @@ export interface AdminDeps {
   authMode: AuthMode;
   /** Base URL of the in-process MCP server, used by the /admin/api/mcp/* proxy. */
   mcpUrl: string;
+  /** Memory config resolved at boot — what the running process is actually
+   *  using (stored secrets may differ until the next restart). */
+  memoryBoot?: { mode: string; remote: string | null };
 }
 
 /**
@@ -1342,6 +1345,22 @@ export function createAdminApp(deps: AdminDeps) {
     const saved = await defStore.upsert(def);
     host.addOrReplace(saved);
     res.status(201).json({ created: true, id: agentId });
+  });
+
+  // ---- memory backend config (System → Memory) ---------------------------
+  app.get('/admin/api/memory', (_req: Request, res: Response) => {
+    const next = loadMemoryConfig(secrets);
+    res.json({
+      boot: deps.memoryBoot ?? null,
+      effective_next_boot: { mode: next.mode, remote: next.flashback?.endpoint ?? null },
+      stored: {
+        url: secrets.get(FLASHBACK_NS, 'url') ?? '',
+        token_set: !!secrets.get(FLASHBACK_NS, 'token'),
+        mode: secrets.get(FLASHBACK_NS, 'mode') ?? '',
+        timeout_ms: secrets.get(FLASHBACK_NS, 'timeout_ms') ?? '',
+        proposal_poll_ms: secrets.get(FLASHBACK_NS, 'proposal_poll_ms') ?? '',
+      },
+    });
   });
 
   // ---- health (live connectivity checks) ---------------------------------

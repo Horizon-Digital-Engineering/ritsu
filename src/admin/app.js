@@ -226,6 +226,7 @@ const NAV_GROUPS = [
   ] },
   { id: 'system', label: 'System', tabs: [
     { id: 'health',  label: 'Health' },
+    { id: 'memory',  label: 'Memory' },
     { id: 'logs',    label: 'Logs' },
     { id: 'audit',   label: 'Audit' },
     { id: 'plugins', label: 'Plugins' },
@@ -292,6 +293,7 @@ function switchTab(name) {
   else if (name === 'plugins') loadPluginsManager();
   else if (name === 'backups') loadBackupsTab();
   else if (name === 'health') loadHealthTab();
+  else if (name === 'memory') loadMemoryTab();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -2930,6 +2932,8 @@ const ACTIONS = {
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
   'backup-now':             () => backupNow(),
   'health-refresh':         () => loadHealthTab(),
+  'memory-save':            () => saveMemoryConfig(),
+  'memory-probe':           () => probeFlashback(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
@@ -3080,6 +3084,51 @@ async function togglePlugin(id, currentlyEnabled) {
 }
 
 // ---- Backups --------------------------------------------------------------
+async function loadMemoryTab() {
+  try {
+    const d = await api('GET', '/admin/api/memory');
+    const fmt = s => `<strong>${esc(s.mode)}</strong>${s.remote ? ` → ${esc(s.remote)}` : ''}`;
+    const boot = d.boot ? `running: ${fmt(d.boot)}` : 'running: (unknown)';
+    const next = `after restart: ${fmt(d.effective_next_boot)}`;
+    $('memory-state').innerHTML = [
+      `<span class="badge">${boot}</span>`,
+      `<span class="badge">${next}</span>`,
+      `<span class="hstat ${d.stored.token_set ? 'hstat-ok' : 'hstat-skip'}">token ${d.stored.token_set ? 'set' : 'not set'}</span>`,
+    ].join(' ');
+    $('mem-url').value = d.stored.url;
+    $('mem-mode').value = ['dual', 'flashback', 'sqlite'].includes(d.stored.mode) ? d.stored.mode : '';
+    $('mem-timeout').value = d.stored.timeout_ms;
+    $('mem-poll').value = d.stored.proposal_poll_ms;
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function saveMemoryConfig() {
+  const fields = [
+    ['url', $('mem-url').value], ['token', $('mem-token').value], ['mode', $('mem-mode').value],
+    ['timeout_ms', $('mem-timeout').value], ['proposal_poll_ms', $('mem-poll').value],
+  ];
+  let wrote = 0;
+  try {
+    for (const [name, raw] of fields) {
+      const value = (raw || '').trim();
+      if (!value) continue;
+      await api('POST', '/admin/api/secrets', { namespace: 'flashback', name, value });
+      wrote++;
+    }
+    $('mem-token').value = '';  // never keep the secret in the DOM
+    toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply` : 'nothing to save');
+    loadMemoryTab();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function probeFlashback() {
+  try {
+    const { checks } = await api('GET', '/admin/api/health');
+    const fb = checks.find(c => c.id === 'flashback');
+    if (!fb) { toast('no flashback check available', 'err'); return; }
+    if (fb.status === 'ok') toast(`flashback reachable (${fb.latency_ms} ms)`);
+    else toast(`flashback: ${fb.detail || fb.status}`, 'err');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function loadHealthTab() {
   const target = $('health-list');
   const meta = $('health-meta');
