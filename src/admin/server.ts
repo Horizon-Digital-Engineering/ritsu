@@ -17,6 +17,7 @@ import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { BackupManager } from '../backup.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
+import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import type { ChannelStore } from '../channels/channel-store.js';
@@ -872,6 +873,11 @@ export function createAdminApp(deps: AdminDeps) {
           namespace: LINKEDIN_NS,
           label: 'LinkedIn (OAuth 2.0, publish-only)',
           keys: LINKEDIN_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${LINKEDIN_NS}:${k}`) })),
+        },
+        {
+          namespace: FLASHBACK_NS,
+          label: 'Flashback (memory backend)',
+          keys: FLASHBACK_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${FLASHBACK_NS}:${k}`) })),
         },
       ],
     });

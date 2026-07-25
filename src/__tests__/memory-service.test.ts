@@ -5,6 +5,7 @@ import { SqliteMemoryBackend } from '../memory/sqlite-backend.js';
 import { FakeMemoryBackend } from '../memory/fake-backend.js';
 import { MemoryService } from '../memory/service.js';
 import { loadMemoryConfig } from '../memory/config.js';
+import type { SecretStore } from '../auth/secret-store.js';
 import type { MemoryBackend, Scope, RawRecordInput, AssembledContext, RawRecord, QueryFilter } from '../memory/backend.js';
 
 const scope: Scope = { user_id: 'operator', project_id: 'alice', session_id: '1' };
@@ -34,30 +35,45 @@ class FlakyBackend implements MemoryBackend {
 
 const rec = (content: string): RawRecordInput => ({ type: 'episodic', content, source: 's', scope });
 
+/** A read-only stub of the SecretStore over a plain key/value map, keyed
+ *  `namespace:name` — enough for loadMemoryConfig, which only reads. */
+const fakeSecrets = (kv: Record<string, string>): Pick<SecretStore, 'get'> => ({
+  get: (ns: string, name: string): string | null => kv[`${ns}:${name}`] ?? null,
+});
+
 describe('loadMemoryConfig', () => {
-  it('defaults to sqlite with no env (regression guard: unchanged behavior)', () => {
-    const cfg = loadMemoryConfig({});
+  it('defaults to sqlite when unconfigured (regression guard: unchanged behavior)', () => {
+    const cfg = loadMemoryConfig(fakeSecrets({}));
     assert.equal(cfg.mode, 'sqlite');
     assert.equal(cfg.flashback, undefined);
   });
 
-  it('parses dual + flashback creds', () => {
-    const cfg = loadMemoryConfig({
-      RITSU_MEMORY_BACKEND: 'dual', RITSU_FLASHBACK_URL: 'https://fb.example/', RITSU_FLASHBACK_TOKEN: 't',
-    });
+  it('reads dual + credentials from the secret store', () => {
+    const cfg = loadMemoryConfig(fakeSecrets({
+      'flashback:mode': 'dual', 'flashback:url': 'https://fb.example/', 'flashback:token': 't',
+    }));
     assert.equal(cfg.mode, 'dual');
     assert.equal(cfg.flashback?.endpoint, 'https://fb.example'); // trailing slash stripped
     assert.equal(cfg.flashback?.token, 't');
   });
 
-  it('remote mode without creds leaves flashback unset (degrade, not crash)', () => {
-    const cfg = loadMemoryConfig({ RITSU_MEMORY_BACKEND: 'flashback' });
-    assert.equal(cfg.mode, 'flashback');
+  it('defaults to dual once credentials are set with no explicit mode', () => {
+    const cfg = loadMemoryConfig(fakeSecrets({ 'flashback:url': 'https://fb.example', 'flashback:token': 't' }));
+    assert.equal(cfg.mode, 'dual');
+    assert.equal(cfg.flashback?.token, 't');
+  });
+
+  it('degrades a remote mode without credentials to sqlite (not a crash)', () => {
+    const cfg = loadMemoryConfig(fakeSecrets({ 'flashback:mode': 'flashback' }));
+    assert.equal(cfg.mode, 'sqlite');
     assert.equal(cfg.flashback, undefined);
   });
 
-  it('rejects an unknown mode', () => {
-    assert.throws(() => loadMemoryConfig({ RITSU_MEMORY_BACKEND: 'redis' }), /expected one of/);
+  it('ignores an unknown stored mode and stays on sqlite', () => {
+    const cfg = loadMemoryConfig(fakeSecrets({
+      'flashback:mode': 'redis', 'flashback:url': 'https://x', 'flashback:token': 't',
+    }));
+    assert.equal(cfg.mode, 'sqlite');
   });
 });
 
