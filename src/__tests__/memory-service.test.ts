@@ -43,7 +43,7 @@ describe('loadMemoryConfig', () => {
 
   it('parses dual + flashback creds', () => {
     const cfg = loadMemoryConfig({
-      MEMORY_BACKEND: 'dual', FLASHBACK_URL: 'https://fb.example/', FLASHBACK_TOKEN: 't',
+      RITSU_MEMORY_BACKEND: 'dual', RITSU_FLASHBACK_URL: 'https://fb.example/', RITSU_FLASHBACK_TOKEN: 't',
     });
     assert.equal(cfg.mode, 'dual');
     assert.equal(cfg.flashback?.endpoint, 'https://fb.example'); // trailing slash stripped
@@ -51,13 +51,13 @@ describe('loadMemoryConfig', () => {
   });
 
   it('remote mode without creds leaves flashback unset (degrade, not crash)', () => {
-    const cfg = loadMemoryConfig({ MEMORY_BACKEND: 'flashback' });
+    const cfg = loadMemoryConfig({ RITSU_MEMORY_BACKEND: 'flashback' });
     assert.equal(cfg.mode, 'flashback');
     assert.equal(cfg.flashback, undefined);
   });
 
   it('rejects an unknown mode', () => {
-    assert.throws(() => loadMemoryConfig({ MEMORY_BACKEND: 'redis' }), /expected one of/);
+    assert.throws(() => loadMemoryConfig({ RITSU_MEMORY_BACKEND: 'redis' }), /expected one of/);
   });
 });
 

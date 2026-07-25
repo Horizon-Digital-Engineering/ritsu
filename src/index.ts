@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
   host.setPluginHost(pluginHost);
 
-  // Flow-level memory over the MemoryBackend seam. Default MEMORY_BACKEND=sqlite
+  // Flow-level memory over the MemoryBackend seam. Default RITSU_MEMORY_BACKEND=sqlite
   // => today's behavior exactly. flashback/dual opt this install into the remote
   // store (sqlite stays the on-box backstop). Built here so it's wired before
   // any agent is constructed.
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
     });
     const proposals = new ProposalAdapter({ client: proposalClient, approvals });
     proposals.start(); // subscribe to the approval bus for decision reporting
-    const PROPOSAL_POLL_MS = Number(process.env.FLASHBACK_PROPOSAL_POLL_MS ?? 60000) || 60000;
+    const PROPOSAL_POLL_MS = Number(process.env.RITSU_FLASHBACK_PROPOSAL_POLL_MS ?? 60000) || 60000;
     const pollProposals = (): void => {
       proposals.sync().catch(err =>
         logger.warn('proposal.sync-error', { err: (err as Error).message }));
