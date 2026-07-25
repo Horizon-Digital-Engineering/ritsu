@@ -22,12 +22,12 @@ interface Row {
   name: string;
   description: string;
   system_prompt: string;
-  dispatcher: 'claude-direct' | 'litellm';
+  runtime: 'direct' | 'api';
   model: string;
   memory_backend: 'sqlite' | 'flashback';
   tools_allowlist: string;
   can_call: string | null;
-  provider: string | null;
+  provider: string;
   api_key_ref: number | null;
   provider_options: string | null;
   capabilities: string | null;
@@ -49,7 +49,7 @@ function rowToDef(r: Row): AgentDefinition {
     name: r.name,
     description: r.description,
     system_prompt: r.system_prompt,
-    dispatcher: r.dispatcher,
+    runtime: r.runtime,
     model: r.model,
     memory_backend: r.memory_backend,
     tools_allowlist: JSON.parse(r.tools_allowlist) as string[],
@@ -151,7 +151,7 @@ export class SqliteAgentDefinitionStore implements AgentDefinitionStore {
 function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
   db.prepare(
     `INSERT INTO agent_definitions
-       (id, type, name, description, system_prompt, dispatcher, model,
+       (id, type, name, description, system_prompt, runtime, model,
         memory_backend, tools_allowlist, can_call, provider, api_key_ref,
         provider_options, capabilities, approval_tools, plugins, enabled, escalation_approvable,
         allow_monitor_read)
@@ -171,7 +171,7 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
          ELSE agent_definitions.previous_saved_at
        END,
        system_prompt    = excluded.system_prompt,
-       dispatcher       = excluded.dispatcher,
+       runtime          = excluded.runtime,
        model            = excluded.model,
        memory_backend   = excluded.memory_backend,
        tools_allowlist  = excluded.tools_allowlist,
@@ -192,7 +192,7 @@ function writeAgentDefRow(db: Db, validated: AgentDefinition): void {
     validated.name,
     validated.description,
     validated.system_prompt,
-    validated.dispatcher,
+    validated.runtime,
     validated.model,
     validated.memory_backend,
     JSON.stringify(validated.tools_allowlist),
@@ -294,12 +294,12 @@ export async function seedIfEmpty(store: AgentDefinitionStore): Promise<void> {
       '2. Echo back what the user just said.',
       '3. Confirm the wiring works in one sentence.',
     ].join('\n'),
-    dispatcher: 'claude-direct',
+    runtime: 'direct',
     model: 'claude-sonnet-4-6',
     memory_backend: 'sqlite',
     tools_allowlist: [],
     can_call: [],
-    provider: null,
+    provider: 'claude',
     api_key_ref: null,
     provider_options: {},
     capabilities: [],

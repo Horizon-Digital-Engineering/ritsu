@@ -225,6 +225,7 @@ const NAV_GROUPS = [
     { id: 'oauth-clients', label: 'OAuth Clients' },
   ] },
   { id: 'system', label: 'System', tabs: [
+    { id: 'health',  label: 'Health' },
     { id: 'logs',    label: 'Logs' },
     { id: 'audit',   label: 'Audit' },
     { id: 'plugins', label: 'Plugins' },
@@ -290,6 +291,7 @@ function switchTab(name) {
   else if (name === 'audit') loadAuditTab();
   else if (name === 'plugins') loadPluginsManager();
   else if (name === 'backups') loadBackupsTab();
+  else if (name === 'health') loadHealthTab();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -404,7 +406,7 @@ function renderAgents() {
   const stateF = $('agent-state-filter')?.value || '';
   const filtered = agentCache.filter(a => {
     if (q && !(a.id + ' ' + a.name + ' ' + a.description).toLowerCase().includes(q)) return false;
-    if (disp && a.dispatcher !== disp) return false;
+    if (disp && a.runtime !== disp) return false;
     if (stateF === 'on' && !a.enabled) return false;
     if (stateF === 'off' && a.enabled) return false;
     return true;
@@ -418,7 +420,7 @@ function renderAgents() {
       <td class="id-cell">${glyphFor(a.id)}${esc(a.id)}</td>
       <td><span class="badge">${esc(a.type)}</span></td>
       <td>${esc(a.name)}</td>
-      <td><span class="badge dispatcher-${esc(a.dispatcher)}">${esc(a.dispatcher)}</span> ${esc(a.model)}</td>
+      <td><span class="badge dispatcher-${esc(a.runtime)}">${esc(a.runtime)}:${esc(a.provider)}</span> ${esc(a.model)}</td>
       <td>${esc(a.memory_backend)}</td>
       <td title="${a.last_used_at ? new Date(a.last_used_at * 1000).toISOString() : ''}">${fmtRelative(a.last_used_at)}</td>
       <td>${a.enabled ? 'on' : 'off'}</td>
@@ -429,7 +431,7 @@ function renderAgents() {
         <button class="danger" data-action="delete-agent" data-id="${esc(a.id)}">delete</button>
       </td>
     </tr>`).join('');
-  target.innerHTML = `<table><thead><tr><th>id</th><th>type</th><th>name</th><th>dispatcher / model</th><th>memory</th><th>last used</th><th>state</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  target.innerHTML = `<table><thead><tr><th>id</th><th>type</th><th>name</th><th>runtime / model</th><th>memory</th><th>last used</th><th>state</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 /** id of the agent currently loaded into the form, or null if drafting a new one. */
 let editingAgentId = null;
@@ -475,10 +477,33 @@ async function refreshApiKeyDropdown() {
 function renderApiKeyDropdown(selectedId) {
   const sel = $('f-api-key-ref');
   if (!sel) return;
-  const opts = ['<option value="">— none (claude-sdk only) —</option>']
+  const opts = ['<option value="">— none (direct runtime / keyless endpoint) —</option>']
     .concat(apiKeyCache.map(k => `<option value="${k.id}">${esc(k.name)} (${esc(k.provider)})</option>`));
   sel.innerHTML = opts.join('');
   if (selectedId != null) sel.value = String(selectedId);
+}
+
+/** Provider choices per runtime tier. direct = vendor runtimes riding a
+ *  subscription; api = metered providers behind ritsu's own loop. */
+const RUNTIME_PROVIDERS = {
+  direct: [
+    { value: 'claude', label: 'claude (Agent SDK, Max plan)' },
+  ],
+  api: [
+    { value: 'anthropic', label: 'anthropic (official SDK)' },
+    { value: 'openai', label: 'openai (official SDK)' },
+    { value: 'gemini', label: 'gemini (official SDK)' },
+    { value: 'xai', label: 'xai / grok (api.x.ai)' },
+    { value: 'openrouter', label: 'openrouter (any model, one key)' },
+    { value: 'litellm', label: 'litellm proxy (key optional)' },
+    { value: 'custom', label: 'custom (OpenAI-compatible base_url)' },
+  ],
+};
+function renderProviderDropdown(runtime, selected) {
+  const sel = $('f-provider');
+  const list = RUNTIME_PROVIDERS[runtime] ?? RUNTIME_PROVIDERS.direct;
+  sel.innerHTML = list.map(p => `<option value="${p.value}">${esc(p.label)}</option>`).join('');
+  sel.value = list.some(p => p.value === selected) ? selected : list[0].value;
 }
 function loadAgentForm(a) {
   editingAgentId = a.id;
@@ -487,14 +512,14 @@ function loadAgentForm(a) {
   $('f-type').value = a.type;
   $('f-name').value = a.name;
   $('f-description').value = a.description;
-  $('f-dispatcher').value = a.dispatcher;
+  $('f-runtime').value = a.runtime ?? 'direct';
+  renderProviderDropdown(a.runtime ?? 'direct', a.provider ?? 'claude');
   $('f-model').value = a.model;
   $('f-memory-backend').value = a.memory_backend;
   $('f-enabled').checked = !!a.enabled;
   $('f-escalation-approvable').checked = !!a.escalation_approvable;
   $('f-allow-monitor-read').checked = !!a.allow_monitor_read;
   $('f-system-prompt').value = a.system_prompt;
-  $('f-provider').value = a.provider ?? '';
   renderApiKeyDropdown(a.api_key_ref ?? null);
   $('f-provider-options').value = a.provider_options && Object.keys(a.provider_options).length
     ? JSON.stringify(a.provider_options)
@@ -529,7 +554,8 @@ function clearForm() {
   editingWorkspaces = [];   // new draft: definitively no workspaces
   $('agent-form').reset();
   $('f-id').readOnly = false;
-  $('f-provider').value = '';
+  $('f-runtime').value = 'direct';
+  renderProviderDropdown('direct', 'claude');
   $('f-provider-options').value = '';
   renderApiKeyDropdown(null);
   refreshApiKeyDropdown();
@@ -548,7 +574,8 @@ function clearForm() {
   recomputeFormWarnings();
 }
 async function submitAgent(method) {
-  const provider = $('f-provider').value || null;
+  const runtime = $('f-runtime').value;
+  const provider = $('f-provider').value;
   const apiKeyRefRaw = $('f-api-key-ref').value;
   const apiKeyRef = apiKeyRefRaw ? Number(apiKeyRefRaw) : null;
   const providerOptsRaw = $('f-provider-options').value.trim();
@@ -559,7 +586,7 @@ async function submitAgent(method) {
   }
   const body = {
     id: $('f-id').value, type: $('f-type').value, name: $('f-name').value,
-    description: $('f-description').value, dispatcher: $('f-dispatcher').value,
+    description: $('f-description').value, runtime,
     model: $('f-model').value, memory_backend: $('f-memory-backend').value,
     enabled: $('f-enabled').checked, system_prompt: $('f-system-prompt').value,
     tools_allowlist: readToolsAllowlist(),
@@ -700,7 +727,9 @@ async function runTest() {
     const r = await api('POST', '/admin/api/test', {
       system_prompt: $('f-system-prompt').value,
       message: msg,
-      dispatcher: $('f-dispatcher').value,
+      runtime: $('f-runtime').value,
+      provider: $('f-provider').value,
+      api_key_ref: $('f-api-key-ref').value ? Number($('f-api-key-ref').value) : null,
       model: $('f-model').value,
       tools_allowlist: readToolsAllowlist(),
       workspaces: wsList.map(w => ({ path: w.path, permissions: w.permissions })),
@@ -976,7 +1005,7 @@ async function openAgentPanel(agentId) {
     const summaries = { conversations: [{ id: canonical.id }] };
     panelConvoId = summaries.conversations[0]?.id ?? null;
     $('ap-dot').className = `tile-dot ${def.enabled ? 'idle' : 'off'}`;
-    $('ap-sub').textContent = `${def.model} · ${def.dispatcher}${def.enabled ? '' : ' · disabled'}`;
+    $('ap-sub').textContent = `${def.model} · ${def.runtime}:${def.provider}${def.enabled ? '' : ' · disabled'}`;
     panelModel = def.model;
     clearAttachments();
     updateAttachHint();
@@ -1154,7 +1183,7 @@ function attachMaxEdge() {
 const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 // Best-effort vision-capability guess. Unknown models default to "yes" so we
 // don't nag; the warning only fires for models we're fairly sure are text-only.
-const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
+const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|grok|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
 
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -2254,11 +2283,11 @@ async function renderToolsFor(agentId) {
         }</tbody></table>`
       : '<em class="txt-muted">(none — FS-touching tools will fail at runtime)</em>';
 
-    // Surface the runtime / dispatcher next to the tool inventory so the
-    // claude-sdk-vs-ritsu-agent distinction is unambiguous from here.
-    const runtime = agent.provider
-      ? `ritsu-agent (${esc(agent.provider)})`
-      : 'claude-sdk (Max plan)';
+    // Surface the runtime tier next to the tool inventory so the
+    // plan-vs-metered distinction is unambiguous from here.
+    const runtime = agent.runtime === 'api'
+      ? `api (${esc(agent.provider)}, metered)`
+      : `direct (${esc(agent.provider)}, plan)`;
 
     target.innerHTML = `
       <div class="tools-summary-line">
@@ -2900,6 +2929,7 @@ const ACTIONS = {
   'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
   'backup-now':             () => backupNow(),
+  'health-refresh':         () => loadHealthTab(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
@@ -3050,6 +3080,34 @@ async function togglePlugin(id, currentlyEnabled) {
 }
 
 // ---- Backups --------------------------------------------------------------
+async function loadHealthTab() {
+  const target = $('health-list');
+  const meta = $('health-meta');
+  target.innerHTML = '<em class="txt-muted">running checks…</em>';
+  meta.textContent = '';
+  try {
+    const t0 = Date.now();
+    const { checks } = await api('GET', '/admin/api/health');
+    const groups = ['core', 'providers', 'connectors'];
+    const rows = groups.flatMap(g => {
+      const inGroup = checks.filter(c => c.group === g);
+      return inGroup.map((c, i) => `
+        <tr>
+          <td>${i === 0 ? `<span class="badge">${esc(g)}</span>` : ''}</td>
+          <td>${esc(c.label)}</td>
+          <td><span class="hstat hstat-${esc(c.status)}">${c.status === 'skip' ? '—' : esc(c.status)}</span></td>
+          <td>${c.latency_ms != null ? `${c.latency_ms} ms` : ''}</td>
+          <td class="txt-muted">${esc(c.detail ?? '')}</td>
+        </tr>`);
+    }).join('');
+    target.innerHTML = `<table><thead><tr><th></th><th>check</th><th>status</th><th>latency</th><th>detail</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const bad = checks.filter(c => c.status === 'fail').length;
+    meta.textContent = `${checks.length} checks, ${bad} failing · ${Date.now() - t0} ms`;
+  } catch (e) {
+    target.innerHTML = `<em class="txt-muted">health check failed: ${esc(e.message)}</em>`;
+  }
+}
+
 async function loadBackupsTab() {
   const el = document.getElementById('backups-list');
   if (!el) return;
@@ -3145,6 +3203,10 @@ startTilesPolling();
 // Live filters on the Agents tab (debounced search, instant selects).
 $('agent-search')?.addEventListener('input', debounce(applyAgentFilters, 100));
 $('agent-disp-filter')?.addEventListener('change', applyAgentFilters);
+// Runtime tier drives which providers the form offers; keep the current
+// selection when it survives the switch.
+$('f-runtime')?.addEventListener('change', () => renderProviderDropdown($('f-runtime').value, $('f-provider').value));
+renderProviderDropdown($('f-runtime')?.value || 'direct', 'claude');
 $('agent-state-filter')?.addEventListener('change', applyAgentFilters);
 
 // Re-run cross-tab warnings whenever the form changes shape.

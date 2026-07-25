@@ -2,22 +2,34 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-const SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
--- The authoritative agent record. Edited via /admin CRUD. AgentHost reads at
--- boot and on hot-reload. id is a stable kebab-case string chosen at create.
+/**
+ * The authoritative agent record. Edited via /admin CRUD. AgentHost reads at
+ * boot and on hot-reload. id is a stable kebab-case string chosen at create.
+ * runtime 'direct' = a vendor agent runtime riding a subscription (provider
+ * 'claude' today); runtime 'api' = ritsu's own loop against a metered model
+ * API (provider anthropic/openai/gemini/xai/openrouter/litellm/custom).
+ * Standalone const so the runtime/provider migration can rebuild into it.
+ */
+const AGENT_DEFINITIONS_DDL = `
 CREATE TABLE IF NOT EXISTS agent_definitions (
   id                     TEXT PRIMARY KEY,
   type                   TEXT NOT NULL,
   name                   TEXT NOT NULL,
   description            TEXT NOT NULL,
   system_prompt          TEXT NOT NULL,
-  dispatcher             TEXT NOT NULL CHECK (dispatcher IN ('claude-direct','litellm')),
+  runtime                TEXT NOT NULL DEFAULT 'direct' CHECK (runtime IN ('direct','api')),
+  provider               TEXT NOT NULL DEFAULT 'claude',
   model                  TEXT NOT NULL,
   memory_backend         TEXT NOT NULL DEFAULT 'sqlite' CHECK (memory_backend IN ('sqlite','flashback')),
   tools_allowlist        TEXT NOT NULL DEFAULT '[]',
+  can_call               TEXT NOT NULL DEFAULT '[]',
+  api_key_ref            INTEGER,
+  provider_options       TEXT NOT NULL DEFAULT '{}',
+  capabilities           TEXT NOT NULL DEFAULT '[]',
+  approval_tools         TEXT NOT NULL DEFAULT '[]',
+  plugins                TEXT NOT NULL DEFAULT '[]',
+  escalation_approvable  INTEGER NOT NULL DEFAULT 0,
+  allow_monitor_read     INTEGER NOT NULL DEFAULT 0,
   enabled                INTEGER NOT NULL DEFAULT 1,
   created_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at             INTEGER NOT NULL DEFAULT (strftime('%s','now')),
@@ -25,7 +37,13 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
   -- on upsert when system_prompt changes. The Revert button swaps these.
   previous_system_prompt TEXT,
   previous_saved_at      INTEGER
-);
+);`;
+
+const SCHEMA = `
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+${AGENT_DEFINITIONS_DDL}
 
 -- Long-term knowledge, supersede-not-delete. agent_id is a plain string;
 -- no FK so memories outlive their owning definition (recreating an agent
@@ -466,6 +484,47 @@ function migrate(db: Db): void {
   // won't backfill columns — so add them here.
   addColumnIfMissing(db, 'plugin_registry', 'version', "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, 'plugin_registry', 'enabled', 'INTEGER NOT NULL DEFAULT 1');
+  migrateAgentRuntime(db);
+}
+
+/**
+ * One-shot rebuild to the runtime/provider shape. A legacy table is detected
+ * by its `dispatcher` column, which carried a NOT NULL CHECK — SQLite can't
+ * drop that in place, so the table is rebuilt and rows mapped:
+ * provider+api_key_ref set → api (openai-compat renamed openrouter; the
+ * base_url override keeps working either way), everything else →
+ * direct/claude. Runs after the addColumnIfMissing block so every column
+ * referenced in the copy exists on the legacy table.
+ */
+function migrateAgentRuntime(db: Db): void {
+  const cols = db.prepare('PRAGMA table_info(agent_definitions)').all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === 'dispatcher')) return;
+  const tx = db.transaction(() => {
+    db.exec('ALTER TABLE agent_definitions RENAME TO agent_definitions_legacy');
+    db.exec(AGENT_DEFINITIONS_DDL);
+    db.exec(`
+      INSERT INTO agent_definitions
+        (id, type, name, description, system_prompt, runtime, provider, model,
+         memory_backend, tools_allowlist, can_call, api_key_ref, provider_options,
+         capabilities, approval_tools, plugins, escalation_approvable,
+         allow_monitor_read, enabled, created_at, updated_at,
+         previous_system_prompt, previous_saved_at)
+      SELECT id, type, name, description, system_prompt,
+        CASE WHEN provider IS NOT NULL AND api_key_ref IS NOT NULL THEN 'api' ELSE 'direct' END,
+        CASE
+          WHEN provider IS NOT NULL AND api_key_ref IS NOT NULL THEN
+            CASE WHEN provider = 'openai-compat' THEN 'openrouter' ELSE provider END
+          ELSE 'claude'
+        END,
+        model, memory_backend, tools_allowlist,
+        COALESCE(can_call, '[]'), api_key_ref, COALESCE(provider_options, '{}'),
+        COALESCE(capabilities, '[]'), COALESCE(approval_tools, '[]'), COALESCE(plugins, '[]'),
+        COALESCE(escalation_approvable, 0), COALESCE(allow_monitor_read, 0),
+        enabled, created_at, updated_at, previous_system_prompt, previous_saved_at
+      FROM agent_definitions_legacy`);
+    db.exec('DROP TABLE agent_definitions_legacy');
+  });
+  tx();
 }
 
 /** API keys for the ritsu-agent runtime (Phase B). Stored AES-256-GCM

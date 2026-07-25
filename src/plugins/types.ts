@@ -100,7 +100,9 @@ export interface PluginAgentSeed {
   name: string;
   description: string;
   system_prompt: string;
-  dispatcher?: 'claude-direct' | 'litellm';
+  runtime?: 'direct' | 'api';
+  /** Provider under the runtime; defaults to 'claude' (direct). */
+  provider?: string;
   model?: string;
   /** SDK built-in tools the agent may use (claude-direct). Usually none for a
    *  read/answer domain assistant. */

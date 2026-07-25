@@ -41,7 +41,7 @@ describe('ritsu-agent monitor tools honor allow_monitor_read', () => {
     conversations = new SqliteConversationStore(db);
     const mk = (id: string, allow: boolean) => defStore.upsert(AgentDefinitionSchema.parse({
       id, type: 'generic', name: id, description: 'x', system_prompt: 'x',
-      dispatcher: 'claude-direct', model: 'claude-sonnet-4-6', allow_monitor_read: allow,
+      runtime: 'direct', model: 'claude-sonnet-4-6', allow_monitor_read: allow,
     }));
     await mk('opaque-agent', false);
     await mk('open-agent', true);

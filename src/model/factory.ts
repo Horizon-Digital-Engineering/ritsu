@@ -1,9 +1,8 @@
 import { ClaudeDirectDispatcher, type ClaudeDirectOpts } from './claude-direct-dispatcher.js';
-import { LiteLLMDispatcher, LITELLM_NS } from './litellm-dispatcher.js';
+import { LITELLM_NS } from './ritsu-agent/client.js';
 import { RitsuAgentDispatcher } from './ritsu-agent/dispatcher.js';
-import type { OpenAIProvider } from './ritsu-agent/openai-client.js';
 import type { RaToolDeps } from '../tools/ritsu-agent/builtin.js';
-import type { RaProviderOptions } from './ritsu-agent/types.js';
+import type { RaProvider, RaProviderOptions } from './ritsu-agent/types.js';
 import type { DispatcherKind, ModelDispatcher } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
@@ -64,8 +63,10 @@ export interface DispatcherOpts {
    * an OpenAI-compatible provider instead of the Claude Agent SDK.
    */
   ritsuAgent?: {
-    provider: OpenAIProvider;
-    apiKeyRef: number;
+    provider: RaProvider;
+    /** Null = keyless provider (litellm/custom); the litellm case falls back
+     *  to the SecretStore's proxy credentials. */
+    apiKeyRef: number | null;
     apiKeys: ApiKeyStore;
     providerOptions?: RaProviderOptions;
     /** Built-in tool deps (memory + agent-comms). Null = no built-ins. */
@@ -84,11 +85,6 @@ export interface DispatcherOpts {
 export function buildDispatcher(kind: DispatcherKind, model: string, opts: DispatcherOpts = {}): ModelDispatcher {
   switch (kind) {
     case 'claude-direct': return new ClaudeDirectDispatcher(model, claudeOptsFrom(opts));
-    case 'litellm': {
-      const baseUrl = opts.secrets?.get(LITELLM_NS, 'url')?.trim() || 'http://localhost:4000';
-      const apiKey = opts.secrets?.get(LITELLM_NS, 'api_key')?.trim() || undefined;
-      return new LiteLLMDispatcher(model, baseUrl, apiKey);
-    }
     case 'ritsu-agent':   return new RitsuAgentDispatcher(ritsuAgentOptsFrom(opts, model));
     default: {
       const _exhaustive: never = kind;
@@ -122,12 +118,22 @@ function ritsuAgentOptsFrom(opts: DispatcherOpts, defaultModel: string) {
   if (!opts.ritsuAgent) {
     throw new Error('ritsu-agent dispatcher requires opts.ritsuAgent (provider, apiKeyRef, apiKeys, toolDeps)');
   }
+  // A keyless litellm agent inherits the proxy connection configured in the
+  // SecretStore (admin → connectors), so per-agent config stays optional.
+  let providerOptions = opts.ritsuAgent.providerOptions;
+  let fallbackApiKey: string | undefined;
+  if (opts.ritsuAgent.provider === 'litellm' && opts.ritsuAgent.apiKeyRef === null) {
+    const url = opts.secrets?.get(LITELLM_NS, 'url')?.trim();
+    if (url && !providerOptions?.base_url) providerOptions = { ...providerOptions, base_url: url };
+    fallbackApiKey = opts.secrets?.get(LITELLM_NS, 'api_key')?.trim() || undefined;
+  }
   return {
     provider: opts.ritsuAgent.provider,
     apiKeyRef: opts.ritsuAgent.apiKeyRef,
     apiKeys: opts.ritsuAgent.apiKeys,
     defaultModel,
-    providerOptions: opts.ritsuAgent.providerOptions,
+    providerOptions,
+    ...(fallbackApiKey !== undefined ? { fallbackApiKey } : {}),
     toolDeps: opts.ritsuAgent.toolDeps,
     // Same approval gate the claude-direct path gets — but here it's the
     // reliable enforcement point (our own loop, no SDK to bypass it).

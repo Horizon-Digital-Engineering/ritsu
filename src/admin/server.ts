@@ -20,7 +20,8 @@ import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
-import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/litellm-dispatcher.js';
+import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
+import { runHealthChecks } from './health.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
@@ -189,7 +190,10 @@ const SecretSetBody = z.object({
 const TestPaneBody = z.object({
   system_prompt:   z.string().min(1),
   message:         z.string().min(1),
-  dispatcher:      z.enum(['claude-direct', 'litellm']),
+  runtime:         z.enum(['direct', 'api']).default('direct'),
+  provider:        z.string().default('claude'),
+  api_key_ref:     z.number().int().positive().nullable().default(null),
+  provider_options: z.record(z.string(), z.unknown()).default({}),
   model:           z.string().trim().min(1),
   tools_allowlist: z.array(z.string()).optional(),
   workspaces:      z.array(z.object({
@@ -1011,7 +1015,8 @@ export function createAdminApp(deps: AdminDeps) {
         id: def.id,
         name: def.name,
         model: def.model,
-        dispatcher: def.dispatcher,
+        runtime: def.runtime,
+        provider: def.provider,
         enabled: !!def.enabled,
         active,
         last_activity_ts: lastUsedAt,
@@ -1238,11 +1243,22 @@ export function createAdminApp(deps: AdminDeps) {
         created_at: Math.floor(Date.now() / 1000),
       }));
       const { buildDispatcher } = await import('../model/factory.js');
-      const dispatcher = buildDispatcher(body.dispatcher, body.model, {
+      const dispatcher = buildDispatcher(body.runtime === 'api' ? 'ritsu-agent' : 'claude-direct', body.model, {
         cwd: ephemeralWs[0]?.path,
         tools: body.tools_allowlist ?? [],
         workspaces: ephemeralWs,
         secrets,
+        // Draft api-runtime agents test against their real provider — no
+        // built-in tools, no memory: pure "what would this prompt return."
+        ...(body.runtime === 'api' ? {
+          ritsuAgent: {
+            provider: body.provider as import('../model/ritsu-agent/types.js').RaProvider,
+            apiKeyRef: body.api_key_ref,
+            apiKeys: deps.apiKeys,
+            providerOptions: body.provider_options,
+            toolDeps: null,
+          },
+        } : {}),
       });
       const t0 = Date.now();
       const resp = await dispatcher.chat({
@@ -1316,7 +1332,8 @@ export function createAdminApp(deps: AdminDeps) {
       name: seed.name,
       description: seed.description,
       system_prompt: seed.system_prompt,
-      dispatcher: seed.dispatcher ?? 'claude-direct',
+      runtime: seed.runtime ?? 'direct',
+      provider: seed.provider ?? 'claude',
       model: seed.model ?? 'claude-sonnet-4-6',
       tools_allowlist: seed.tools_allowlist ?? [],
       capabilities: seed.capabilities ?? [],
@@ -1325,6 +1342,11 @@ export function createAdminApp(deps: AdminDeps) {
     const saved = await defStore.upsert(def);
     host.addOrReplace(saved);
     res.status(201).json({ created: true, id: agentId });
+  });
+
+  // ---- health (live connectivity checks) ---------------------------------
+  app.get('/admin/api/health', async (_req: Request, res: Response) => {
+    res.json(await runHealthChecks({ defStore, apiKeys: deps.apiKeys, secrets }));
   });
 
   // ---- backups + export (data safety) ------------------------------------

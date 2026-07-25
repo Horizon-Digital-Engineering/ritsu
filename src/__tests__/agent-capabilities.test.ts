@@ -19,12 +19,12 @@ function def(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
     name: 'A',
     description: 'a',
     system_prompt: 'be brief',
-    dispatcher: 'claude-direct',
+    runtime: 'direct',
     model: 'claude-sonnet-4-6',
     memory_backend: 'sqlite',
     tools_allowlist: [],
     can_call: [],
-    provider: null,
+    provider: 'claude',
     api_key_ref: null,
     provider_options: {},
     capabilities: [],
@@ -136,7 +136,7 @@ describe('ritsu-agent capability tool gating', () => {
       name: 'Gamma',
       description: 'gamma-desc',
       system_prompt: 'be gamma',
-      dispatcher: 'claude-direct',
+      runtime: 'direct',
       model: 'claude-sonnet-4-6',
     });
     assert.ok((ok).includes('created gamma'));
@@ -146,7 +146,7 @@ describe('ritsu-agent capability tool gating', () => {
       name: 'Gamma',
       description: 'gamma-desc',
       system_prompt: 'be gamma',
-      dispatcher: 'claude-direct',
+      runtime: 'direct',
       model: 'claude-sonnet-4-6',
     });
     assert.match(String(dup), /already exists/);

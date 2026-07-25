@@ -4,7 +4,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { AgentDefinitionSchema, AgentDefinitionPatchSchema, DispatcherKindSchema, MemoryBackendSchema } from './admin/schema.js';
+import { AgentDefinitionSchema, AgentDefinitionPatchSchema, RuntimeSchema, MemoryBackendSchema, DIRECT_PROVIDERS, API_PROVIDERS } from './admin/schema.js';
 import type { AgentHost } from './agent-host.js';
 import type { MemoryStore } from './memory-store.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
@@ -92,7 +92,7 @@ export const TOOL_INFO: ReadonlyArray<{ name: string; summary: string; args: str
   { name: 'list_agents',       summary: 'List all enabled agents and their basic metadata.',                          args: '(no args)' },
   { name: 'ask_agent',         summary: 'Send a message to an agent. Returns the reply. Pass conversation_id to continue a thread.', args: 'agent_id, message, conversation_id?' },
   { name: 'read_agent_memory', summary: 'Read the most recent active memories for an agent.',                          args: 'agent_id, limit?' },
-  { name: 'create_agent',      summary: 'Create a new agent. Saved + wired live, immediately callable via ask_agent.', args: 'id, type, name, description, system_prompt, dispatcher, model, …' },
+  { name: 'create_agent',      summary: 'Create a new agent. Saved + wired live, immediately callable via ask_agent.', args: 'id, type, name, description, system_prompt, runtime, provider, model, …' },
   { name: 'update_agent',      summary: 'Update one or more fields on an existing agent.',                             args: 'agent_id, patch' },
   { name: 'reload_agent',      summary: 'Rebuild an agent\'s live instance from its DB row. Use after out-of-band changes.', args: 'agent_id' },
 ];
@@ -390,14 +390,14 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         name: z.string().describe('Human-readable name.'),
         description: z.string().describe('Short description of what the agent does.'),
         system_prompt: z.string().describe('System prompt that defines the agent\'s persona and rules.'),
-        dispatcher: DispatcherKindSchema.describe('Which model dispatcher to use (claude-direct or litellm).'),
-        model: z.string().describe('Model name passed to the dispatcher (e.g. "claude-sonnet-4-6" or "ollama/llama3").'),
+        runtime: RuntimeSchema.default('direct').describe("Runtime tier: 'direct' rides a vendor agent runtime (provider 'claude'); 'api' runs ritsu's own loop against a metered model API."),
+        provider: z.string().default('claude').describe(`Provider under the runtime. direct: ${DIRECT_PROVIDERS.join('/')}. api: ${API_PROVIDERS.join('/')}.`),
+        model: z.string().describe('Model name passed to the provider (e.g. "claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-flash").'),
         memory_backend: MemoryBackendSchema.default('sqlite').describe('Memory backend (sqlite for V1).'),
         tools_allowlist: z.array(z.string()).default([]).describe('Reserved for V2 tool gating; pass [].'),
         can_call: z.array(z.string()).default([]).describe('Agent ids this agent is allowed to ask_agent. Empty = no inter-agent calls.'),
-        provider: z.enum(['anthropic', 'openai', 'openai-compat', 'litellm']).nullable().default(null).describe('Phase A: stored but not yet consumed by the runtime; null = use the claude-direct dispatcher.'),
-        api_key_ref: z.number().int().positive().nullable().default(null).describe('Phase A: api_keys.id reference for the provider. Null until Phase B wires it.'),
-        provider_options: z.record(z.string(), z.unknown()).default({}).describe('Phase A: provider-specific options (temperature, max_tokens, etc).'),
+        api_key_ref: z.number().int().positive().nullable().default(null).describe('api_keys.id for api-runtime providers. Null for direct runtime and keyless litellm/custom endpoints.'),
+        provider_options: z.record(z.string(), z.unknown()).default({}).describe('Provider-specific options (temperature, max_tokens, base_url, etc).'),
         capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([])
           .describe('Per-agent capabilities. Empty by default.'),
         approval_tools: z.array(z.string()).default([])
@@ -440,7 +440,8 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
           name: z.string().optional(),
           description: z.string().optional(),
           system_prompt: z.string().optional(),
-          dispatcher: DispatcherKindSchema.optional(),
+          runtime: RuntimeSchema.optional(),
+          provider: z.string().optional(),
           model: z.string().optional(),
           memory_backend: MemoryBackendSchema.optional(),
           tools_allowlist: z.array(z.string()).optional(),

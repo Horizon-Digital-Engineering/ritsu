@@ -14,6 +14,15 @@ to an operator decision instead of a flat hard-deny.
 
 ### Added
 
+- **Two-tier runtime model.** Agents declare `runtime` (`direct` = vendor
+  runtime on a subscription, `claude` today; `api` = ritsu's own tool loop on
+  a metered key) + `provider`. Existing databases migrate automatically.
+- **api providers:** `anthropic` / `openai` / `gemini` via their official
+  SDKs, `xai` (Grok), `openrouter`, `litellm` (key optional), `custom`
+  base_url. Tool calls stay in ritsu's loop — the approval gate applies
+  unchanged. Sampling params are sent only when set in `provider_options`.
+- **Health tab (System).** Live checks: core runtime, one free probe per
+  stored provider key, and every configured connector.
 - **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
   denials — caller → target, reason, detail, attempted message, age — live
   over the approvals SSE stream. Escalation denials are visually flagged as

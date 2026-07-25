@@ -56,7 +56,9 @@ export interface ChatResponse {
   raw: unknown;
 }
 
-export type DispatcherKind = 'claude-direct' | 'litellm' | 'ritsu-agent';
+/** direct runtime → a vendor dispatcher ('claude-direct' today, more as
+ *  vendor runtimes ship); api runtime → 'ritsu-agent' (our loop). */
+export type DispatcherKind = 'claude-direct' | 'ritsu-agent';
 
 export interface ModelDispatcher {
   readonly kind: DispatcherKind;

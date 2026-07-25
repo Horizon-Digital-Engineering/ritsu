@@ -1,26 +1,42 @@
 import { z } from 'zod';
 
-export const DispatcherKindSchema = z.enum(['claude-direct', 'litellm']);
+/** The two-tier runtime model.
+ *  - `direct`: the vendor's own agent runtime, riding a subscription
+ *    (claude today; chatgpt/gemini/grok land as their dispatchers ship).
+ *  - `api`: ritsu's own tool loop against a metered model API. */
+export const RuntimeSchema = z.enum(['direct', 'api']);
+
+/** Vendors available under the `direct` runtime. Grows one entry per
+ *  vendor-runtime dispatcher we ship. */
+export const DIRECT_PROVIDERS = ['claude'] as const;
+
+/** Providers available under the `api` runtime. anthropic/openai/gemini use
+ *  official SDKs; xai's documented path is its OpenAI-compatible API;
+ *  openrouter/litellm/custom share the generic wire client. */
+export const API_PROVIDERS = ['anthropic', 'openai', 'gemini', 'xai', 'openrouter', 'litellm', 'custom'] as const;
+
+/** api-runtime providers that may run keyless (local proxy / custom
+ *  endpoint); every other api provider requires an api_key_ref. */
+export const KEYLESS_API_PROVIDERS: readonly string[] = ['litellm', 'custom'];
+
 export const MemoryBackendSchema = z.enum(['sqlite', 'flashback']);
 
-export const AgentDefinitionSchema = z.object({
+const AgentDefinitionBase = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'id must be lowercase kebab-case'),
   type: z.string().min(1),
   name: z.string().min(1),
   description: z.string().min(1),
   system_prompt: z.string().min(1),
-  dispatcher: DispatcherKindSchema,
+  runtime: RuntimeSchema.default('direct'),
   model: z.string().min(1),
   /** Which memory backend this agent reads/writes. V1 supports 'sqlite'; 'flashback' is wired for the stub. */
   memory_backend: MemoryBackendSchema.default('sqlite'),
   tools_allowlist: z.array(z.string()).default([]),
   /** Agent ids this agent is allowed to ask_agent. Empty = cannot call any agent. */
   can_call: z.array(z.string()).default([]),
-  /** Phase A (today): stored but not yet consumed. Phase B wires these into
-   *  a new ritsu-agent runtime that uses an explicit provider + api key
-   *  instead of the Claude Agent SDK's Max-plan session. NULL provider =
-   *  legacy claude-sdk path (current default for all existing agents). */
-  provider: z.enum(['anthropic', 'openai', 'openai-compat', 'litellm']).nullable().default(null),
+  /** Vendor/provider under the chosen runtime; the runtime decides which set
+   *  is valid (DIRECT_PROVIDERS vs API_PROVIDERS — see the superRefine). */
+  provider: z.string().min(1).default('claude'),
   api_key_ref: z.number().int().positive().nullable().default(null),
   /** Free-form provider opts: temperature, max_tokens, base_url override, etc. */
   provider_options: z.record(z.string(), z.unknown()).default({}),
@@ -60,6 +76,29 @@ export const AgentDefinitionSchema = z.object({
   previous_saved_at: z.number().int().nullable().optional(),
 });
 
+/** Cross-field rules the runtime/provider split introduces. Kept out of the
+ *  base object so the Patch schema can stay a plain .partial(). */
+function refineRuntimeProvider(def: { runtime: 'direct' | 'api'; provider: string; api_key_ref: number | null; provider_options: Record<string, unknown> }, ctx: z.RefinementCtx): void {
+  if (def.runtime === 'direct') {
+    if (!(DIRECT_PROVIDERS as readonly string[]).includes(def.provider)) {
+      ctx.addIssue({ code: 'custom', path: ['provider'], message: `direct runtime supports: ${DIRECT_PROVIDERS.join(', ')}` });
+    }
+    return;
+  }
+  if (!(API_PROVIDERS as readonly string[]).includes(def.provider)) {
+    ctx.addIssue({ code: 'custom', path: ['provider'], message: `api runtime supports: ${API_PROVIDERS.join(', ')}` });
+    return;
+  }
+  if (def.api_key_ref === null && !KEYLESS_API_PROVIDERS.includes(def.provider)) {
+    ctx.addIssue({ code: 'custom', path: ['api_key_ref'], message: `provider '${def.provider}' requires an api_key_ref` });
+  }
+  if (def.provider === 'custom' && typeof def.provider_options.base_url !== 'string') {
+    ctx.addIssue({ code: 'custom', path: ['provider_options'], message: "provider 'custom' requires provider_options.base_url" });
+  }
+}
+
+export const AgentDefinitionSchema = AgentDefinitionBase.superRefine(refineRuntimeProvider);
+
 export type AgentDefinition = z.infer<typeof AgentDefinitionSchema>;
 
 /** Capabilities an AGENT may grant another agent via the agent-admin tools.
@@ -79,7 +118,7 @@ export function assertGrantableCapabilities(caps: readonly string[] | undefined)
   }
 }
 
-export const AgentDefinitionPatchSchema = AgentDefinitionSchema.partial().omit({
+export const AgentDefinitionPatchSchema = AgentDefinitionBase.partial().omit({
   id: true,
   created_at: true,
   updated_at: true,

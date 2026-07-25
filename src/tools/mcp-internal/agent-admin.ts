@@ -23,7 +23,7 @@ import { z } from 'zod';
 import {
   AgentDefinitionSchema,
   AgentDefinitionPatchSchema,
-  DispatcherKindSchema,
+  RuntimeSchema,
   MemoryBackendSchema,
   assertGrantableCapabilities,
 } from '../../admin/schema.js';
@@ -64,8 +64,9 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
           name: z.string().describe('Human-readable name.'),
           description: z.string().describe('Short description of what the agent does.'),
           system_prompt: z.string().describe("System prompt defining the agent's persona and rules."),
-          dispatcher: DispatcherKindSchema.describe('Which model dispatcher to use (claude-direct or litellm).'),
-          model: z.string().describe('Model name passed to the dispatcher.'),
+          runtime: RuntimeSchema.default('direct').describe("Runtime tier: 'direct' (vendor runtime, provider 'claude') or 'api' (ritsu loop against a metered provider)."),
+          provider: z.string().default('claude').describe('Provider under the runtime (direct: claude; api: anthropic/openai/gemini/xai/openrouter/litellm/custom).'),
+          model: z.string().describe('Model name passed to the provider.'),
           memory_backend: MemoryBackendSchema.default('sqlite'),
           tools_allowlist: z.array(z.string()).default([])
             .describe('SDK tool names this agent may use (Read, Bash, etc.). Empty = no tools.'),
@@ -101,7 +102,8 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
             name: z.string().optional(),
             description: z.string().optional(),
             system_prompt: z.string().optional(),
-            dispatcher: DispatcherKindSchema.optional(),
+            runtime: RuntimeSchema.optional(),
+            provider: z.string().optional(),
             model: z.string().optional(),
             memory_backend: MemoryBackendSchema.optional(),
             tools_allowlist: z.array(z.string()).optional(),

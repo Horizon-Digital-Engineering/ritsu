@@ -28,18 +28,17 @@ async function waitFor(pred: () => boolean, tries = 100): Promise<void> {
 }
 
 /** Build a fake fetch that returns a queued series of OpenAI-shape
- *  responses. Each call dequeues one. */
+ *  responses. Each call dequeues one. Real Response objects — the official
+ *  openai SDK reads headers, not just .json(). */
 function makeFetchQueue(responses: unknown[]): typeof fetch {
   let i = 0;
   return (async (_url: unknown, _init: unknown) => {
     const body = responses[i++];
     if (!body) throw new Error('fetch queue exhausted');
-    return {
-      ok: true,
+    return new Response(JSON.stringify(body), {
       status: 200,
-      text: async () => JSON.stringify(body),
-      json: async () => body,
-    } as unknown as Response;
+      headers: { 'content-type': 'application/json' },
+    });
   });
 }
 

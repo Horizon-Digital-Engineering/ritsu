@@ -97,7 +97,7 @@ describe('ritsu-agent OpenAI client (image_url translation)', () => {
   it('renders an image block as a data-URL image_url part', async () => {
     const sink: { body: CapturedBody | null } = { body: null };
     const client = new OpenAICompatClient({
-      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'a cat'),
+      provider: 'openrouter', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'a cat'),
     });
     const messages: RaMessage[] = [
       { role: 'user', content: [
@@ -117,7 +117,7 @@ describe('ritsu-agent OpenAI client (image_url translation)', () => {
   it('leaves a plain-string message as a string (no needless multi-part)', async () => {
     const sink: { body: CapturedBody | null } = { body: null };
     const client = new OpenAICompatClient({
-      provider: 'openai', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'hi'),
+      provider: 'openrouter', apiKey: 'sk-test', model: 'gpt-4o', fetchImpl: captureFetch(sink, 'hi'),
     });
     await client.chat([{ role: 'user', content: 'hi' }], []);
     assert.equal(sink.body?.messages[0].content, 'hi');
