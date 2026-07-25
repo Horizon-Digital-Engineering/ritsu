@@ -5,12 +5,17 @@ import { logger } from '../util/log.js';
  * Talks to a local LiteLLM proxy over its OpenAI-compatible HTTP API.
  * LiteLLM handles auth to the underlying provider.
  */
+/** SecretStore namespace + keys for the LiteLLM proxy connection. */
+export const LITELLM_NS = 'litellm';
+export const LITELLM_SECRET_KEYS = ['url', 'api_key'] as const;
+
 export class LiteLLMDispatcher implements ModelDispatcher {
   readonly kind = 'litellm' as const;
 
   constructor(
     readonly defaultModel: string,
-    private readonly baseUrl: string = process.env.LITELLM_URL ?? 'http://localhost:4000',
+    private readonly baseUrl: string,
+    private readonly apiKey?: string,
   ) {}
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -27,7 +32,7 @@ export class LiteLLMDispatcher implements ModelDispatcher {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(process.env.LITELLM_API_KEY ? { Authorization: `Bearer ${process.env.LITELLM_API_KEY}` } : {}),
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
       body: JSON.stringify(body),
     });

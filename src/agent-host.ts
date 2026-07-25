@@ -62,7 +62,7 @@ export class AgentHost {
         // / litellm) otherwise — existing agents are unchanged.
         def.provider && def.api_key_ref ? 'ritsu-agent' : def.dispatcher,
         def.model,
-        opts,
+        { ...opts, secrets: this.secrets },
       ),
   ) {}
 

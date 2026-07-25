@@ -20,6 +20,8 @@ import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
+import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/litellm-dispatcher.js';
+import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
@@ -879,6 +881,16 @@ export function createAdminApp(deps: AdminDeps) {
           label: 'Flashback (memory backend)',
           keys: FLASHBACK_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${FLASHBACK_NS}:${k}`) })),
         },
+        {
+          namespace: LITELLM_NS,
+          label: 'LiteLLM proxy',
+          keys: LITELLM_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${LITELLM_NS}:${k}`) })),
+        },
+        {
+          namespace: INGEST_NS,
+          label: 'Ingest / vision model',
+          keys: INGEST_SECRET_KEYS.map(k => ({ name: k, set: setKeys.has(`${INGEST_NS}:${k}`) })),
+        },
       ],
     });
   });
@@ -1230,6 +1242,7 @@ export function createAdminApp(deps: AdminDeps) {
         cwd: ephemeralWs[0]?.path,
         tools: body.tools_allowlist ?? [],
         workspaces: ephemeralWs,
+        secrets,
       });
       const t0 = Date.now();
       const resp = await dispatcher.chat({

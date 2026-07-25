@@ -378,7 +378,7 @@ function register(ctx: PluginContext): void {
   });
 
   // --- ingestion: dump a doc / photo -> extract -> review -> commit ---
-  const pipeline = buildHealthPipeline(ctx.db);
+  const pipeline = buildHealthPipeline(ctx.db, ctx.extractor);
   const ingestStore = new IngestionStore(ctx.db);
   const trimOriginal = (r: ReturnType<IngestionStore['get']>) =>
     r ? { ...r, original: r.media_type.startsWith('image/') ? '[image]' : r.original } : r;

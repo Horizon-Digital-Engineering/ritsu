@@ -6,7 +6,6 @@
 import { z } from 'zod';
 import type { PluginDb } from '../types.js';
 import { IngestionStore, IngestionPipeline, type Extractor } from '../../ingestion/pipeline.js';
-import { resolveExtractor } from '../../ingestion/extractors.js';
 import { HealthStore } from './store.js';
 import { InsuranceStore } from './insurance.js';
 import { DocumentStore } from './documents.js';
@@ -32,7 +31,7 @@ export const SbcSchema = z.object({
   })),
 });
 
-export function buildHealthPipeline(db: PluginDb, extractor: Extractor = resolveExtractor()): IngestionPipeline {
+export function buildHealthPipeline(db: PluginDb, extractor: Extractor): IngestionPipeline {
   const health = new HealthStore(db);
   const ins = new InsuranceStore(db);
   const docs = new DocumentStore(db);
