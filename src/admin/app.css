@@ -880,3 +880,9 @@ body.panel-open { overflow: hidden; touch-action: none; }
   font-size: 0.8rem; margin-bottom: 8px; line-height: 1.4;
 }
 .approval-escalation-banner code, .approval-escalation-banner strong { color: inherit; }
+
+/* System -> Health status pills */
+.hstat { padding: 1px 10px; border-radius: 10px; border: 1px solid var(--line); font-size: 12px; }
+.hstat-ok { color: var(--ok); border-color: #2c4a36; }
+.hstat-fail { color: var(--err); border-color: #4a2c2c; }
+.hstat-skip { color: var(--muted); }

@@ -225,6 +225,7 @@ const NAV_GROUPS = [
     { id: 'oauth-clients', label: 'OAuth Clients' },
   ] },
   { id: 'system', label: 'System', tabs: [
+    { id: 'health',  label: 'Health' },
     { id: 'logs',    label: 'Logs' },
     { id: 'audit',   label: 'Audit' },
     { id: 'plugins', label: 'Plugins' },
@@ -290,6 +291,7 @@ function switchTab(name) {
   else if (name === 'audit') loadAuditTab();
   else if (name === 'plugins') loadPluginsManager();
   else if (name === 'backups') loadBackupsTab();
+  else if (name === 'health') loadHealthTab();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -2927,6 +2929,7 @@ const ACTIONS = {
   'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
   'backup-now':             () => backupNow(),
+  'health-refresh':         () => loadHealthTab(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
@@ -3077,6 +3080,34 @@ async function togglePlugin(id, currentlyEnabled) {
 }
 
 // ---- Backups --------------------------------------------------------------
+async function loadHealthTab() {
+  const target = $('health-list');
+  const meta = $('health-meta');
+  target.innerHTML = '<em class="txt-muted">running checks…</em>';
+  meta.textContent = '';
+  try {
+    const t0 = Date.now();
+    const { checks } = await api('GET', '/admin/api/health');
+    const groups = ['core', 'providers', 'connectors'];
+    const rows = groups.flatMap(g => {
+      const inGroup = checks.filter(c => c.group === g);
+      return inGroup.map((c, i) => `
+        <tr>
+          <td>${i === 0 ? `<span class="badge">${esc(g)}</span>` : ''}</td>
+          <td>${esc(c.label)}</td>
+          <td><span class="hstat hstat-${esc(c.status)}">${c.status === 'skip' ? '—' : esc(c.status)}</span></td>
+          <td>${c.latency_ms != null ? `${c.latency_ms} ms` : ''}</td>
+          <td class="txt-muted">${esc(c.detail ?? '')}</td>
+        </tr>`);
+    }).join('');
+    target.innerHTML = `<table><thead><tr><th></th><th>check</th><th>status</th><th>latency</th><th>detail</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const bad = checks.filter(c => c.status === 'fail').length;
+    meta.textContent = `${checks.length} checks, ${bad} failing · ${Date.now() - t0} ms`;
+  } catch (e) {
+    target.innerHTML = `<em class="txt-muted">health check failed: ${esc(e.message)}</em>`;
+  }
+}
+
 async function loadBackupsTab() {
   const el = document.getElementById('backups-list');
   if (!el) return;

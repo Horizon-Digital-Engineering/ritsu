@@ -656,6 +656,18 @@
       </div>
     </section>
 
+    <section id="pane-health" class="pane">
+      <div class="panel">
+        <h2>Health</h2>
+        <p>Live checks against everything ritsu is wired to: core runtime, one probe per stored provider key (their model-list endpoints — free), and each configured connector.</p>
+        <div class="row" style="margin-bottom:10px">
+          <button data-action="health-refresh" class="primary">Re-check</button>
+          <span id="health-meta" class="txt-muted"></span>
+        </div>
+        <div id="health-list">loading…</div>
+      </div>
+    </section>
+
     <section id="pane-backups" class="pane">
       <div class="panel">
         <h2>Backups</h2>

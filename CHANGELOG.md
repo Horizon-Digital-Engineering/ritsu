@@ -14,27 +14,15 @@ to an operator decision instead of a flat hard-deny.
 
 ### Added
 
-- **Two-tier runtime model: `direct` vs `api`.** Agent definitions now declare
-  an explicit `runtime` + `provider` pair instead of inferring the runtime
-  from which fields happen to be set. `direct` = a vendor agent runtime riding
-  a subscription (provider `claude` today; more vendors as their runtimes
-  ship). `api` = ritsu's own tool loop against a metered model API. Existing
-  databases migrate automatically; the admin form, MCP `create_agent`/
-  `update_agent`, the agent-admin tools, and the test pane all speak the new
-  shape (the test pane can now exercise api-runtime providers directly).
-- **api tier: official SDK providers.** `anthropic` (Messages API via
-  `@anthropic-ai/sdk`), `openai` (official `openai` SDK), and `gemini`
-  (native `generateContent` via `@google/genai` — function calling, inline
-  images, raw-JSON-Schema tool declarations). Sampling parameters are sent
-  only when set in `provider_options`, so reasoning models keep their
-  server-side defaults. Tool calls always execute inside ritsu's own loop, so
-  the human-in-the-loop approval gate applies unchanged.
-- **api tier: wire-client providers.** `xai` (Grok via api.x.ai, xAI's
-  documented integration path), `openrouter` (first-class name for the
-  aggregator), `litellm` (local proxy; key optional — falls back to the
-  proxy credentials configured in connectors), and `custom` (any
-  OpenAI-compatible `base_url`). The old `openai-compat` name maps to
-  `openrouter` on migration; keyless endpoints get no Authorization header.
+- **Two-tier runtime model.** Agents declare `runtime` (`direct` = vendor
+  runtime on a subscription, `claude` today; `api` = ritsu's own tool loop on
+  a metered key) + `provider`. Existing databases migrate automatically.
+- **api providers:** `anthropic` / `openai` / `gemini` via their official
+  SDKs, `xai` (Grok), `openrouter`, `litellm` (key optional), `custom`
+  base_url. Tool calls stay in ritsu's loop — the approval gate applies
+  unchanged. Sampling params are sent only when set in `provider_options`.
+- **Health tab (System).** Live checks: core runtime, one free probe per
+  stored provider key, and every configured connector.
 - **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
   denials — caller → target, reason, detail, attempted message, age — live
   over the approvals SSE stream. Escalation denials are visually flagged as

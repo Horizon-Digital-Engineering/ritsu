@@ -21,6 +21,7 @@ import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
+import { runHealthChecks } from './health.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { ChannelRegistry } from '../channels/registry.js';
@@ -1341,6 +1342,11 @@ export function createAdminApp(deps: AdminDeps) {
     const saved = await defStore.upsert(def);
     host.addOrReplace(saved);
     res.status(201).json({ created: true, id: agentId });
+  });
+
+  // ---- health (live connectivity checks) ---------------------------------
+  app.get('/admin/api/health', async (_req: Request, res: Response) => {
+    res.json(await runHealthChecks({ defStore, apiKeys: deps.apiKeys, secrets }));
   });
 
   // ---- backups + export (data safety) ------------------------------------
