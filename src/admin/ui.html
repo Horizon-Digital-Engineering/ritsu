@@ -157,11 +157,11 @@
         <h2>Agents</h2>
         <div class="log-controls mb-3">
           <label>Search: <input id="agent-search" type="text" placeholder="name or description…" /></label>
-          <label>Dispatcher:
+          <label>Runtime:
             <select id="agent-disp-filter">
               <option value="">all</option>
-              <option value="claude-direct">claude-direct</option>
-              <option value="litellm">litellm</option>
+              <option value="direct">direct (plan)</option>
+              <option value="api">api (metered)</option>
             </select>
           </label>
           <label>State:
@@ -190,11 +190,14 @@
           <label for="f-description">description</label>
           <input id="f-description" name="description" required />
 
-          <label for="f-dispatcher">dispatcher</label>
-          <select id="f-dispatcher" name="dispatcher">
-            <option value="claude-direct">claude-direct</option>
-            <option value="litellm">litellm</option>
+          <label for="f-runtime">runtime</label>
+          <select id="f-runtime" name="runtime">
+            <option value="direct">direct — vendor runtime, rides a plan ($0/turn)</option>
+            <option value="api">api — ritsu loop, metered API key</option>
           </select>
+
+          <label for="f-provider">provider</label>
+          <select id="f-provider" name="provider"></select>
 
           <label for="f-model">model</label>
           <input id="f-model" name="model" required value="claude-sonnet-4-6" />
@@ -205,19 +208,9 @@
             <option value="flashback" disabled>flashback (V2)</option>
           </select>
 
-          <label for="f-provider">provider</label>
-          <select id="f-provider" name="provider">
-            <option value="">claude-sdk (Max plan, $0)</option>
-            <option value="openai">openai (official SDK)</option>
-            <option value="gemini">gemini (official SDK)</option>
-            <option value="openai-compat">openai-compat (OpenRouter / Together / Groq)</option>
-            <option value="litellm">litellm proxy</option>
-            <option value="anthropic" disabled>anthropic (Phase C)</option>
-          </select>
-
           <label for="f-api-key-ref">API key</label>
           <select id="f-api-key-ref" name="api_key_ref">
-            <option value="">— none (claude-sdk only) —</option>
+            <option value="">— none (direct runtime / keyless endpoint) —</option>
           </select>
 
           <label for="f-provider-options">provider options</label>
@@ -548,8 +541,10 @@
             <option value="anthropic">anthropic</option>
             <option value="openai">openai</option>
             <option value="gemini">gemini</option>
-            <option value="openai-compat">openai-compat</option>
+            <option value="xai">xai (grok)</option>
+            <option value="openrouter">openrouter</option>
             <option value="litellm">litellm</option>
+            <option value="custom">custom</option>
           </select>
 
           <label for="ak-plaintext">plaintext key</label>

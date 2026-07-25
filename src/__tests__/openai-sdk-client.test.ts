@@ -93,3 +93,28 @@ describe('OpenAISdkClient', () => {
     assert.equal(sink[0].url, 'http://localhost:9999/v1/chat/completions');
   });
 });
+
+describe('OpenAICompatClient provider defaults', () => {
+  it('xai routes to api.x.ai; keyless litellm sends no Authorization header', async () => {
+    const { OpenAICompatClient } = await import('../model/ritsu-agent/openai-client.js');
+    const seen: Array<{ url: string; auth: string | null }> = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      seen.push({ url: url instanceof Request ? url.url : String(url), auth: new Headers(init?.headers).get('authorization') });
+      return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    await new OpenAICompatClient({ provider: 'xai', apiKey: 'xai-test', model: 'grok-test', fetchImpl })
+      .chat([{ role: 'user', content: 'hi' }], []);
+    assert.equal(seen[0].url, 'https://api.x.ai/v1/chat/completions');
+    assert.equal(seen[0].auth, 'Bearer xai-test');
+
+    await new OpenAICompatClient({ provider: 'litellm', apiKey: '', model: 'm', fetchImpl })
+      .chat([{ role: 'user', content: 'hi' }], []);
+    assert.equal(seen[1].url, 'http://localhost:4000/v1/chat/completions');
+    assert.equal(seen[1].auth, null);
+  });
+
+  it("custom without base_url refuses to construct", async () => {
+    const { OpenAICompatClient } = await import('../model/ritsu-agent/openai-client.js');
+    assert.throws(() => new OpenAICompatClient({ provider: 'custom', apiKey: 'k', model: 'm' }), /base_url/);
+  });
+});

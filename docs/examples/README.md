@@ -19,14 +19,18 @@ Each example below maps to the **Agents → Create / edit** form:
 | `name` | name |
 | `description` | description |
 | `system_prompt` | system prompt (textarea) |
-| `dispatcher` | dispatcher |
+| `runtime` | runtime (direct / api) |
+| `provider` | provider |
 | `model` | model |
 | `tools_allowlist` | tools allowlist (checkboxes) |
 | `can_call` | can call (checkboxes — only enabled agents appear) |
 
-`provider` / `api_key_ref` / `provider_options` are for the ritsu-agent
-runtime (your-own-API-key path); leave them at `null` / `{}` for the
-default Max-plan claude-sdk dispatcher.
+`runtime: "direct"` + `provider: "claude"` is the Max-plan default.
+`runtime: "api"` runs ritsu's own loop against a metered provider
+(`anthropic` / `openai` / `gemini` / `xai` / `openrouter` / `litellm` /
+`custom`) — set `api_key_ref` to a minted key (optional for
+litellm/custom) and tune `provider_options` (temperature, max_tokens,
+base_url) as needed.
 
 ## Pasting via curl
 

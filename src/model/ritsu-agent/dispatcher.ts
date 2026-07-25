@@ -29,9 +29,13 @@ const MAX_TOOL_ROUNDS = 8;
 export interface RitsuAgentDispatcherOpts {
   provider: RaProvider;
   /** api_keys.id — looked up via apiKeys.reveal() right before the call so
-   *  the plaintext lives in memory only for the duration of the request. */
-  apiKeyRef: number;
+   *  the plaintext lives in memory only for the duration of the request.
+   *  Null = keyless (litellm/custom endpoints; schema-enforced). */
+  apiKeyRef: number | null;
   apiKeys: ApiKeyStore;
+  /** Key to use when apiKeyRef is null (e.g. the LiteLLM proxy key from the
+   *  SecretStore). Empty/omitted = no Authorization header. */
+  fallbackApiKey?: string;
   /** Default model; can be overridden per ChatRequest. */
   defaultModel: string;
   providerOptions?: RaProviderOptions;
@@ -62,13 +66,17 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const revealed = this.opts.apiKeys.reveal(this.opts.apiKeyRef);
-    if (!revealed) {
-      throw new Error(`api key ref=${this.opts.apiKeyRef} not found or revoked`);
+    let apiKey = this.opts.fallbackApiKey ?? '';
+    if (this.opts.apiKeyRef !== null) {
+      const revealed = this.opts.apiKeys.reveal(this.opts.apiKeyRef);
+      if (!revealed) {
+        throw new Error(`api key ref=${this.opts.apiKeyRef} not found or revoked`);
+      }
+      apiKey = revealed.plaintext;
     }
     const client = buildRaClient({
       provider: this.opts.provider,
-      apiKey: revealed.plaintext,
+      apiKey,
       model: req.model ?? this.defaultModel,
       providerOptions: this.opts.providerOptions,
       fetchImpl: this.opts.fetchImpl,

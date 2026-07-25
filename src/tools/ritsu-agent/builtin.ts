@@ -311,14 +311,15 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
       parameters: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'name', 'description', 'system_prompt', 'dispatcher', 'model'],
+        required: ['id', 'name', 'description', 'system_prompt', 'model'],
         properties: {
           id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$', description: 'Stable kebab-case identifier.' },
           type: { type: 'string', default: 'generic' },
           name: { type: 'string' },
           description: { type: 'string' },
           system_prompt: { type: 'string' },
-          dispatcher: { type: 'string', enum: ['claude-direct', 'litellm'] },
+          runtime: { type: 'string', enum: ['direct', 'api'], default: 'direct', description: "Runtime tier: 'direct' (vendor runtime, plan) or 'api' (metered key)." },
+          provider: { type: 'string', default: 'claude', description: 'Provider under the runtime (direct: claude; api: anthropic/openai/gemini/xai/openrouter/litellm/custom).' },
           model: { type: 'string' },
           memory_backend: { type: 'string', enum: ['sqlite', 'flashback'], default: 'sqlite' },
           tools_allowlist: { type: 'array', items: { type: 'string' }, default: [] },
@@ -330,15 +331,16 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
       handler: async (args) => {
         try {
           // JSON-schema defaults aren't applied at parse time — mirror what the
-          // Zod path on the MCP side gets by hand. Provider/api-key-ref start
-          // as null (claude-sdk default) unless caller overrides.
+          // Zod path on the MCP side gets by hand. Defaults are the direct/
+          // claude runtime unless the caller overrides.
           const withDefaults = {
             type: 'generic',
             memory_backend: 'sqlite',
             tools_allowlist: [],
             can_call: [],
             capabilities: [],
-            provider: null,
+            runtime: 'direct',
+            provider: 'claude',
             api_key_ref: null,
             provider_options: {},
             enabled: true,
@@ -429,7 +431,7 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
     {
       name: 'agent_monitor_list_agents',
       description:
-        'List every agent registered on this server (id, name, description, enabled, dispatcher). ' +
+        'List every agent registered on this server (id, name, description, enabled, runtime/provider). ' +
         'NOT filtered to your can_call allowlist — monitoring sees the whole swarm.',
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       handler: async () => {
@@ -439,7 +441,7 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
         return all
           .map(a => {
             const readable = a.allow_monitor_read || a.id === agentId ? 'readable' : 'opaque';
-            return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}, monitor:${readable}) — ${a.description}`;
+            return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.runtime}:${a.provider}/${a.model}, monitor:${readable}) — ${a.description}`;
           })
           .join('\n');
       },

@@ -14,15 +14,27 @@ to an operator decision instead of a flat hard-deny.
 
 ### Added
 
-- **Native OpenAI + Gemini providers for the ritsu-agent runtime.** The
-  `openai` provider now runs on the official `openai` SDK, and a new `gemini`
-  provider speaks Gemini's native `generateContent` API via `@google/genai` —
-  function calling, inline images, and raw-JSON-Schema tool declarations
-  (`parametersJsonSchema`). Sampling parameters are sent only when set in
-  `provider_options`, so reasoning models keep their server-side defaults.
-  `openai-compat`/`litellm` keep the minimal wire client. Tool calls in both
-  new providers still execute inside ritsu's own loop, so the human-in-the-loop
-  approval gate applies unchanged.
+- **Two-tier runtime model: `direct` vs `api`.** Agent definitions now declare
+  an explicit `runtime` + `provider` pair instead of inferring the runtime
+  from which fields happen to be set. `direct` = a vendor agent runtime riding
+  a subscription (provider `claude` today; more vendors as their runtimes
+  ship). `api` = ritsu's own tool loop against a metered model API. Existing
+  databases migrate automatically; the admin form, MCP `create_agent`/
+  `update_agent`, the agent-admin tools, and the test pane all speak the new
+  shape (the test pane can now exercise api-runtime providers directly).
+- **api tier: official SDK providers.** `anthropic` (Messages API via
+  `@anthropic-ai/sdk`), `openai` (official `openai` SDK), and `gemini`
+  (native `generateContent` via `@google/genai` — function calling, inline
+  images, raw-JSON-Schema tool declarations). Sampling parameters are sent
+  only when set in `provider_options`, so reasoning models keep their
+  server-side defaults. Tool calls always execute inside ritsu's own loop, so
+  the human-in-the-loop approval gate applies unchanged.
+- **api tier: wire-client providers.** `xai` (Grok via api.x.ai, xAI's
+  documented integration path), `openrouter` (first-class name for the
+  aggregator), `litellm` (local proxy; key optional — falls back to the
+  proxy credentials configured in connectors), and `custom` (any
+  OpenAI-compatible `base_url`). The old `openai-compat` name maps to
+  `openrouter` on migration; keyless endpoints get no Authorization header.
 - **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
   denials — caller → target, reason, detail, attempted message, age — live
   over the approvals SSE stream. Escalation denials are visually flagged as

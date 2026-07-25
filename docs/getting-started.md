@@ -73,7 +73,8 @@ Go to **Agents** → fill out the form:
 | type | `generic` |
 | name | `Notetaker` |
 | description | `Summarises text into bullet points.` |
-| dispatcher | `claude-direct` |
+| runtime | `direct` |
+| provider | `claude` |
 | model | `claude-sonnet-4-6` |
 | memory backend | `sqlite` |
 | system_prompt | (see below) |

@@ -1,11 +1,11 @@
 /**
  * Minimal OpenAI-compatible Chat Completions client. Speaks the standard
- *  POST /v1/chat/completions shape that every aggregator/proxy has
- *  converged on: OpenRouter, Together, Groq, Anyscale, Mistral,
- *  Ollama (local), LiteLLM (proxy), and many more. The provider name on
- *  the agent definition (`openai-compat`, `litellm`) selects a default
- *  base_url; everything else is identical. First-party providers
- *  (`openai`, `gemini`) use their official SDK clients instead.
+ *  POST /v1/chat/completions shape that everything without a first-party
+ *  JS SDK has converged on: xAI (their documented path), OpenRouter,
+ *  Together, Groq, Ollama (local), LiteLLM (proxy), and many more. The
+ *  provider name selects a default base_url; everything else is identical.
+ *  First-party providers (`anthropic`, `openai`, `gemini`) use their
+ *  official SDK clients instead.
  *
  *  Tool calling: standard `tools: [{type: 'function', function: {...}}]`
  *  input format; response includes `tool_calls` on the assistant message
@@ -14,13 +14,15 @@
 import type { RaClient, RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
 import { stripTrailingSlashes } from '../../util/path-utils.js';
 
-export type CompatProvider = 'openai-compat' | 'litellm';
+export type CompatProvider = 'xai' | 'openrouter' | 'litellm' | 'custom';
 
-/** Default base URLs per provider hint. `openai-compat` is a catch-all —
- *  the caller is expected to set base_url in provider_options. */
+/** Default base URLs per provider hint. `custom` has none by design —
+ *  the definition schema requires provider_options.base_url for it. */
 const DEFAULT_BASE_URLS: Record<CompatProvider, string> = {
-  'openai-compat': 'https://openrouter.ai/api/v1',  // sane default; configurable
+  xai: 'https://api.x.ai/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
   litellm: 'http://localhost:4000/v1',
+  custom: '',
 };
 
 interface OpenAIChoice {
@@ -66,7 +68,9 @@ export class OpenAICompatClient implements RaClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: OpenAIClientOpts) {
-    this.baseUrl = stripTrailingSlashes(opts.providerOptions?.base_url ?? DEFAULT_BASE_URLS[opts.provider]);
+    const baseUrl = opts.providerOptions?.base_url ?? DEFAULT_BASE_URLS[opts.provider];
+    if (!baseUrl) throw new Error(`provider '${opts.provider}' requires provider_options.base_url`);
+    this.baseUrl = stripTrailingSlashes(baseUrl);
     this.apiKey = opts.apiKey;
     this.model = opts.model;
     this.temperature = opts.providerOptions?.temperature ?? 0.7;
@@ -95,7 +99,8 @@ export class OpenAICompatClient implements RaClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        // Keyless local proxies (litellm/custom) get no Authorization header.
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
       body: JSON.stringify(body),
     });

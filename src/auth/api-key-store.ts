@@ -13,7 +13,7 @@ import { logger } from '../util/log.js';
 
 /** Providers we know about. Open list — adding a new one is a string
  *  literal here + a dispatcher branch later. */
-export const API_KEY_PROVIDERS = ['anthropic', 'openai', 'gemini', 'openai-compat', 'litellm'] as const;
+export const API_KEY_PROVIDERS = ['anthropic', 'openai', 'gemini', 'xai', 'openrouter', 'litellm', 'custom'] as const;
 export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number];
 
 /** Row shape returned to callers — never includes the decrypted key. */

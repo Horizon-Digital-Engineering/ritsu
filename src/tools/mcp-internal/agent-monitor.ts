@@ -82,7 +82,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
             : all
                 .map(a => {
                   const readable = a.allow_monitor_read || a.id === callerAgentId ? 'readable' : 'opaque';
-                  return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.dispatcher}/${a.model}, monitor:${readable}) — ${a.description}`;
+                  return `[${a.id}] ${a.name} (${a.enabled ? 'enabled' : 'disabled'}, ${a.runtime}:${a.provider}/${a.model}, monitor:${readable}) — ${a.description}`;
                 })
                 .join('\n');
           logger.info('agent-monitor.list_agents', { by: callerAgentId, count: all.length });

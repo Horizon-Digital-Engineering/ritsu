@@ -3,7 +3,7 @@ import { buildAgent } from './agents/registry.js';
 import { buildDispatcher, type DispatcherOpts } from './model/factory.js';
 import { SqliteMemoryStore, FlashbackMemoryStore, type MemoryStore } from './memory-store.js';
 import type { ConversationStore } from './conversation-store.js';
-import type { ModelDispatcher } from './model/dispatcher.js';
+import type { DispatcherKind, ModelDispatcher } from './model/dispatcher.js';
 import type { RaProvider } from './model/ritsu-agent/types.js';
 import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
@@ -26,6 +26,14 @@ export type DispatcherFactory = (
   def: AgentDefinition,
   opts: DispatcherOpts,
 ) => ModelDispatcher;
+
+/** runtime 'api' → our loop; runtime 'direct' → the vendor dispatcher for
+ *  that provider ('claude' today; chatgpt/gemini/grok as they ship). */
+export function dispatcherKindFor(def: AgentDefinition): DispatcherKind {
+  if (def.runtime === 'api') return 'ritsu-agent';
+  if (def.provider === 'claude') return 'claude-direct';
+  throw new Error(`direct runtime has no dispatcher for provider '${def.provider}' yet`);
+}
 
 /**
  * Owns the live map of agent instances. Reads definitions from the
@@ -58,10 +66,7 @@ export class AgentHost {
     private readonly commsDenials: CommsDenialStore,
     private readonly dispatcherFactory: DispatcherFactory = (def, opts) =>
       buildDispatcher(
-        // ritsu-agent runtime overrides def.dispatcher when both provider +
-        // api_key_ref are set. Falls back to def.dispatcher (claude-direct
-        // / litellm) otherwise — existing agents are unchanged.
-        def.provider && def.api_key_ref ? 'ritsu-agent' : def.dispatcher,
+        dispatcherKindFor(def),
         def.model,
         { ...opts, secrets: this.secrets },
       ),
@@ -97,7 +102,7 @@ export class AgentHost {
     const canMonitor = def.capabilities.includes('monitor_agents');
     const canCrm = def.capabilities.includes('crm');
     const canSocial = def.capabilities.includes('social');
-    const isRitsuAgent = !!(def.provider && def.api_key_ref);
+    const isRitsuAgent = def.runtime === 'api';
 
     // SECURITY: an agent that reads untrusted content (email bodies, social
     // mentions) must not have an UNGATED egress/persistence path, or a
@@ -167,7 +172,7 @@ export class AgentHost {
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
     // the SDK MCP path (kind === 'claude-direct').
-    const ritsuAgentToolDeps = def.provider && def.api_key_ref ? {
+    const ritsuAgentToolDeps = isRitsuAgent ? {
       agentId: def.id,
       memory,
       defStore: this.defStore,
@@ -277,9 +282,9 @@ export class AgentHost {
           approvals: this.approvals,
         },
       } : {}),
-      // Phase B: ritsu-agent runtime config. Only consumed when the
-      // factory picks 'ritsu-agent' kind (def.provider + def.api_key_ref set).
-      ...(def.provider && def.api_key_ref ? {
+      // api-runtime config. Only consumed when the factory picks the
+      // 'ritsu-agent' kind (def.runtime === 'api').
+      ...(isRitsuAgent ? {
         ritsuAgent: {
           provider: def.provider as RaProvider,
           apiKeyRef: def.api_key_ref,
@@ -296,13 +301,13 @@ export class AgentHost {
       ...(this.memoryService ? { memoryService: this.memoryService } : {}),
     };
     this.agents.set(def.id, buildAgent(def, deps));
-    const effectiveDispatcher = def.provider && def.api_key_ref ? 'ritsu-agent' : def.dispatcher;
     logger.info('agent.wired', {
       id: def.id,
       type: def.type,
-      dispatcher: effectiveDispatcher,
+      runtime: def.runtime,
+      dispatcher: dispatcherKindFor(def),
       model: def.model,
-      provider: def.provider ?? null,
+      provider: def.provider,
       memory_backend: def.memory_backend,
       workspace: cwd ?? null,
       tools_count: effectiveTools.length,

@@ -8,11 +8,11 @@
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
-/** Model providers the ritsu-agent runtime can talk to. `openai` and
- *  `gemini` use the official SDKs; `openai-compat` (OpenRouter / Together /
- *  Groq / Ollama) and `litellm` (local proxy) share the minimal
- *  Chat-Completions wire client. */
-export type RaProvider = 'openai' | 'gemini' | 'openai-compat' | 'litellm';
+/** Model providers the api runtime can talk to. anthropic/openai/gemini use
+ *  their official SDKs; xai's documented path is its OpenAI-compatible API;
+ *  openrouter (aggregator), litellm (local proxy), and custom (any
+ *  OpenAI-compatible base_url) share the minimal wire client. */
+export type RaProvider = 'anthropic' | 'openai' | 'gemini' | 'xai' | 'openrouter' | 'litellm' | 'custom';
 
 /** One provider round-trip: current transcript + tool defs in, the
  *  assistant's reply (text and/or tool calls) out. Each provider client
