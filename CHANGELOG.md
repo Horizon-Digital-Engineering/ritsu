@@ -23,6 +23,10 @@ to an operator decision instead of a flat hard-deny.
   unchanged. Sampling params are sent only when set in `provider_options`.
 - **Health tab (System).** Live checks: core runtime, one free probe per
   stored provider key, and every configured connector.
+- **Memory tab (System).** First-class config for the memory system:
+  flashback url/token/mode (sqlite / dual / flashback), running-vs-next-boot
+  state, and a reachability probe. Memory is core infrastructure, not a
+  connector.
 - **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
   denials — caller → target, reason, detail, attempted message, age — live
   over the approvals SSE stream. Escalation denials are visually flagged as
