@@ -52,7 +52,7 @@ What's baked in:
 - **Per-agent isolation enforced *before* tools fire.** `tools_allowlist` + per-path workspace permissions go through the SDK's `canUseTool` callback. An agent with no `Bash` and no writable workspace can't exfiltrate files even if perfectly socially-engineered.
 - **AES-256-GCM secrets at rest.** Bot tokens, API keys; master key separable from the DB dir.
 - **Strict CSP, audit log, OAuth 2.1 + DCR + PKCE + RFC 8707** — full posture in [`docs/threat-model.md`](./docs/threat-model.md).
-- **Two runtimes.** `claude-sdk` (Max plan via `@anthropic-ai/claude-agent-sdk`, $0 per turn) or `ritsu-agent` (your API key against any OpenAI-compatible provider — OpenAI, OpenRouter, local LiteLLM, etc.). Same tools, same memory, same UI.
+- **Two runtimes.** `claude-sdk` (Max plan via `@anthropic-ai/claude-agent-sdk`, $0 per turn) or `ritsu-agent` (your API key; OpenAI and Gemini via their official SDKs, or any OpenAI-compatible provider — OpenRouter, local LiteLLM, etc.). Same tools, same memory, same UI.
 
 ---
 

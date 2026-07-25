@@ -1,9 +1,8 @@
 import { ClaudeDirectDispatcher, type ClaudeDirectOpts } from './claude-direct-dispatcher.js';
 import { LiteLLMDispatcher, LITELLM_NS } from './litellm-dispatcher.js';
 import { RitsuAgentDispatcher } from './ritsu-agent/dispatcher.js';
-import type { OpenAIProvider } from './ritsu-agent/openai-client.js';
 import type { RaToolDeps } from '../tools/ritsu-agent/builtin.js';
-import type { RaProviderOptions } from './ritsu-agent/types.js';
+import type { RaProvider, RaProviderOptions } from './ritsu-agent/types.js';
 import type { DispatcherKind, ModelDispatcher } from './dispatcher.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
@@ -64,7 +63,7 @@ export interface DispatcherOpts {
    * an OpenAI-compatible provider instead of the Claude Agent SDK.
    */
   ritsuAgent?: {
-    provider: OpenAIProvider;
+    provider: RaProvider;
     apiKeyRef: number;
     apiKeys: ApiKeyStore;
     providerOptions?: RaProviderOptions;

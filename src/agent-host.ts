@@ -4,6 +4,7 @@ import { buildDispatcher, type DispatcherOpts } from './model/factory.js';
 import { SqliteMemoryStore, FlashbackMemoryStore, type MemoryStore } from './memory-store.js';
 import type { ConversationStore } from './conversation-store.js';
 import type { ModelDispatcher } from './model/dispatcher.js';
+import type { RaProvider } from './model/ritsu-agent/types.js';
 import type { AgentDefinition } from './admin/schema.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
 import type { WorkspaceStore } from './workspace-store.js';
@@ -280,7 +281,7 @@ export class AgentHost {
       // factory picks 'ritsu-agent' kind (def.provider + def.api_key_ref set).
       ...(def.provider && def.api_key_ref ? {
         ritsuAgent: {
-          provider: def.provider as 'openai' | 'openai-compat' | 'litellm',
+          provider: def.provider as RaProvider,
           apiKeyRef: def.api_key_ref,
           apiKeys: this.apiKeys,
           providerOptions: def.provider_options,

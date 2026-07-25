@@ -20,7 +20,7 @@ export const AgentDefinitionSchema = z.object({
    *  a new ritsu-agent runtime that uses an explicit provider + api key
    *  instead of the Claude Agent SDK's Max-plan session. NULL provider =
    *  legacy claude-sdk path (current default for all existing agents). */
-  provider: z.enum(['anthropic', 'openai', 'openai-compat', 'litellm']).nullable().default(null),
+  provider: z.enum(['anthropic', 'openai', 'gemini', 'openai-compat', 'litellm']).nullable().default(null),
   api_key_ref: z.number().int().positive().nullable().default(null),
   /** Free-form provider opts: temperature, max_tokens, base_url override, etc. */
   provider_options: z.record(z.string(), z.unknown()).default({}),

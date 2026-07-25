@@ -395,7 +395,7 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         memory_backend: MemoryBackendSchema.default('sqlite').describe('Memory backend (sqlite for V1).'),
         tools_allowlist: z.array(z.string()).default([]).describe('Reserved for V2 tool gating; pass [].'),
         can_call: z.array(z.string()).default([]).describe('Agent ids this agent is allowed to ask_agent. Empty = no inter-agent calls.'),
-        provider: z.enum(['anthropic', 'openai', 'openai-compat', 'litellm']).nullable().default(null).describe('Phase A: stored but not yet consumed by the runtime; null = use the claude-direct dispatcher.'),
+        provider: z.enum(['anthropic', 'openai', 'gemini', 'openai-compat', 'litellm']).nullable().default(null).describe('With api_key_ref set, runs the agent on the ritsu-agent runtime against this provider; null = use the claude-direct dispatcher.'),
         api_key_ref: z.number().int().positive().nullable().default(null).describe('Phase A: api_keys.id reference for the provider. Null until Phase B wires it.'),
         provider_options: z.record(z.string(), z.unknown()).default({}).describe('Phase A: provider-specific options (temperature, max_tokens, etc).'),
         capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([])

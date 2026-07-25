@@ -14,6 +14,15 @@ to an operator decision instead of a flat hard-deny.
 
 ### Added
 
+- **Native OpenAI + Gemini providers for the ritsu-agent runtime.** The
+  `openai` provider now runs on the official `openai` SDK, and a new `gemini`
+  provider speaks Gemini's native `generateContent` API via `@google/genai` —
+  function calling, inline images, and raw-JSON-Schema tool declarations
+  (`parametersJsonSchema`). Sampling parameters are sent only when set in
+  `provider_options`, so reasoning models keep their server-side defaults.
+  `openai-compat`/`litellm` keep the minimal wire client. Tool calls in both
+  new providers still execute inside ritsu's own loop, so the human-in-the-loop
+  approval gate applies unchanged.
 - **Blocked sub-tab (Approvals → Blocked).** Lists recent inter-agent call
   denials — caller → target, reason, detail, attempted message, age — live
   over the approvals SSE stream. Escalation denials are visually flagged as

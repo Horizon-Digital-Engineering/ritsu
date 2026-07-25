@@ -15,9 +15,9 @@
 import type { ChatRequest, ChatResponse, ModelDispatcher } from '../dispatcher.js';
 import type { ApiKeyStore } from '../../auth/api-key-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
-import { OpenAICompatClient, type OpenAIProvider } from './openai-client.js';
+import { buildRaClient } from './client.js';
 import { buildBuiltinTools, type RaToolDeps } from '../../tools/ritsu-agent/builtin.js';
-import type { RaMessage, RaTool, RaToolCall, RaProviderOptions } from './types.js';
+import type { RaMessage, RaProvider, RaTool, RaToolCall, RaProviderOptions } from './types.js';
 import { logger } from '../../util/log.js';
 
 /** A misbehaving model that keeps tool-calling without producing a final
@@ -27,7 +27,7 @@ import { logger } from '../../util/log.js';
 const MAX_TOOL_ROUNDS = 8;
 
 export interface RitsuAgentDispatcherOpts {
-  provider: OpenAIProvider;
+  provider: RaProvider;
   /** api_keys.id — looked up via apiKeys.reveal() right before the call so
    *  the plaintext lives in memory only for the duration of the request. */
   apiKeyRef: number;
@@ -66,7 +66,7 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
     if (!revealed) {
       throw new Error(`api key ref=${this.opts.apiKeyRef} not found or revoked`);
     }
-    const client = new OpenAICompatClient({
+    const client = buildRaClient({
       provider: this.opts.provider,
       apiKey: revealed.plaintext,
       model: req.model ?? this.defaultModel,
