@@ -3,6 +3,7 @@ import type { Db, Stmt } from '../db.js';
 import { logger } from '../util/log.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { Plugin, PluginAgentSeed, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef } from './types.js';
+import { resolveExtractor } from '../ingestion/extractors.js';
 
 /**
  * Textual guard: every table a plugin statement references must be one of that
@@ -212,6 +213,7 @@ export class PluginHost {
         db: new ScopedDb(this.db, id, true),
         logger: scopedLogger(id),
         secrets: scopedSecrets(this.secrets, id),
+        extractor: resolveExtractor(this.secrets),
         route: (method, path, handler) => {
           app[method](base + path, (req, res) => {
             if (!this.isEnabled(id)) { res.status(404).json({ error: `plugin '${id}' is disabled` }); return; }

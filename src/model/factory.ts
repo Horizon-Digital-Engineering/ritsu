@@ -1,5 +1,5 @@
 import { ClaudeDirectDispatcher, type ClaudeDirectOpts } from './claude-direct-dispatcher.js';
-import { LiteLLMDispatcher } from './litellm-dispatcher.js';
+import { LiteLLMDispatcher, LITELLM_NS } from './litellm-dispatcher.js';
 import { RitsuAgentDispatcher } from './ritsu-agent/dispatcher.js';
 import type { OpenAIProvider } from './ritsu-agent/openai-client.js';
 import type { RaToolDeps } from '../tools/ritsu-agent/builtin.js';
@@ -71,6 +71,9 @@ export interface DispatcherOpts {
     /** Built-in tool deps (memory + agent-comms). Null = no built-ins. */
     toolDeps: RaToolDeps | null;
   };
+  /** Secret store, so a dispatcher can resolve its own connector credentials
+   *  (e.g. the LiteLLM proxy url/api_key under the 'litellm' namespace). */
+  secrets?: import('../auth/secret-store.js').SecretStore;
 }
 
 /**
@@ -81,7 +84,11 @@ export interface DispatcherOpts {
 export function buildDispatcher(kind: DispatcherKind, model: string, opts: DispatcherOpts = {}): ModelDispatcher {
   switch (kind) {
     case 'claude-direct': return new ClaudeDirectDispatcher(model, claudeOptsFrom(opts));
-    case 'litellm':       return new LiteLLMDispatcher(model);
+    case 'litellm': {
+      const baseUrl = opts.secrets?.get(LITELLM_NS, 'url')?.trim() || 'http://localhost:4000';
+      const apiKey = opts.secrets?.get(LITELLM_NS, 'api_key')?.trim() || undefined;
+      return new LiteLLMDispatcher(model, baseUrl, apiKey);
+    }
     case 'ritsu-agent':   return new RitsuAgentDispatcher(ritsuAgentOptsFrom(opts, model));
     default: {
       const _exhaustive: never = kind;

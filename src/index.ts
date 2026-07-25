@@ -16,6 +16,9 @@ import { TokenStore } from './auth/token-store.js';
 import { ApiKeyStore } from './auth/api-key-store.js';
 import { OAuthStore } from './auth/oauth-store.js';
 import { AgentHost } from './agent-host.js';
+import { loadMemoryConfig } from './memory/config.js';
+import { buildMemoryService } from './memory/factory.js';
+import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
 import { BackupManager } from './backup.js';
 import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
@@ -77,6 +80,39 @@ async function main(): Promise<void> {
 
   const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
   host.setPluginHost(pluginHost);
+
+  // Flow-level memory over the MemoryBackend seam. Configured from the encrypted
+  // SecretStore (namespace 'flashback', set in the admin Secrets UI); with no
+  // credentials it stays sqlite-only — today's behavior exactly. Built here so
+  // it's wired before any agent is constructed.
+  const memoryConfig = loadMemoryConfig(secrets);
+  const memoryService = buildMemoryService(db, memoryConfig);
+  host.setMemoryService(memoryService);
+  logger.info('memory.wired', { mode: memoryConfig.mode, remote: !!memoryConfig.flashback });
+
+  // Proposal adapter: when flashback is configured, surface its proposed
+  // actions into the existing approval gate and report operator decisions back.
+  // Skipped entirely in sqlite mode. Fully best-effort — a flashback outage
+  // never touches ritsu's own approval flow.
+  let proposalSweep: NodeJS.Timeout | undefined;
+  if (memoryConfig.flashback) {
+    const proposalClient = new FlashbackProposalClient({
+      endpoint: memoryConfig.flashback.endpoint,
+      token: memoryConfig.flashback.token,
+      timeoutMs: memoryConfig.flashback.timeoutMs,
+    });
+    const proposals = new ProposalAdapter({ client: proposalClient, approvals });
+    proposals.start(); // subscribe to the approval bus for decision reporting
+    const PROPOSAL_POLL_MS = memoryConfig.flashback.proposalPollMs;
+    const pollProposals = (): void => {
+      proposals.sync().catch(err =>
+        logger.warn('proposal.sync-error', { err: (err as Error).message }));
+    };
+    pollProposals();
+    proposalSweep = setInterval(pollProposals, PROPOSAL_POLL_MS);
+    proposalSweep.unref();
+  }
+
   await host.loadAll();
 
   // Comm channels (Telegram + future Discord/Slack). Each enabled row in
@@ -139,6 +175,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     logger.info('server.shutdown');
+    if (proposalSweep) clearInterval(proposalSweep);
     // Stop channels first so their loops finish before the DB closes.
     channels.shutdown()
       .catch(err => logger.warn('channel.shutdown-error', { err: (err as Error).message }))

@@ -9,6 +9,7 @@
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Extractor, ExtractInput, DocType } from './pipeline.js';
+import type { SecretStore } from '../auth/secret-store.js';
 
 /** Test / passthrough extractor — returns a fixed object (or a per-call fn). */
 type ExtractorFn = (i: ExtractInput, d: DocType) => unknown;
@@ -90,19 +91,23 @@ export class OpenAiCompatVisionExtractor implements Extractor {
   }
 }
 
+/** SecretStore namespace + keys for the cheap ingest/vision extractor. */
+export const INGEST_NS = 'ingest';
+export const INGEST_SECRET_KEYS = ['endpoint', 'model', 'api_key'] as const;
+
 /**
- * Pick the extractor from the environment. A configured local/cheap endpoint
- * (RITSU_INGEST_ENDPOINT) wins — that's the tier for trivial extraction;
+ * Pick the extractor from the secret store. A configured local/cheap endpoint
+ * (the 'ingest' namespace) wins — that's the tier for trivial extraction;
  * otherwise fall back to the Max-session vision read. Grunt work stays cheap,
  * the frontier model is reserved for reasoning.
  */
-export function resolveExtractor(): Extractor {
-  const endpoint = process.env.RITSU_INGEST_ENDPOINT?.trim();
+export function resolveExtractor(secrets: Pick<SecretStore, 'get'>): Extractor {
+  const endpoint = secrets.get(INGEST_NS, 'endpoint')?.trim();
   if (endpoint) {
     return new OpenAiCompatVisionExtractor({
       baseUrl: endpoint,
-      model: process.env.RITSU_INGEST_MODEL?.trim() || 'qwen2.5-vl',
-      apiKey: process.env.RITSU_INGEST_API_KEY?.trim() || undefined,
+      model: secrets.get(INGEST_NS, 'model')?.trim() || 'qwen2.5-vl',
+      apiKey: secrets.get(INGEST_NS, 'api_key')?.trim() || undefined,
     });
   }
   return new SdkVisionExtractor();

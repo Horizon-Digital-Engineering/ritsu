@@ -41,6 +41,10 @@ export interface PluginContext {
   db: PluginDb;
   logger: PluginLogger;
   secrets: PluginSecrets;
+  /** The host-resolved ingestion extractor. Its credentials live in the global
+   *  'ingest' secret namespace, which a plugin's scoped secrets can't reach, so
+   *  the host supplies it ready-built. */
+  extractor: import('../ingestion/pipeline.js').Extractor;
   route(method: RouteMethod, path: string, handler: RouteHandler): void;
 }
 

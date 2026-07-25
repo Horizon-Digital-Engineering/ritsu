@@ -44,6 +44,7 @@ function mountRoutes(plugin: typeof projectsPlugin, secretStore: SecretStore, db
     db: new ScopedDb(db, plugin.manifest.id, true),
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets,
+    extractor: { extract: async () => ({}) },
     route: (method: RouteMethod, path: string, handler: RouteHandler) => routes.set(`${method} ${path}`, handler),
   };
   plugin.register!(ctx);
