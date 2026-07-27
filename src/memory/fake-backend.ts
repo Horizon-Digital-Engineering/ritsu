@@ -22,7 +22,7 @@ export class FakeMemoryBackend implements MemoryBackend {
       content_hash: createHash('md5').update(rec.content).digest('hex'),
       event_time: rec.event_time ?? now, ingest_time: now, source: rec.source,
       source_ref: rec.source_ref ?? null, user_id: rec.scope.user_id,
-      project_id: rec.scope.project_id ?? null, session_id: rec.scope.session_id ?? null,
+      project_id: rec.scope.project_id ?? null, container_id: rec.scope.container_id ?? null,
       mode: rec.scope.mode ?? null, importance: rec.importance ?? null,
       supersedes: rec.supersedes ?? null,
       // JSON round-trip so acl/payload match sqlite's serialize-then-parse
@@ -40,7 +40,7 @@ export class FakeMemoryBackend implements MemoryBackend {
     return this.rows.filter(r =>
       r.user_id === scope.user_id &&
       (scope.project_id == null || r.project_id === scope.project_id) &&
-      (scope.session_id == null || r.session_id === scope.session_id) &&
+      (scope.container_id == null || r.container_id === scope.container_id) &&
       (scope.mode == null || r.mode === scope.mode) &&
       !superseded.has(r.id) &&
       (r.ttl == null || r.ttl > now));

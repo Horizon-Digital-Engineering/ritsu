@@ -25,7 +25,6 @@ export interface FlashbackConfig {
 /** Loose shape of a flashback JSON record row (RFC3339 timestamps). */
 type WireRow = Record<string, unknown>;
 
-const nowSec = () => Math.floor(Date.now() / 1000);
 const toIso = (epochSec: number) => new Date(epochSec * 1000).toISOString();
 const fromIso = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
@@ -36,14 +35,16 @@ function toIngestBody(rec: RawRecordInput): Record<string, unknown> {
   if (rec.event_time != null) b.event_time = toIso(rec.event_time);
   if (rec.source_ref != null) b.source_ref = rec.source_ref;
   if (rec.scope.project_id != null) b.project_id = rec.scope.project_id;
-  if (rec.scope.session_id != null) b.session_id = rec.scope.session_id;
+  if (rec.scope.container_id != null) b.container_id = rec.scope.container_id;
   if (rec.scope.mode != null) b.mode = rec.scope.mode;
   if (rec.importance != null) b.importance = rec.importance;
   if (rec.supersedes != null) b.supersedes = rec.supersedes;
-  // seam ttl is an absolute epoch; flashback wants a relative ttl_hours.
-  if (rec.ttl != null) b.ttl_hours = Math.ceil((rec.ttl - nowSec()) / 3600);
-  if (rec.acl != null) b.acl = rec.acl;
   if (rec.payload != null) b.payload = rec.payload;
+  // `ttl` and `acl` are deliberately NOT forwarded. Flashback's raw layer is
+  // append-only, so a row can't expire — an expiry there would only hide truth
+  // from queries, and how long something matters is a conclusion its decay
+  // model owns, not one a writer gets to declare. Both still exist on the seam
+  // because ritsu's own sqlite store does use ttl for local retrieval.
   return b;
 }
 
@@ -60,7 +61,7 @@ function fromRow(r: WireRow): RawRecord {
     source_ref: str(r.source_ref),
     user_id: String(r.user_id),
     project_id: str(r.project_id),
-    session_id: str(r.session_id),
+    container_id: str(r.container_id),
     mode: str(r.mode),
     importance: typeof r.importance === 'number' ? r.importance : null,
     supersedes: str(r.supersedes),
@@ -73,7 +74,7 @@ function fromRow(r: WireRow): RawRecord {
 function scopeBody(scope: Scope): Record<string, unknown> {
   const b: Record<string, unknown> = {};
   if (scope.project_id != null) b.project_id = scope.project_id;
-  if (scope.session_id != null) b.session_id = scope.session_id;
+  if (scope.container_id != null) b.container_id = scope.container_id;
   if (scope.mode != null) b.mode = scope.mode;
   return b;
 }
