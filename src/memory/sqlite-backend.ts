@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS raw_records (
   source_ref    TEXT,
   user_id       TEXT NOT NULL,
   project_id    TEXT,
-  session_id    TEXT,
+  container_id    TEXT,
   mode          TEXT,
   importance    REAL,
   supersedes    TEXT,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS raw_records (
 CREATE INDEX IF NOT EXISTS raw_records_scope_type ON raw_records (user_id, project_id, type);
 CREATE INDEX IF NOT EXISTS raw_records_event_time ON raw_records (event_time);
 CREATE INDEX IF NOT EXISTS raw_records_ingest_time ON raw_records (ingest_time);
-CREATE INDEX IF NOT EXISTS raw_records_session ON raw_records (session_id);
+CREATE INDEX IF NOT EXISTS raw_records_container ON raw_records (container_id);
 CREATE INDEX IF NOT EXISTS raw_records_mode ON raw_records (mode);
 CREATE INDEX IF NOT EXISTS raw_records_hash ON raw_records (content_hash);
 CREATE INDEX IF NOT EXISTS raw_records_supersedes ON raw_records (supersedes);
@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS raw_records_supersedes ON raw_records (supersedes);
 interface RawRow {
   id: string; type: string; content: string; content_hash: string;
   event_time: number; ingest_time: number; source: string; source_ref: string | null;
-  user_id: string; project_id: string | null; session_id: string | null; mode: string | null;
+  user_id: string; project_id: string | null; container_id: string | null; mode: string | null;
   importance: number | null; supersedes: string | null; acl: string | null;
   ttl: number | null; payload: string | null;
 }
@@ -61,7 +61,7 @@ function rowToRecord(r: RawRow): RawRecord {
     id: r.id, type: r.type as MemType, content: r.content, content_hash: r.content_hash,
     event_time: r.event_time, ingest_time: r.ingest_time, source: r.source,
     source_ref: r.source_ref, user_id: r.user_id, project_id: r.project_id,
-    session_id: r.session_id, mode: r.mode, importance: r.importance, supersedes: r.supersedes,
+    container_id: r.container_id, mode: r.mode, importance: r.importance, supersedes: r.supersedes,
     acl: r.acl != null ? JSON.parse(r.acl) : null,
     ttl: r.ttl, payload: r.payload != null ? JSON.parse(r.payload) : null,
   };
@@ -71,7 +71,7 @@ function scopeClause(scope: Scope): { sql: string; args: (string)[] } {
   const clauses = ['user_id = ?'];
   const args: string[] = [scope.user_id];
   if (scope.project_id != null) { clauses.push('project_id = ?'); args.push(scope.project_id); }
-  if (scope.session_id != null) { clauses.push('session_id = ?'); args.push(scope.session_id); }
+  if (scope.container_id != null) { clauses.push('container_id = ?'); args.push(scope.container_id); }
   if (scope.mode != null) { clauses.push('mode = ?'); args.push(scope.mode); }
   return { sql: clauses.join(' AND '), args };
 }
@@ -96,12 +96,12 @@ export class SqliteMemoryBackend implements MemoryBackend {
     this.db.prepare(
       `INSERT INTO raw_records
         (id, type, content, content_hash, event_time, ingest_time, source, source_ref,
-         user_id, project_id, session_id, mode, importance, supersedes, acl, ttl, payload)
+         user_id, project_id, container_id, mode, importance, supersedes, acl, ttl, payload)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       id, rec.type, rec.content, content_hash, rec.event_time ?? now, now, rec.source,
       rec.source_ref ?? null, rec.scope.user_id, rec.scope.project_id ?? null,
-      rec.scope.session_id ?? null, rec.scope.mode ?? null, rec.importance ?? null,
+      rec.scope.container_id ?? null, rec.scope.mode ?? null, rec.importance ?? null,
       rec.supersedes ?? null, rec.acl != null ? JSON.stringify(rec.acl) : null,
       rec.ttl ?? null, rec.payload != null ? JSON.stringify(rec.payload) : null,
     );

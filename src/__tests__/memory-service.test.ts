@@ -8,7 +8,7 @@ import { loadMemoryConfig } from '../memory/config.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { MemoryBackend, Scope, RawRecordInput, AssembledContext, RawRecord, QueryFilter } from '../memory/backend.js';
 
-const scope: Scope = { user_id: 'operator', project_id: 'alice', session_id: '1' };
+const scope: Scope = { user_id: 'operator', project_id: 'alice', container_id: '1' };
 
 /** A backend that fails on demand, to prove fire-and-forget + fallback. */
 class FlakyBackend implements MemoryBackend {
@@ -33,7 +33,7 @@ class FlakyBackend implements MemoryBackend {
   async lineage(id: string): Promise<RawRecord[]> { await this.gate(); return this.inner.lineage(id); }
 }
 
-const rec = (content: string): RawRecordInput => ({ type: 'episodic', content, source: 's', scope });
+const rec = (content: string): RawRecordInput => ({ type: 'conversation', content, source: 's', scope });
 
 /** A read-only stub of the SecretStore over a plain key/value map, keyed
  *  `namespace:name` — enough for loadMemoryConfig, which only reads. */
