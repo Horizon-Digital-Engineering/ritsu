@@ -12,13 +12,29 @@
  * record with `supersedes` set; the old row is never mutated.
  */
 
-export type MemType =
-  | 'episodic' | 'semantic' | 'procedural' | 'document' | 'state_object' | 'working';
+/**
+ * HOW A RECORD MUST BE PROCESSED — never a memory tier, never what it's about.
+ * `episodic` and `semantic` are tiers the store's curation pipeline DERIVES; a
+ * writer claiming one asserts an outcome it hasn't earned, and flashback
+ * rejects it. Only types with a real extractor exist; more land with theirs.
+ */
+export type MemType = 'conversation' | 'document' | 'state_object';
 
 export interface Scope {
   user_id: string;
+  /**
+   * A HARD PARTITION: curation never derives across it, so records in different
+   * projects can never be clustered or distilled together. Reserve it for
+   * genuinely separate bodies of work. A grouping that is really just a sorter —
+   * an agent name, a chat folder — belongs in `payload`.
+   */
   project_id?: string | null;
-  session_id?: string | null;
+  /**
+   * The stream this arrived on — a chat thread, a watched folder, an import
+   * batch. Episodes form per container. Namespace it: it has to stay unique
+   * across every writer, not just this one.
+   */
+  container_id?: string | null;
   mode?: string | null;
 }
 
@@ -35,8 +51,11 @@ export interface RawRecordInput {
   /** id of the record this one supersedes (forward pointer; old row untouched). */
   supersedes?: string | null;
   acl?: unknown;
-  /** epoch seconds expiry (working memory). */
+  /** epoch seconds expiry; omit to keep forever. */
   ttl?: number | null;
+  /** Metadata we already have at capture time, verbatim and uninterpreted —
+   *  which agent, which model, which folder. The store reads it during
+   *  derivation; nothing here is a claim about what the record MEANS. */
   payload?: unknown;
 }
 
@@ -51,7 +70,7 @@ export interface RawRecord {
   source_ref: string | null;
   user_id: string;
   project_id: string | null;
-  session_id: string | null;
+  container_id: string | null;
   mode: string | null;
   importance: number | null;
   supersedes: string | null;

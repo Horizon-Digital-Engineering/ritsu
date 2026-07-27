@@ -6,6 +6,7 @@ import type { AgentDefinition } from '../admin/schema.js';
 import type { MemoryService } from '../memory/service.js';
 import type { Scope } from '../memory/backend.js';
 import { logger } from '../util/log.js';
+import { createHash } from 'node:crypto';
 
 /** How many flashback-retrieved records to inject as relevant context. Bounded
  *  so a large store can't blow the prompt budget. */
@@ -64,13 +65,22 @@ export abstract class AgentBase {
   get description(): string { return this.definition.description; }
   get systemPrompt(): string { return this.definition.system_prompt; }
 
-  /** Memory scope for this agent's turns: the human is the user, the agent is
-   *  the project, the conversation is the session. */
+  /** Memory scope for this agent's turns: the human is the user, the conversation
+   *  is the session.
+   *
+   *  The agent is deliberately NOT the project. `project_id` is a hard partition
+   *  in the store — curation never derives across it — so agent-as-project would
+   *  seal each agent into its own knowledge island and make cross-agent recall
+   *  impossible. The agent is provenance, and it is already carried losslessly in
+   *  `source` (`ritsu:<agent>:<role>`) plus the `agent` label.
+   *
+   *  `container_id` is namespaced because it leaves this process: the bare integer
+   *  is only unique within ritsu's own SQLite, and the store holds conversations
+   *  from other writers too. */
   private memoryScope(conversationId: number): Scope {
     return {
       user_id: this.deps.userId ?? 'operator',
-      project_id: this.id,
-      session_id: String(conversationId),
+      container_id: `ritsu:${conversationId}`,
     };
   }
 
@@ -192,15 +202,98 @@ export abstract class AgentBase {
    * fails the turn on a remote outage — but we still wrap it defensively so a
    * local write hiccup can't fail an already-sent response either.
    */
-  private async recordTurn(conversationId: number, userMsg: string, assistantMsg: string): Promise<void> {
+  /**
+   * Facts about the CIRCUMSTANCES of capture — never a claim about what the
+   * content means. Recorded because they can't be reconstructed later: a UTC
+   * instant cannot tell you it was 2am where the person was sitting.
+   */
+  private captureContext(): Record<string, unknown> {
+    return {
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      // Minutes EAST of UTC (getTimezoneOffset reports the inverse).
+      tz_offset_min: -new Date().getTimezoneOffset(),
+    };
+  }
+
+  /**
+   * What came attached, WITHOUT the bytes — the store has no blob layer yet.
+   *
+   * Recording the manifest anyway is the whole point: dropping media silently
+   * is the one loss this architecture can never recover from, because nothing
+   * later indicates the conversation was ever incomplete. With a hash, size and
+   * type on the turn, the gap is queryable and backfillable from ritsu's own
+   * sqlite (which still holds the bytes) once the image pipeline lands — and
+   * the hash is the join key that proves the right blob got reattached.
+   */
+  private attachmentManifest(atts?: MessageAttachment[]): unknown[] | undefined {
+    if (!atts || atts.length === 0) return undefined;
+    return atts.map(a => {
+      const buf = Buffer.from(a.data, 'base64');
+      return {
+        media_type: a.media_type,
+        bytes: buf.byteLength,
+        sha256: createHash('sha256').update(buf).digest('hex'),
+        // The bytes live in ritsu's message_attachments until the store can
+        // hold them; this says where to go looking.
+        bytes_held_by: 'ritsu:message_attachments',
+      };
+    });
+  }
+
+  private async recordTurn(
+    conversationId: number,
+    user: {
+      text: string;
+      id: number;
+      at: number;
+      callerLabel?: string | null;
+      attachments?: MessageAttachment[];
+    },
+    assistant: {
+      text: string;
+      id: number;
+      at: number;
+      model?: string;
+      usage?: { input_tokens?: number; output_tokens?: number };
+      latencyMs?: number;
+    },
+  ): Promise<void> {
     if (!this.deps.memoryService) return;
     const scope = this.memoryScope(conversationId);
+    // What we know at capture time, recorded as fact and nothing more. The
+    // agent is provenance — it never becomes a field the store partitions on,
+    // and we make no claim here about whether any of this is worth remembering.
+    const common = {
+      agent: this.id,
+      agent_name: this.name,
+      runtime: this.definition.runtime,
+      ...this.captureContext(),
+    };
+    // A stable id per message so a re-mirror dedups instead of duplicating:
+    // the store keys on (user_id, source, source_ref).
+    const ref = (msgId: number) => `ritsu:${conversationId}:${msgId}`;
     try {
       await this.deps.memoryService.record({
-        type: 'episodic', content: userMsg, source: `ritsu:${this.id}:user`, scope,
+        type: 'conversation', content: user.text, source: `ritsu:${this.id}:user`,
+        source_ref: ref(user.id), event_time: user.at, scope,
+        payload: {
+          ...common,
+          caller_label: user.callerLabel ?? null,
+          attachments: this.attachmentManifest(user.attachments),
+        },
       });
       await this.deps.memoryService.record({
-        type: 'episodic', content: assistantMsg, source: `ritsu:${this.id}:assistant`, scope,
+        type: 'conversation', content: assistant.text, source: `ritsu:${this.id}:assistant`,
+        source_ref: ref(assistant.id), event_time: assistant.at, scope,
+        payload: {
+          ...common,
+          // The configured model and the one that actually answered can differ
+          // (fallbacks, routing). Record both; neither is derivable from the other.
+          model_configured: this.definition.model,
+          model_actual: assistant.model ?? null,
+          usage: assistant.usage ?? null,
+          latency_ms: assistant.latencyMs ?? null,
+        },
       });
     } catch (err) {
       logger.warn('agent.record-turn-failed', { agent: this.id, err: (err as Error).message });
@@ -231,7 +324,13 @@ export abstract class AgentBase {
       : this.deps.conversations.findOrStartHumanThread(this.id);
 
     const attachments = req.attachments && req.attachments.length > 0 ? req.attachments : undefined;
-    this.deps.conversations.append(conversationId, 'user', req.message, req.caller_label ?? null, attachments);
+    // Stamp when the turn actually HAPPENED. Without this the store assigns its
+    // own arrival time, and in dual mode the two writes are fire-and-forget and
+    // race — so a reply could be recorded as older than the message it answers,
+    // which scrambles any transcript rebuilt in event order. Fractional seconds
+    // because two turns can easily land inside the same second.
+    const userAt = Date.now() / 1000;
+    const userMsgId = this.deps.conversations.append(conversationId, 'user', req.message, req.caller_label ?? null, attachments);
 
     const history: ChatMessage[] = this.deps.conversations
       .recent(conversationId, 50)
@@ -272,9 +371,27 @@ export abstract class AgentBase {
 
     const resp = await dispatcher.chat({ messages, conversation_id: conversationId } satisfies ChatRequest);
 
-    this.deps.conversations.append(conversationId, 'assistant', resp.content);
+    const assistantAt = Date.now() / 1000;
+    const assistantMsgId = this.deps.conversations.append(conversationId, 'assistant', resp.content);
     const written = await this.persistAfterTurn(req.message, resp.content);
-    await this.recordTurn(conversationId, req.message, resp.content);
+    await this.recordTurn(
+      conversationId,
+      {
+        text: req.message,
+        id: userMsgId,
+        at: userAt,
+        callerLabel: req.caller_label ?? null,
+        attachments,
+      },
+      {
+        text: resp.content,
+        id: assistantMsgId,
+        at: assistantAt,
+        model: resp.model,
+        usage: resp.usage,
+        latencyMs: Math.round((assistantAt - userAt) * 1000),
+      },
+    );
 
     return {
       conversation_id: conversationId,
