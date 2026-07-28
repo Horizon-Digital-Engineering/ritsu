@@ -10,7 +10,45 @@ const scope: Scope = { user_id: 'leslie', project_id: 'health' };
 // Run the same suite against both the sqlite (DB-backed) and fake (in-memory)
 // adapters — they must behave identically behind the seam.
 function suite(name: string, make: () => MemoryBackend) {
-  describe(name, () => {
+  
+describe('SqliteMemoryBackend legacy column repair', () => {
+  it('renames a pre-existing session_id column instead of dying on the indexes', async () => {
+    const db = openDatabase(':memory:');
+    // The mirror as it exists on a database created before the rename.
+    db.exec(`CREATE TABLE raw_records (
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, content TEXT NOT NULL,
+      content_hash TEXT NOT NULL, event_time INTEGER NOT NULL, ingest_time INTEGER NOT NULL,
+      source TEXT NOT NULL, source_ref TEXT, user_id TEXT NOT NULL, project_id TEXT,
+      session_id TEXT, mode TEXT, importance REAL, supersedes TEXT, acl TEXT,
+      ttl INTEGER, payload TEXT)`);
+    db.prepare(
+      `INSERT INTO raw_records (id, type, content, content_hash, event_time, ingest_time, source, user_id, session_id)
+       VALUES ('r1','conversation','older turn','h',1,1,'ritsu:a:user','operator','ritsu:7')`,
+    ).run();
+
+    const backend = new SqliteMemoryBackend(db);   // must not throw
+
+    const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
+      .map(c => c.name);
+    assert.ok(cols.includes('container_id'));
+    assert.ok(!cols.includes('session_id'));
+
+    // The existing row survives the rename and is reachable by the new name.
+    const rows = await backend.query({ user_id: 'operator', container_id: 'ritsu:7' }, {});
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].content, 'older turn');
+  });
+
+  it('is a no-op on a fresh database', () => {
+    const db = openDatabase(':memory:');
+    new SqliteMemoryBackend(db);
+    const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
+      .map(c => c.name);
+    assert.ok(cols.includes('container_id'));
+  });
+});
+
+describe(name, () => {
     let mem: MemoryBackend;
     beforeEach(() => { mem = make(); });
 

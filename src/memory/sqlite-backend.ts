@@ -14,6 +14,7 @@
  */
 import { randomUUID, createHash } from 'node:crypto';
 import type { Db } from '../db.js';
+import { logger } from '../util/log.js';
 import type {
   MemoryBackend, RawRecord, RawRecordInput, Scope, QueryFilter, AssembledContext, MemType,
 } from './backend.js';
@@ -82,8 +83,22 @@ const nowSec = () => Math.floor(Date.now() / 1000);
  *  unbounded scan + full JS sort. The smart, unbounded path is flashback's job. */
 export const LITE_CANDIDATE_CAP = 500;
 
+/** `CREATE TABLE IF NOT EXISTS` skips a table that already exists, so a
+ *  column rename in SCHEMA never reaches a live mirror — the indexes below it
+ *  then fail on the missing column and the process dies at construction.
+ *  Rename in place first. Delete once no database predates the rename. */
+function renameSessionIdColumn(db: Db): void {
+  const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
+    .map(c => c.name);
+  if (cols.length === 0) return;                                   // fresh install
+  if (cols.includes('container_id') || !cols.includes('session_id')) return;
+  db.exec('ALTER TABLE raw_records RENAME COLUMN session_id TO container_id');
+  logger.info('memory.sqlite.renamed-session-id');
+}
+
 export class SqliteMemoryBackend implements MemoryBackend {
   constructor(private readonly db: Db) {
+    renameSessionIdColumn(this.db);
     this.db.exec(SCHEMA);
   }
 
