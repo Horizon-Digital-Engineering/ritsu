@@ -33,7 +33,7 @@
     "openai": "^6.49.0",
     "re2-wasm": "^1.0.2",
     "twitter-api-v2": "^1.29.0",
-    "undici": "^8.8.0",
+    "undici": "^8.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
