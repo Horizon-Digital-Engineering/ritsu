@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # One batched npm PR a month. A single catch-all group means all version
-  # updates (patch/minor/major) land together, not as a trickle of separate
-  # PRs — we review + test the group before merging.
+  # Two batched npm PRs a month at most. Compatible updates travel together so
+  # they can be reviewed and tested as a set; a breaking upgrade arrives on its
+  # own, because one of them failing a build should not hold back the rest.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
@@ -14,9 +14,13 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      npm:
-        patterns:
-          - "*"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        update-types:
+          - "major"
     labels:
       - "deps"
 
