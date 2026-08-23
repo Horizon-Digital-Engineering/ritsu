@@ -24,6 +24,8 @@ import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
 import { ChannelRegistry } from './channels/registry.js';
+import { SqliteJobStore } from './scheduler/store.js';
+import { SchedulerRunner } from './scheduler/runner.js';
 import { logger } from './util/log.js';
 
 const cfg = loadConfig();
@@ -71,8 +73,12 @@ async function main(): Promise<void> {
     try { backup.createBackup(); backup.prune(BACKUP_KEEP); }
     catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
   };
-  runBackup();
-  const backupSweep = setInterval(runBackup, 24 * 3_600_000);
+  // Trim scheduler history before the snapshot, not after: the backup copies
+  // whatever is on disk and keeps fourteen of them, so unbounded run rows are
+  // stored fifteen times over.
+  let pruneRuns: (() => void) | undefined;
+  const dailyMaintenance = (): void => { pruneRuns?.(); runBackup(); };
+  const backupSweep = setInterval(dailyMaintenance, 24 * 3_600_000);
   backupSweep.unref();
 
   bootstrapAdminToken(tokens, cfg);
@@ -80,6 +86,12 @@ async function main(): Promise<void> {
 
   const host = new AgentHost(db, conversations, defStore, workspaces, apiKeys, approvals, secrets, commsDenials);
   host.setPluginHost(pluginHost);
+  // Before loadAll: agent tool sets are built as each agent loads, so a store
+  // handed over afterwards reaches nobody.
+  const jobStore = new SqliteJobStore(db);
+  host.setJobStore(jobStore);
+  // Plugins declare their periodic work during mountApi, which needs the store.
+  pluginHost.setJobStore(jobStore);
 
   // Flow-level memory over the MemoryBackend seam. Configured from the encrypted
   // SecretStore (namespace 'flashback', set in the admin Secrets UI); with no
@@ -123,6 +135,21 @@ async function main(): Promise<void> {
   });
   await channels.loadAll();
 
+  // Scheduled jobs. Started after channels so a job firing on the first tick
+  // has somewhere to deliver — a reminder that races channel startup would
+  // fail for no reason the operator could act on.
+  const scheduler = new SchedulerRunner({
+    store: jobStore,
+    delivery: channels,
+    agents: { get: (id: string) => host.get(id) },
+  });
+  scheduler.start();
+  pruneRuns = () => scheduler.prune();
+  // Trim before the boot snapshot. Running the first prune a day later meant
+  // the pre-deploy backup always copied untrimmed history, and a service
+  // redeployed daily never pruned at all.
+  dailyMaintenance();
+
   const mcpApp = createMcpServer({
     host,
     memory,
@@ -151,6 +178,7 @@ async function main(): Promise<void> {
     backup,
     channels: channelStore,
     channelRegistry: channels,
+    jobs: jobStore,
     oauth,
     version: VERSION,
     authMode: cfg.authMode,
@@ -177,6 +205,9 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     logger.info('server.shutdown');
     if (proposalSweep) clearInterval(proposalSweep);
+    // Before channels: a tick that started mid-shutdown would otherwise try to
+    // deliver through a registry that's already stopping.
+    scheduler.stop();
     // Stop channels first so their loops finish before the DB closes.
     channels.shutdown()
       .catch(err => logger.warn('channel.shutdown-error', { err: (err as Error).message }))

@@ -303,6 +303,57 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
   installed_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
+
+-- Scheduled jobs. Definition and runtime state are separate tables so a job can
+-- be edited without losing its failure streak or next-run time, and so the
+-- definition stays a clean record of intent.
+CREATE TABLE IF NOT EXISTS scheduler_jobs (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  schedule     TEXT NOT NULL,
+  payload      TEXT NOT NULL,
+  delivery     TEXT NOT NULL DEFAULT '{}',
+  trigger_def  TEXT,
+  context_from TEXT NOT NULL DEFAULT '[]',
+  -- Set by whichever subsystem registered the job; null for user-created ones.
+  -- Lets a plugin reclaim or remove its own jobs without touching anyone else's.
+  owner        TEXT,
+  created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS scheduler_job_state (
+  job_id               TEXT PRIMARY KEY REFERENCES scheduler_jobs(id) ON DELETE CASCADE,
+  next_run_at          INTEGER,
+  last_run_at          INTEGER,
+  last_status          TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  -- Non-null means the scheduler stopped firing this job on its own. Cleared
+  -- only by an explicit enable, so a broken job stays quiet until looked at.
+  disabled_reason      TEXT,
+  -- Opaque JSON from the last trigger evaluation. Persisted only on runs that
+  -- completed, so a failed run re-evaluates rather than consuming the change.
+  trigger_state        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_state_due
+  ON scheduler_job_state(next_run_at);
+
+-- Run history. Grows without bound while definitions do not, hence its own
+-- table. The output column is what downstream jobs read through context_from.
+CREATE TABLE IF NOT EXISTS scheduler_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id      TEXT NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  status      TEXT NOT NULL,
+  output      TEXT,
+  error       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_runs_job
+  ON scheduler_runs(job_id, started_at DESC);
 `;
 
 /**

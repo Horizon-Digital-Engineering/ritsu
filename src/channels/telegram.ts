@@ -16,6 +16,12 @@ const LONG_POLL_TIMEOUT_S = 25;
 /** Telegram refuses messages over 4096 chars; trim and append an ellipsis. */
 const TELEGRAM_TEXT_LIMIT = 4000;
 
+function truncateForTelegram(text: string): string {
+  return text.length > TELEGRAM_TEXT_LIMIT
+    ? text.slice(0, TELEGRAM_TEXT_LIMIT - 3) + '...'
+    : text;
+}
+
 interface TelegramMessage {
   message_id: number;
   chat: { id: number; type: string };
@@ -234,12 +240,26 @@ export class TelegramChannel implements CommChannel {
     }
   }
 
+  /**
+   * Host-initiated send to the bound chat. Used by anything originating outside
+   * a conversation — scheduled jobs, alerts.
+   *
+   * Deliberately not `reply_to_message_id`: there is no message being replied
+   * to, and Telegram drops the whole send if the referenced message was deleted.
+   * The reply still lands in the bound chat, so the operator can answer it and
+   * the inbound loop picks that up as a normal turn — which is what makes a
+   * scheduled check-in a conversation rather than a notification.
+   */
+  async send(text: string): Promise<void> {
+    if (this.boundChatId === null) {
+      throw new Error(`telegram channel ${this.channelId} (${this.name}) is unbound — no chat to send to`);
+    }
+    await this.api('sendMessage', { chat_id: this.boundChatId, text: truncateForTelegram(text) });
+  }
+
   private async sendReply(chatId: number, text: string, replyToMessageId: number): Promise<void> {
-    const truncated = text.length > TELEGRAM_TEXT_LIMIT
-      ? text.slice(0, TELEGRAM_TEXT_LIMIT - 3) + '...'
-      : text;
     await this.api('sendMessage', {
-      chat_id: chatId, text: truncated, reply_to_message_id: replyToMessageId,
+      chat_id: chatId, text: truncateForTelegram(text), reply_to_message_id: replyToMessageId,
     });
   }
 
