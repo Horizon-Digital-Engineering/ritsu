@@ -214,6 +214,7 @@ const NAV_GROUPS = [
   ] },
   { id: 'comms', label: 'Comms', tabs: [
     { id: 'channels', label: 'Channels' },
+    { id: 'jobs', label: 'Jobs' },
     { id: 'mcp',      label: 'MCP' },
   ] },
   { id: 'extensions', label: 'Extensions', tabs: [
@@ -284,6 +285,7 @@ function switchTab(name) {
   else if (name === 'api-keys') refreshApiKeys();
   else if (name === 'oauth-clients') loadOAuthClientsTab();
   else if (name === 'channels') loadChannelsTab();
+  else if (name === 'jobs') loadJobsTab();
   else if (name === 'workspaces') loadWorkspacesTab();
   else if (name === 'conversations') loadConversationsTab();
   else if (name === 'memories') loadMemoriesTab();
@@ -2914,6 +2916,14 @@ const ACTIONS = {
   },
   'toggle-channel':         (el) => toggleChannel(Number(el.dataset.id), el.dataset.enabled === '1'),
   'delete-channel':         (el) => deleteChannel(Number(el.dataset.id), el.dataset.name),
+
+  // jobs
+  'save-job':               () => saveJob(),
+  'reset-job':              () => resetJobForm(),
+  'run-job':                (el) => patchJob(el.dataset.id, { run_now: true }),
+  'toggle-job':             (el) => patchJob(el.dataset.id, { enabled: el.dataset.enable === '1' }),
+  'job-runs':               (el) => showJobRuns(el.dataset.id),
+  'delete-job':             (el) => deleteJob(el.dataset.id),
   'bind-channel-chat':      (el) => bindChannelChat(Number(el.dataset.channelId), Number(el.dataset.chatId)),
   'submit-channel':         () => submitChannel(),
   'clear-channel-form':     () => clearChannelForm(),
@@ -3378,3 +3388,139 @@ if (window.visualViewport) {
 }
 window.addEventListener('resize', syncAgentPanelViewport);
 syncAgentPanelViewport();
+
+// ---- jobs -------------------------------------------------------------
+// The listing exists mostly for one column: why a job stopped. A null next
+// run means finished, paused, uncomputable, or given up on, and without the
+// reason an operator cannot tell which.
+
+let jobCache = [];
+
+async function loadJobsTab() {
+  // Same source the channels tab uses for its operator dropdown — the Agents
+  // tab keeps it warm, so this needs no endpoint of its own.
+  const sel = $('job-agent');
+  sel.innerHTML = (agentCache || []).map(a => `<option value="${esc(a.id)}">${esc(a.id)}</option>`).join('')
+    || '<option value="">(no agents yet)</option>';
+  await refreshJobs();
+}
+
+async function refreshJobs() {
+  const target = $('job-list');
+  try {
+    const { jobs, unreadable } = await api('GET', '/admin/api/jobs');
+    jobCache = jobs.filter(Boolean);
+    renderJobs(jobCache, unreadable || []);
+  } catch (err) {
+    target.innerHTML = `<em class="txt-muted">${esc(String(err.message || err))}</em>`;
+  }
+}
+
+function jobWhen(j) {
+  if (j.disabled_reason) return `<em class="txt-warn">stopped — ${esc(j.disabled_reason)}</em>`;
+  if (!j.next_run_at) return '<em class="txt-muted">not scheduled</em>';
+  return esc(new Date(j.next_run_at).toLocaleString());
+}
+
+function renderJobs(jobs, unreadable = []) {
+  const target = $('job-list');
+  // A row that will not parse is not in `jobs` and never can be, so it needs
+  // its own block. Without it the operator sees an empty list and concludes
+  // nothing is there, while the job still occupies its id.
+  const broken = unreadable.length
+    ? `<p class="txt-warn">${unreadable.length} job${unreadable.length > 1 ? 's' : ''} could not be read and will not run:</p>`
+      + '<table><thead><tr><th>job</th><th>why</th><th></th></tr></thead><tbody>'
+      + unreadable.map(u => `<tr><td><code>${esc(u.id)}</code>${u.name ? ' — ' + esc(u.name) : ''}</td>`
+        + `<td class="txt-muted">${esc(u.error)}</td>`
+        + `<td><button class="danger" data-action="delete-job" data-id="${esc(u.id)}">delete</button></td></tr>`).join('')
+      + '</tbody></table>'
+    : '';
+  if (!jobs.length) {
+    target.innerHTML = broken || '<em class="txt-muted">No jobs yet. Add one below.</em>';
+    return;
+  }
+  const rows = jobs.map(j => {
+    const stopped = !!j.disabled_reason;
+    const failures = j.consecutive_failures > 0
+      ? ` <span class="txt-warn">(${j.consecutive_failures} failures)</span>` : '';
+    const tz = j.schedule.tz ? `<br /><span class="txt-muted">${esc(j.schedule.tz)}</span>` : '';
+    return `
+    <tr class="${stopped ? 'disabled' : ''}">
+      <td class="id-cell">${esc(j.id)}<br /><span class="txt-muted">${esc(j.name)}</span></td>
+      <td>${esc(j.schedule.kind)} <code>${esc(j.schedule.spec)}</code>${tz}</td>
+      <td><span class="badge">${esc(j.payload.kind)}</span></td>
+      <td><code>${esc(j.owner || 'operator')}</code></td>
+      <td>${jobWhen(j)}${failures}</td>
+      <td>${esc(j.last_status || '—')}</td>
+      <td class="row-actions">
+        <button data-action="run-job" data-id="${esc(j.id)}">run now</button>
+        <button data-action="toggle-job" data-id="${esc(j.id)}" data-enable="${stopped || !j.next_run_at ? '1' : '0'}">${stopped || !j.next_run_at ? 'enable' : 'pause'}</button>
+        <button data-action="job-runs" data-id="${esc(j.id)}">history</button>
+        <button class="danger" data-action="delete-job" data-id="${esc(j.id)}">delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  target.innerHTML = broken
+    + `<table><thead><tr><th>job</th><th>schedule</th><th>payload</th><th>owner</th><th>next</th><th>last</th><th></th></tr></thead><tbody>${rows}</tbody></table><div id="job-runs"></div>`;
+}
+
+async function patchJob(id, body) {
+  try { await api('PATCH', `/admin/api/jobs/${encodeURIComponent(id)}`, body); await refreshJobs(); }
+  catch (err) { $('job-msg').textContent = String(err.message || err); }
+}
+
+async function deleteJob(id) {
+  if (!confirm(`Delete job "${id}" and its run history?`)) return;
+  await api('DELETE', `/admin/api/jobs/${encodeURIComponent(id)}`);
+  await refreshJobs();
+}
+
+async function showJobRuns(id) {
+  const box = $('job-runs');
+  try {
+    const { runs } = await api('GET', `/admin/api/jobs/${encodeURIComponent(id)}/runs`);
+    if (!runs.length) { box.innerHTML = `<p class="txt-muted">No runs recorded for ${esc(id)}.</p>`; return; }
+    box.innerHTML = `<h3>${esc(id)} — recent runs</h3><table><thead><tr><th>started</th><th>status</th><th>detail</th></tr></thead><tbody>${
+      runs.map(r => `<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td>${esc(r.status)}</td><td><code>${esc((r.error || r.output || '').slice(0, 300))}</code></td></tr>`).join('')
+    }</tbody></table>`;
+  } catch (err) {
+    box.innerHTML = `<em class="txt-warn">${esc(String(err.message || err))}</em>`;
+  }
+}
+
+function jobFormPayload() {
+  const kind = $('job-payload').value;
+  const body = $('job-body').value;
+  if (kind === 'notify') return { kind, text: body };
+  if (kind === 'script') return { kind, command: body };
+  return { kind, agent_id: $('job-agent').value, message: body, conversation_id: null };
+}
+
+async function saveJob() {
+  const msg = $('job-msg');
+  const chans = $('job-channels').value.trim();
+  try {
+    const res = await api('POST', '/admin/api/jobs', {
+      id: $('job-id').value.trim(),
+      name: $('job-name').value.trim(),
+      schedule: {
+        kind: $('job-kind').value,
+        spec: $('job-spec').value.trim(),
+        tz: $('job-tz').value.trim() || null,
+      },
+      payload: jobFormPayload(),
+      delivery: { channel_ids: chans ? chans.split(',').map(x => Number(x.trim())).filter(Number.isInteger) : [] },
+    });
+    // A job whose agent operates no channel still saves — it need not involve
+    // one — but its replies would land in a thread nobody is reading.
+    msg.textContent = res.warning ? `Saved. Warning: ${res.warning}` : 'Saved.';
+    resetJobForm();
+    await refreshJobs();
+  } catch (err) {
+    msg.textContent = String(err.message || err);
+  }
+}
+
+function resetJobForm() {
+  for (const id of ['job-id', 'job-name', 'job-spec', 'job-tz', 'job-body', 'job-channels']) $(id).value = '';
+}

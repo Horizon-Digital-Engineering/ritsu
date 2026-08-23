@@ -17,6 +17,7 @@ import { PluginHost } from '../plugins/host.js';
 import { CommsDenialStore } from '../comms-denial-store.js';
 import { AgentHost } from '../agent-host.js';
 import { SqliteChannelStore } from '../channels/channel-store.js';
+import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { BackupManager } from '../backup.js';
 import { createAdminApp } from '../admin/server.js';
@@ -52,7 +53,7 @@ describe('GET /admin/api/memory', () => {
     const app = createAdminApp({
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'),
-      channels: channelStore, channelRegistry: channels,
+      channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
       oauth, version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
       memoryBoot: { mode: 'sqlite', remote: null },
     });

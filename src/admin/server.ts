@@ -24,6 +24,8 @@ import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js'
 import { runHealthChecks } from './health.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
+import type { JobStore, JobUpsert } from '../scheduler/store.js';
+import { nextRun } from '../scheduler/schedule.js';
 import type { ChannelRegistry } from '../channels/registry.js';
 import type { OAuthStore } from '../auth/oauth-store.js';
 import { ChannelKindSchema, TelegramConfigSchema } from '../channels/types.js';
@@ -66,6 +68,7 @@ export interface AdminDeps {
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
+  jobs: JobStore;
   oauth: OAuthStore;
   version: string;
   authMode: AuthMode;
@@ -1543,6 +1546,126 @@ export function createAdminApp(deps: AdminDeps) {
     operator_agent_id: z.string().min(1),
     config: z.unknown(),
     enabled: z.boolean().optional(),
+  });
+
+  // ---- scheduled jobs -------------------------------------------------
+  //
+  // The scheduler had no write or read surface at all: nothing could create a
+  // job, and an operator could not see why one stopped. Both are the same five
+  // routes.
+
+  const JobInputSchema = z.object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'lowercase kebab-case'),
+    name: z.string().min(1).max(200),
+    schedule: z.object({
+      kind: z.enum(['at', 'every', 'cron']),
+      spec: z.string().min(1).max(200),
+      tz: z.string().max(64).nullable().optional(),
+      stagger_ms: z.number().int().min(0).max(3_600_000).optional(),
+    }),
+    payload: z.unknown(),
+    delivery: z.unknown().optional(),
+    trigger: z.unknown().optional(),
+    context_from: z.array(z.string()).optional(),
+  });
+
+  /** Definition plus the runtime state an operator actually needs to see. */
+  function jobView(id: string): unknown {
+    const job = deps.jobs.read(id);
+    if (!job) return null;
+    const state = deps.jobs.state(id);
+    return {
+      ...job,
+      next_run_at: state?.next_run_at ?? null,
+      last_run_at: state?.last_run_at ?? null,
+      last_status: state?.last_status ?? null,
+      consecutive_failures: state?.consecutive_failures ?? 0,
+      // The single most useful field: a null next run means five different
+      // things, and this is the one that says which.
+      disabled_reason: state?.disabled_reason ?? null,
+    };
+  }
+
+  /**
+   * A scheduled agent turn and the channel's inbound replies must land in the
+   * same conversation, which only happens when they share an agent. Getting it
+   * wrong produces a check-in whose answers silently go to a thread that never
+   * saw the question — worth warning about, not worth refusing, since a job
+   * need not involve a channel at all.
+   */
+  function agentMismatchWarning(payload: unknown): string | null {
+    const p = payload as { kind?: string; agent_id?: string } | null;
+    if (!p || p.kind !== 'agent_turn' || !p.agent_id) return null;
+    const operators = new Set(deps.channels.listEnabled().map(c => c.operator_agent_id));
+    if (operators.size === 0 || operators.has(p.agent_id)) return null;
+    return `agent "${p.agent_id}" does not operate any enabled channel; replies to this job will not reach it`;
+  }
+
+  app.get('/admin/api/jobs', (_req: Request, res: Response) => {
+    // `unreadable` rides along with the listing rather than sitting behind its
+    // own route: a row that will not parse is absent from `jobs`, so anyone
+    // reading only that array concludes the job does not exist.
+    res.json({
+      jobs: deps.jobs.list(true).map(j => jobView(j.id)),
+      unreadable: deps.jobs.unreadable(),
+    });
+  });
+
+  app.get('/admin/api/jobs/:id/runs', (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!deps.jobs.read(id)) { res.status(404).json({ error: 'job not found' }); return; }
+    res.json({ runs: deps.jobs.runs(id, 50) });
+  });
+
+  app.post('/admin/api/jobs', (req: Request, res: Response) => {
+    try {
+      const input = JobInputSchema.parse(req.body);
+      const job = deps.jobs.upsert({ ...input, owner: 'operator' } as JobUpsert);
+      // upsert deliberately does not arm a job — only the caller knows the
+      // clock to compute from, and an unarmed job is invisible to the runner.
+      const first = nextRun(job.schedule, Date.now(), null);
+      if (first === null) {
+        deps.jobs.delete(job.id);
+        res.status(400).json({ error: 'that schedule will never fire' });
+        return;
+      }
+      deps.jobs.setNextRun(job.id, first);
+      res.json({ job: jobView(job.id), warning: agentMismatchWarning(job.payload) });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.patch('/admin/api/jobs/:id', (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    const existing = deps.jobs.read(id);
+    if (!existing) { res.status(404).json({ error: 'job not found' }); return; }
+    try {
+      const body = req.body as { enabled?: boolean; run_now?: boolean };
+      if (body.run_now === true) {
+        deps.jobs.setNextRun(id, Date.now() - 1);
+      }
+      if (typeof body.enabled === 'boolean') {
+        deps.jobs.setEnabled(id, body.enabled);
+        // Re-enabling has to re-arm: setEnabled clears the stop reason and the
+        // failure streak but cannot know what clock to schedule against, so a
+        // job enabled without this is silently inert.
+        if (body.enabled) {
+          const next = nextRun(existing.schedule, Date.now(), deps.jobs.state(id)?.last_run_at ?? null);
+          deps.jobs.setNextRun(id, next);
+        } else {
+          deps.jobs.setNextRun(id, null);
+        }
+      }
+      res.json({ job: jobView(id) });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.delete('/admin/api/jobs/:id', (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    res.json({ deleted: deps.jobs.delete(id) });
   });
 
   app.get('/admin/api/channels', (_req: Request, res: Response) => {

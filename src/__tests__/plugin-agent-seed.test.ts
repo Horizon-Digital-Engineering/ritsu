@@ -15,6 +15,7 @@ import { ApiKeyStore } from '../auth/api-key-store.js';
 import { OAuthStore } from '../auth/oauth-store.js';
 import { AgentHost } from '../agent-host.js';
 import { SqliteChannelStore } from '../channels/channel-store.js';
+import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { createAdminApp } from '../admin/server.js';
 import { BackupManager } from '../backup.js';
@@ -60,7 +61,7 @@ describe('plugin agent preset (CORE-2)', () => {
       token = tokens.mint('t', 'admin').token;
       const app = createAdminApp({
         defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
-        approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, oauth,
+        approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db), oauth,
         version: 'test', authMode: 'off', mcpUrl: 'http://127.0.0.1:7333',
       });
       await new Promise<void>(r => { server = app.listen(0, '127.0.0.1', () => r()); });

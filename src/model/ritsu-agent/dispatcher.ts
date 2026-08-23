@@ -90,6 +90,10 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
           ...this.opts.toolDeps,
           approvals: this.opts.approval?.store,
           conversationId: req.conversation_id ?? null,
+          // A scheduled turn must not be able to schedule more work. Without
+          // this the scheduling tools are present in a job run and one fire can
+          // create a job per tool round, with no cap and no natural stop.
+          insideJobRun: (req.caller_label ?? '').startsWith('scheduler:'),
         })
       : [];
     const toolsByName = new Map(tools.map(t => [t.name, t]));

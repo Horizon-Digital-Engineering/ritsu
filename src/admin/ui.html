@@ -468,6 +468,67 @@
       </div>
     </section>
 
+    <!-- ============ JOBS ============ -->
+    <section id="pane-jobs" class="pane">
+      <div class="panel">
+        <h2>Scheduled jobs</h2>
+        <p>
+          Periodic work. <strong>notify</strong> sends text and costs nothing;
+          <strong>script</strong> runs a command and delivers its output, where no
+          output means nothing is sent; <strong>agent_turn</strong> wakes an agent so
+          it can act and interpret any reply. A job that stopped on its own shows
+          <em>why</em> — that is the difference between finished, paused, and given up on.
+        </p>
+        <div id="job-list">loading…</div>
+      </div>
+
+      <div class="panel">
+        <h2>Add / replace job</h2>
+        <div class="grid" id="job-form">
+          <label for="job-id">id</label>
+          <input id="job-id" required pattern="[a-z0-9][a-z0-9-]*" placeholder="kebab-case (e.g. morning-brief)" />
+
+          <label for="job-name">name</label>
+          <input id="job-name" required placeholder="Shown in listings" />
+
+          <label for="job-kind">schedule</label>
+          <select id="job-kind">
+            <option value="cron">cron</option>
+            <option value="every">every</option>
+            <option value="at">at (once)</option>
+          </select>
+
+          <label for="job-spec">spec</label>
+          <input id="job-spec" required placeholder="0 9 * * 1  |  30m  |  2h or an ISO timestamp" />
+
+          <label for="job-tz">timezone</label>
+          <input id="job-tz" placeholder="America/New_York — blank for UTC" />
+
+          <label for="job-payload">payload</label>
+          <select id="job-payload">
+            <option value="notify">notify</option>
+            <option value="script">script</option>
+            <option value="agent_turn">agent_turn</option>
+          </select>
+
+          <label for="job-agent">agent</label>
+          <select id="job-agent"></select>
+
+          <label for="job-body">text / command / prompt</label>
+          <textarea id="job-body" rows="3" required></textarea>
+
+          <label for="job-channels">channel ids</label>
+          <input id="job-channels" placeholder="comma-separated; blank delivers to every running channel" />
+
+          <div class="row-actions">
+            <button type="button" data-action="save-job">save</button>
+            <button type="button" data-action="reset-job">clear</button>
+          </div>
+        </div>
+        <div id="job-msg" class="txt-muted"></div>
+      </div>
+    </section>
+
     <!-- ============ CHANNELS ============ -->
     <section id="pane-channels" class="pane">
       <div class="panel">

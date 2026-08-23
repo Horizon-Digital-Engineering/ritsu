@@ -49,6 +49,15 @@ export interface CommChannel {
   start(): Promise<void>;
   /** Graceful shutdown — drain in-flight messages, stop polling. */
   stop(): Promise<void>;
+  /**
+   * Host-initiated send, with no inbound message to reply to. Everything that
+   * originates outside a conversation — scheduled jobs, alerts — goes through
+   * here; the inbound loop keeps replying on its own path.
+   *
+   * Throws when the channel has no destination bound, rather than silently
+   * discarding: a reminder that vanishes is worse than one that errors.
+   */
+  send(text: string): Promise<void>;
 }
 
 /** Minimal AgentHost surface that channels need to forward inbound messages. */

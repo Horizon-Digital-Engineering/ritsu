@@ -369,7 +369,9 @@ export abstract class AgentBase {
       model: dispatcher.defaultModel,
     });
 
-    const resp = await dispatcher.chat({ messages, conversation_id: conversationId } satisfies ChatRequest);
+    const resp = await dispatcher.chat({
+      messages, conversation_id: conversationId, caller_label: req.caller_label ?? null,
+    } satisfies ChatRequest);
 
     const assistantAt = Date.now() / 1000;
     const assistantMsgId = this.deps.conversations.append(conversationId, 'assistant', resp.content);

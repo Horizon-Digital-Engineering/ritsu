@@ -26,6 +26,7 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@google/genai": "^2.13.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "croner": "^10.0.1",
     "express": "^5.2.1",
     "imapflow": "^1.4.8",
     "mailparser": "^3.9.14",

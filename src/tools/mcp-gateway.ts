@@ -9,6 +9,9 @@ export interface McpBuildContext {
   agentId: string;
   conversationId: number | null;
   gate: McpGateContext | null;
+  /** True when a scheduled job woke this turn. Providers use it to withhold
+   *  tools that must not be reachable from inside a job run. */
+  insideJobRun?: boolean;
 }
 
 export interface McpProviderBuild {

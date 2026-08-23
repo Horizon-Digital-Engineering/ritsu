@@ -9,6 +9,8 @@ import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
 import { assembleMcp, type McpProvider, type SdkMcpServer } from '../tools/mcp-gateway.js';
+import { schedulerProvider } from '../tools/builtin-providers.js';
+import type { JobStore } from '../scheduler/store.js';
 import {
   memoryProvider, commsProvider, adminProvider, monitorProvider, emailProvider, socialProvider,
 } from '../tools/builtin-providers.js';
@@ -51,6 +53,11 @@ export interface ClaudeDirectOpts {
    * call is scoped to this one agent. Pass null / undefined to disable.
    */
   memory?: { agentId: string; store: MemoryStore };
+  /**
+   * Scheduling tools. Present means the agent can manage its own jobs; the
+   * group is withheld automatically during a scheduled run.
+   */
+  scheduler?: { store: JobStore };
   /**
    * Wire ritsu's per-agent inter-agent messaging tools (ask_agent, list_agents)
    * into this agent's SDK invocation. The caller's agent_id is closed over so
@@ -118,7 +125,7 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null);
+    const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null, (req.caller_label ?? '').startsWith('scheduler:'));
     const inProcessTools = new Set(allowedTools);
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
     const preToolUseHook = buildPreToolUseHook(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
@@ -348,7 +355,7 @@ export function buildPreToolUseHook(
  * name or the SDK strips them from the model's toolbelt even when the server
  * is registered.
  */
-function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null): {
+function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null, insideJobRun: boolean): {
   mcpServers: Record<string, SdkMcpServer>;
   allowedTools: string[];
 } {
@@ -378,10 +385,11 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null):
   if (opts.monitor) providers.push(monitorProvider(opts.monitor.deps));
   if (opts.email) providers.push(emailProvider(opts.email.secrets, opts.email.approvals));
   if (opts.social) providers.push(socialProvider(opts.social.secrets, opts.social.approvals));
+  if (opts.scheduler) providers.push(schedulerProvider(opts.scheduler.store));
   if (opts.plugins) providers.push(...opts.plugins);
 
   const agentId = opts.agentId ?? opts.memory?.agentId ?? opts.approval?.agentId ?? 'unknown';
-  const asm = assembleMcp(providers, { agentId, conversationId, gate });
+  const asm = assembleMcp(providers, { agentId, conversationId, gate, insideJobRun });
   return { mcpServers: asm.mcpServers, allowedTools: asm.allowedTools };
 }
 

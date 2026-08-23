@@ -32,6 +32,26 @@ export class ChannelRegistry {
     return [];
   }
 
+  /**
+   * Host-initiated send to one channel. The scheduler and anything else with
+   * something to say outside a conversation goes through here rather than
+   * holding a channel instance, so the running map stays owned by the registry
+   * and a disabled channel can't be written to through a stale reference.
+   *
+   * Throws when the channel isn't running — a disabled or failed channel must
+   * surface as a job failure, not a silently dropped message.
+   */
+  async send(channelId: number, text: string): Promise<void> {
+    const ch = this.running.get(channelId);
+    if (!ch) throw new Error(`channel ${channelId} is not running`);
+    await ch.send(text);
+  }
+
+  /** Channel ids with a live instance. Lets a caller resolve "all" at send time. */
+  runningIds(): number[] {
+    return [...this.running.keys()];
+  }
+
   constructor(
     private readonly store: ChannelStore,
     private readonly host: ChannelAgentHost,

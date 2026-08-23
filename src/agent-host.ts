@@ -13,6 +13,7 @@ import type { CommsDenialStore } from './comms-denial-store.js';
 import type { SecretStore } from './auth/secret-store.js';
 import type { Db } from './db.js';
 import type { PluginHost } from './plugins/host.js';
+import type { JobStore } from './scheduler/store.js';
 import { pluginMcpProvider, pluginGatedToolNames } from './plugins/mcp-provider.js';
 import type { PluginToolSet } from './tools/ritsu-agent/plugin.js';
 import type { MemoryService } from './memory/service.js';
@@ -44,11 +45,14 @@ export function dispatcherKindFor(def: AgentDefinition): DispatcherKind {
 export class AgentHost {
   private readonly agents = new Map<string, AgentBase>();
   private pluginHost?: PluginHost;
+  private jobStore?: JobStore;
   private memoryService?: MemoryService;
 
   /** Injected after construction (pluginHost is built alongside AgentHost in
    *  index.ts). When unset, agents simply get no plugin tools. */
   setPluginHost(h: PluginHost): void { this.pluginHost = h; }
+  /** Wired after construction: the store exists only once the DB is open. */
+  setJobStore(j: JobStore): void { this.jobStore = j; }
 
   /** Flow-level memory over the MemoryBackend seam. Injected after
    *  construction (built alongside AgentHost in index.ts). When unset, agents
@@ -197,6 +201,7 @@ export class AgentHost {
       // Plugin tools reach the native loop too (parity with claude-direct).
       // The same mcp__<id>__<name> gatedTools list below gates them.
       plugins: pluginToolSets,
+      jobs: this.jobStore,
     } : null;
     const dispatcher = this.dispatcherFactory(def, {
       agentId: def.id,
@@ -282,6 +287,10 @@ export class AgentHost {
           approvals: this.approvals,
         },
       } : {}),
+      // Scheduling, for every agent regardless of runtime. The native loop
+      // gets the same tools through ritsuAgentToolDeps; this is the direct-
+      // runtime half, which is the default and would otherwise have none.
+      ...(this.jobStore ? { scheduler: { store: this.jobStore } } : {}),
       // api-runtime config. Only consumed when the factory picks the
       // 'ritsu-agent' kind (def.runtime === 'api').
       ...(isRitsuAgent ? {
