@@ -47,6 +47,10 @@ export interface ChatRequest {
    *  approval cards to the right thread (so they render inline in the chat
    *  panel). Undefined for callers that don't track a conversation. */
   conversation_id?: number;
+  /** Who initiated this turn. `scheduler:<jobId>` when a scheduled job woke the
+   *  agent — which is what suppresses the scheduling tools, so one fire cannot
+   *  create more work. Provenance-only otherwise. */
+  caller_label?: string | null;
 }
 
 export interface ChatResponse {

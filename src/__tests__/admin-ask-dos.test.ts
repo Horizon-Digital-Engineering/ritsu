@@ -15,6 +15,7 @@ import { OAuthStore } from '../auth/oauth-store.js';
 import { CommsDenialStore } from '../comms-denial-store.js';
 import { AgentHost } from '../agent-host.js';
 import { SqliteChannelStore } from '../channels/channel-store.js';
+import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { createAdminApp } from '../admin/server.js';
 import { BackupManager } from '../backup.js';
@@ -50,7 +51,7 @@ describe('admin /ask pre-auth DoS ordering (SEC-4)', () => {
 
     const app = createAdminApp({
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
-      approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels,
+      approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
       oauth, version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
     });
     await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', () => resolve()); });

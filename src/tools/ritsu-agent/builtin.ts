@@ -35,6 +35,8 @@ import { buildProcessTools } from './process.js';
 import { buildNetworkTools, type NetworkOptions } from './network.js';
 import { buildPluginTools, type PluginToolSet } from './plugin.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
+import type { JobStore } from '../../scheduler/store.js';
+import { buildSchedulerTools } from './scheduler.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
@@ -79,6 +81,11 @@ export interface RaToolDeps {
   /** Agent-allowlisted plugin tool sets. Exposed to the native loop as RaTools
    *  (parity with the claude-direct MCP plugin path). */
   plugins?: PluginToolSet[];
+  /** Scheduled-job store. Present means the agent can manage its own jobs. */
+  jobs?: JobStore;
+  /** True when a scheduled job woke this turn. Suppresses the scheduling tools
+   *  so a fire cannot create more work — set from the caller label, per call. */
+  insideJobRun?: boolean;
 }
 
 /** Memory: remember / list_memories / update_memory / forget.
@@ -572,5 +579,10 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   // Agent-allowlisted plugin tools (parity with the claude-direct MCP path).
   // Gating/fencing mirror that path; see ./plugin.ts.
   if (deps.plugins?.length) out.push(...buildPluginTools(deps.plugins, deps.agentId));
+  // Scheduling. Returns nothing inside a job run, so a scheduled turn cannot
+  // schedule more work.
+  out.push(...buildSchedulerTools({
+    agentId: deps.agentId, jobs: deps.jobs, insideJobRun: deps.insideJobRun,
+  }));
   return out;
 }
