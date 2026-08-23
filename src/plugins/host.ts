@@ -2,7 +2,9 @@ import express, { type Express } from 'express';
 import type { Db, Stmt } from '../db.js';
 import { logger } from '../util/log.js';
 import type { SecretStore } from '../auth/secret-store.js';
-import type { Plugin, PluginAgentSeed, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef } from './types.js';
+import type { Plugin, PluginAgentSeed, PluginContext, PluginDb, PluginLogger, PluginManifest, PluginSecrets, PluginToolDef, PluginJobSpec } from './types.js';
+import type { JobStore } from '../scheduler/store.js';
+import { nextRun } from '../scheduler/schedule.js';
 import { resolveExtractor } from '../ingestion/extractors.js';
 
 /**
@@ -122,8 +124,15 @@ interface RegistryRow {
 export class PluginHost {
   private readonly plugins: Plugin[] = [];
   private readonly pluginTools = new Map<string, PluginToolDef[]>();
+  /** Set once the scheduler exists; plugin job declarations are no-ops without it. */
+  private jobs?: JobStore;
 
   constructor(private readonly db: Db, private readonly secrets: SecretStore) {}
+
+  setJobStore(jobs: JobStore): void { this.jobs = jobs; }
+
+  /** `plugin:<id>` — the owner value for everything a plugin declares. */
+  private static jobOwner(pluginId: string): string { return `plugin:${pluginId}`; }
 
   register(plugin: Plugin): void {
     const id = plugin.manifest.id;
@@ -198,7 +207,16 @@ export class PluginHost {
       if (/^plugin_[a-z0-9_]+$/i.test(t)) this.db.exec(`DROP TABLE IF EXISTS "${t}"`);
     }
     this.db.prepare('DELETE FROM plugin_registry WHERE id = ?').run(id);
-    logger.info('plugin.uninstalled', { id, dropped: tables.length });
+    // Its schedule goes too — otherwise a removed plugin's jobs keep firing
+    // against tables that no longer exist.
+    let jobsRemoved = 0;
+    if (this.jobs) {
+      const owner = PluginHost.jobOwner(id);
+      for (const job of this.jobs.list(true)) {
+        if (job.owner === owner && this.jobs.delete(job.id)) jobsRemoved++;
+      }
+    }
+    logger.info('plugin.uninstalled', { id, dropped: tables.length, jobs_removed: jobsRemoved });
     return true;
   }
 
@@ -220,8 +238,60 @@ export class PluginHost {
             return handler(req, res);
           });
         },
+        schedule: (spec) => { declared.push(this.declareJob(id, spec)); },
       };
+      const declared: string[] = [];
       plugin.register(ctx);
+      this.reconcileJobs(id, declared);
+    }
+  }
+
+  /**
+   * Upsert one plugin-declared job. Ids are namespaced so two plugins can both
+   * declare "sync" without colliding, and so an operator can tell at a glance
+   * where a job came from.
+   */
+  private declareJob(pluginId: string, spec: PluginJobSpec): string {
+    const id = `plugin-${pluginId}-${spec.name}`;
+    if (!this.jobs) return id;
+    try {
+      this.jobs.upsert({
+        id,
+        name: spec.title,
+        schedule: { kind: spec.kind, spec: spec.spec, tz: spec.tz ?? null },
+        payload: { kind: 'script', command: spec.command },
+        delivery: { channel_ids: spec.channel_ids ?? [] },
+        owner: PluginHost.jobOwner(pluginId),
+      });
+      // Arm only a job that isn't already scheduled: re-declaring on every boot
+      // must not reset a running job's cadence or revive one the operator
+      // paused. A new declaration has no state row and starts from now.
+      const state = this.jobs.state(id);
+      if (state?.next_run_at == null && state?.disabled_reason == null) {
+        this.jobs.setNextRun(id, nextRun({
+          kind: spec.kind, spec: spec.spec, tz: spec.tz ?? null, stagger_ms: 0,
+        }, Date.now(), null));
+      }
+    } catch (err) {
+      logger.error('plugin.job-declare-failed', { plugin: pluginId, job: id, err: (err as Error).message });
+    }
+    return id;
+  }
+
+  /**
+   * Remove jobs this plugin used to declare and no longer does. Declarations
+   * are a fact about the code, so a job dropped from source should not linger
+   * as state nobody remembers creating.
+   */
+  private reconcileJobs(pluginId: string, declared: string[]): void {
+    if (!this.jobs) return;
+    const owner = PluginHost.jobOwner(pluginId);
+    const keep = new Set(declared);
+    for (const job of this.jobs.list(true)) {
+      if (job.owner === owner && !keep.has(job.id)) {
+        this.jobs.delete(job.id);
+        logger.info('plugin.job-undeclared', { plugin: pluginId, job: job.id });
+      }
     }
   }
 

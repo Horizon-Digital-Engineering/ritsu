@@ -45,6 +45,7 @@ function mountRoutes(plugin: typeof projectsPlugin, secretStore: SecretStore, db
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     secrets,
     extractor: { extract: async () => ({}) },
+    schedule: () => undefined,
     route: (method: RouteMethod, path: string, handler: RouteHandler) => routes.set(`${method} ${path}`, handler),
   };
   plugin.register!(ctx);

@@ -46,6 +46,40 @@ export interface PluginContext {
    *  the host supplies it ready-built. */
   extractor: import('../ingestion/pipeline.js').Extractor;
   route(method: RouteMethod, path: string, handler: RouteHandler): void;
+  /**
+   * Declare periodic work this plugin owns.
+   *
+   * Declarative, not imperative: a plugin re-declares its jobs on every boot,
+   * and any it stops declaring are removed. That keeps the schedule a fact
+   * about the code rather than accumulated state nobody remembers creating,
+   * and means uninstalling the plugin takes its jobs with it.
+   *
+   * Ids are namespaced by the host, so two plugins can both declare "sync".
+   */
+  schedule(job: PluginJobSpec): void;
+}
+
+/** A job a plugin owns. Deliberately narrower than the full job model. */
+export interface PluginJobSpec {
+  /** Short name, unique within the plugin. Namespaced by the host. */
+  name: string;
+  /** Shown in listings. */
+  title: string;
+  kind: 'every' | 'cron';
+  /** "30m" for every; a 5-field expression for cron. */
+  spec: string;
+  /** IANA zone for cron. Omit for UTC. */
+  tz?: string;
+  /**
+   * Shell command to run. No agent turn: a plugin's periodic work is
+   * collection and maintenance, and anything needing judgement should be a job
+   * the operator or an agent creates deliberately.
+   *
+   * Silence means healthy — output is delivered, no output delivers nothing.
+   */
+  command: string;
+  /** Channels to deliver output to. Omit for none. */
+  channel_ids?: number[];
 }
 
 export type PluginToolResult = { content: Array<{ type: 'text'; text: string }> };
