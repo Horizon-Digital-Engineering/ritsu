@@ -8,7 +8,7 @@ import { loadMemoryConfig } from '../memory/config.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { MemoryBackend, Scope, RawRecordInput, AssembledContext, RawRecord, QueryFilter } from '../memory/backend.js';
 
-const scope: Scope = { user_id: 'operator', project_id: 'alice', container_id: '1' };
+const scope: Scope = { user_id: 'operator', project_id: 'alice', thread_id: '1' };
 
 /** A backend that fails on demand, to prove fire-and-forget + fallback. */
 class FlakyBackend implements MemoryBackend {
@@ -159,3 +159,87 @@ describe('MemoryService', () => {
     assert.equal((await svc.getContext(scope, 'local')).records.length, 1);
   });
 });
+
+describe('dual-mode write ordering', () => {
+  /** Records the order writes START and FINISH, so overlap is detectable. */
+  class OrderedBackend implements MemoryBackend {
+    inFlight = 0;
+    maxInFlight = 0;
+    started: string[] = [];
+    delayMs = 0;
+    private readonly inner = new FakeMemoryBackend();
+    async record(rec: RawRecordInput): Promise<{ id: string }> {
+      this.inFlight++;
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+      this.started.push(rec.content);
+      try {
+        if (this.delayMs) await new Promise(r => setTimeout(r, this.delayMs));
+        return await this.inner.record(rec);
+      } finally {
+        this.inFlight--;
+      }
+    }
+    async getContext(s: Scope, q: string): Promise<AssembledContext> { return this.inner.getContext(s, q); }
+    async query(s: Scope, f?: QueryFilter): Promise<RawRecord[]> { return this.inner.query(s, f); }
+    async read(id: string): Promise<RawRecord | null> { return this.inner.read(id); }
+    async lineage(id: string): Promise<RawRecord[]> { return this.inner.lineage(id); }
+  }
+
+  const settle = () => new Promise(r => setTimeout(r, 250));
+
+  it('never has two writes for one thread in flight, even past the timeout', async () => {
+    const remote = new OrderedBackend();
+    remote.delayMs = 40;
+    const svc = new MemoryService({
+      mode: 'dual',
+      sqlite: new SqliteMemoryBackend(openDatabase(':memory:')),
+      flashback: remote,
+      // Deliberately shorter than the write: a timeout must stop us WAITING,
+      // not release the next write while this one is still running.
+      fireAndForgetTimeoutMs: 10,
+    });
+
+    for (const c of ['one', 'two', 'three', 'four']) await svc.record(rec(c));
+    await settle();
+
+    assert.equal(remote.maxInFlight, 1, 'writes for one thread must not overlap');
+    assert.deepEqual(remote.started, ['one', 'two', 'three', 'four'], 'and must stay in order');
+  });
+
+  it('runs different threads concurrently', async () => {
+    const remote = new OrderedBackend();
+    remote.delayMs = 40;
+    const svc = new MemoryService({
+      mode: 'dual',
+      sqlite: new SqliteMemoryBackend(openDatabase(':memory:')),
+      flashback: remote,
+      fireAndForgetTimeoutMs: 500,
+    });
+
+    for (const t of ['a', 'b', 'c']) {
+      await svc.record({ ...rec('x'), scope: { ...scope, thread_id: t } });
+    }
+    await settle();
+    assert.ok(remote.maxInFlight > 1, 'separate threads should not serialise against each other');
+  });
+
+  it('keeps writing after a failure — one bad turn must not stop the rest', async () => {
+    const remote = new FlakyBackend();
+    const svc = new MemoryService({
+      mode: 'dual',
+      sqlite: new SqliteMemoryBackend(openDatabase(':memory:')),
+      flashback: remote,
+      fireAndForgetTimeoutMs: 200,
+    });
+
+    await svc.record(rec('before'));
+    remote.fail = true;
+    await svc.record(rec('during outage'));
+    remote.fail = false;
+    await svc.record(rec('after'));
+    await settle();
+
+    assert.equal(remote.recordCalls, 3, 'a failed write must not cancel later ones');
+  });
+});
+

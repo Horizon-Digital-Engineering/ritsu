@@ -30,11 +30,11 @@ describe('SqliteMemoryBackend legacy column repair', () => {
 
     const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
       .map(c => c.name);
-    assert.ok(cols.includes('container_id'));
+    assert.ok(cols.includes('thread_id'));
     assert.ok(!cols.includes('session_id'));
 
     // The existing row survives the rename and is reachable by the new name.
-    const rows = await backend.query({ user_id: 'operator', container_id: 'ritsu:7' }, {});
+    const rows = await backend.query({ user_id: 'operator', thread_id: 'ritsu:7' }, {});
     assert.equal(rows.length, 1);
     assert.equal(rows[0].content, 'older turn');
   });
@@ -44,7 +44,7 @@ describe('SqliteMemoryBackend legacy column repair', () => {
     new SqliteMemoryBackend(db);
     const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
       .map(c => c.name);
-    assert.ok(cols.includes('container_id'));
+    assert.ok(cols.includes('thread_id'));
   });
 });
 
@@ -61,7 +61,7 @@ describe(name, () => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0].content, 'took 5mg lisinopril');
       assert.equal(rows[0].type, 'conversation');
-      assert.ok(rows[0].content_hash.length === 32);   // md5 hex (matches flashback)
+      assert.ok(rows[0].content_hash.length === 64);   // sha256 hex (matches flashback)
       assert.ok(rows[0].ingest_time > 0);
     });
 
