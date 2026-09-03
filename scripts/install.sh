@@ -7,8 +7,7 @@
 # What it does:
 #   1. Creates the `ritsu` system user (skipped if it exists)
 #   2. Clones / pulls https://github.com/Horizon-Digital-Engineering/ritsu
-#      into /opt/ritsu (uses the *invoking user's* gh CLI auth for the first
-#      clone, since the repo is private)
+#      into /opt/ritsu
 #   3. Runs `npm ci && npm run build` as the ritsu user
 #   4. If /etc/ritsu/env doesn't exist, writes a template (does NOT overwrite)
 #   5. Installs systemd/ritsu.service and enables it
@@ -74,16 +73,7 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" pull --ff-only
 else
   note "cloning fresh"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    tmp="$(mktemp -d)"
-    gh repo clone "${REPO_URL%.git}" "${tmp}/ritsu" >/dev/null
-    sudo cp -a "${tmp}/ritsu/." "${INSTALL_DIR}/"
-    sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
-    rm -rf "${tmp}"
-  else
-    warn "no gh CLI / not auth'd — falling back to git clone (will prompt for creds if the repo is private)"
-    sudo -u "${SERVICE_USER}" -H git clone "${REPO_URL}" "${INSTALL_DIR}"
-  fi
+  sudo -u "${SERVICE_USER}" -H git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
 
 bold "==> Install + build"
