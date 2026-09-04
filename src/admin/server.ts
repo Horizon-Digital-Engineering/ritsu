@@ -1522,6 +1522,15 @@ export function createAdminApp(deps: AdminDeps) {
     const body = parseBody(req, res, ApiKeyMintBody);
     if (!body) return;
     const { name, provider, plaintext } = body;
+    // A subscription token authenticates the direct runtime only; the metered
+    // API rejects it. Caught here so the failure is a clear message now rather
+    // than an auth error on the agent's first turn.
+    if (plaintext.startsWith('sk-ant-oat')) {
+      res.status(400).json({
+        error: 'that is a subscription token, not an API key — save it under the subscription panel instead',
+      });
+      return;
+    }
     try {
       // Plaintext returned exactly once in the response; the client should
       // display it to the operator with a copy-to-clipboard affordance.

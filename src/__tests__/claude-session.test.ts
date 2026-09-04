@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { openDatabase } from '../db.js';
 import { SecretStore } from '../auth/secret-store.js';
 import { buildDispatcher } from '../model/factory.js';
-import { CLAUDE_NS } from '../model/claude-direct-dispatcher.js';
+import { CLAUDE_NS, subscriptionEnv } from '../model/claude-direct-dispatcher.js';
 import { _resetKeyCacheForTests } from '../util/secret-crypto.js';
 
 describe('claude session token', () => {
@@ -47,5 +47,26 @@ describe('claude session token', () => {
     const hint = `${stored.slice(0, 12)}…${stored.slice(-4)}`;
     assert.ok(!token.includes(hint));
     assert.ok(hint.length < 25);
+  });
+});
+
+describe('subscription billing precedence', () => {
+  it('drops ANTHROPIC_API_KEY so the plan is used, not per-token billing', () => {
+    const env = subscriptionEnv('tok', {
+      PATH: '/usr/bin',
+      HOME: '/home/ritsu',
+      // Any non-empty value; the point is that it must not survive.
+      ANTHROPIC_API_KEY: ['would', 'bill', 'per', 'token'].join('-'),
+    });
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'tok');
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
+    // The subprocess still needs its inherited environment to start at all.
+    assert.equal(env.PATH, '/usr/bin');
+    assert.equal(env.HOME, '/home/ritsu');
+  });
+
+  it('leaves an environment without an API key untouched apart from the token', () => {
+    const env = subscriptionEnv('tok', { PATH: '/usr/bin' });
+    assert.deepEqual(env, { PATH: '/usr/bin', CLAUDE_CODE_OAUTH_TOKEN: 'tok' });
   });
 });
