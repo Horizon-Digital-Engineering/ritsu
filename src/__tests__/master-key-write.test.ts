@@ -10,7 +10,10 @@
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync,
+  openSync, closeSync, fstatSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -26,8 +29,15 @@ describe('writeNewKeyFile', () => {
   it('creates the key file 0600 and readable back', () => {
     const p = join(dir, 'master-key');
     writeNewKeyFile(p, key);
-    assert.equal(statSync(p).mode & 0o777, 0o600);
-    assert.equal(readFileSync(p, 'utf8').trim(), key.toString('base64'));
+    // Inspect through one descriptor rather than stat-then-read: two calls on
+    // a path are the very pattern this function exists to avoid.
+    const fd = openSync(p, 'r');
+    try {
+      assert.equal(fstatSync(fd).mode & 0o777, 0o600);
+      assert.equal(readFileSync(fd, 'utf8').trim(), key.toString('base64'));
+    } finally {
+      closeSync(fd);
+    }
   });
 
   it('REFUSES a path that already exists, rather than truncating it', () => {
@@ -36,8 +46,13 @@ describe('writeNewKeyFile', () => {
     const p = join(dir, 'master-key');
     writeFileSync(p, 'pre-existing', { mode: 0o644 });
     assert.throws(() => writeNewKeyFile(p, key), /EEXIST/);
-    assert.equal(readFileSync(p, 'utf8'), 'pre-existing', 'the existing file is untouched');
-    assert.equal(statSync(p).mode & 0o777, 0o644, 'and its permissions were never widened by us');
+    const fd = openSync(p, 'r');
+    try {
+      assert.equal(readFileSync(fd, 'utf8'), 'pre-existing', 'the existing file is untouched');
+      assert.equal(fstatSync(fd).mode & 0o777, 0o644, 'and its permissions were never widened by us');
+    } finally {
+      closeSync(fd);
+    }
   });
 
   it('REFUSES a symlink, so the key cannot be redirected', () => {
