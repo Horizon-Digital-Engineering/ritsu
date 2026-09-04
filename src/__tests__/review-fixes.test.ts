@@ -335,3 +335,65 @@ describe('self-gating tools are not gated twice', () => {
     assert.equal(approvals.listPending(10).length, 0, 'no second card was left behind');
   });
 });
+
+/**
+ * What happens AFTER the operator says yes. An approved send that cannot
+ * actually go out has to say so — reporting success for a message that never
+ * left is the one outcome the operator cannot detect.
+ */
+describe('CRM tools after approval', () => {
+  let approvals: ApprovalStore;
+  let secrets: SecretStore;
+
+  beforeEach(() => {
+    process.env.RITSU_MASTER_KEY = randomBytes(32).toString('base64');
+    _resetKeyCacheForTests();
+    const db = openDatabase(':memory:');
+    approvals = new ApprovalStore(db);
+    secrets = new SecretStore(db);
+  });
+
+  const deps = () => ({ agentId: 'alice', secrets, approvals, conversationId: null });
+
+  /** Approve whatever card the handler raises, then return its result. */
+  async function approveAndRun(call: Promise<string>): Promise<string> {
+    const id = await waitForPending(approvals);
+    approvals.decide(id, 'approved', null, 'operator');
+    return call;
+  }
+
+  it('an approved email with no mailbox configured reports it', async () => {
+    const send = buildEmailTools(deps()).find(t => t.name === 'email_send_email')!;
+    const out = await approveAndRun(send.handler({ to: 'a@b.com', subject: 's', body: 'b' }));
+    assert.match(out, /not configured/);
+  });
+
+  it('an approved post with no account configured reports it', async () => {
+    const post = buildSocialTools(deps()).find(t => t.name === 'social_post_tweet')!;
+    assert.match(await approveAndRun(post.handler({ text: 'hello' })), /not configured/);
+  });
+
+  it('an approved LinkedIn post with no account configured reports it', async () => {
+    const post = buildSocialTools(deps()).find(t => t.name === 'social_post_linkedin')!;
+    assert.match(await approveAndRun(post.handler({ text: 'hello' })), /not configured/);
+  });
+
+  it('rejects empty or over-length input before raising a card', async () => {
+    const social = buildSocialTools(deps());
+    const tweet = social.find(t => t.name === 'social_post_tweet')!;
+    const li = social.find(t => t.name === 'social_post_linkedin')!;
+    assert.match(await tweet.handler({ text: '' }), /text required/);
+    assert.match(await li.handler({ text: '' }), /text required/);
+    assert.match(await li.handler({ text: 'x'.repeat(3001) }), /the limit is 3000/);
+    assert.equal(approvals.listPending(10).length, 0, 'invalid input must not cost an operator decision');
+  });
+
+  it('a reply carries the tweet it replies to onto the approval card', async () => {
+    const post = buildSocialTools(deps()).find(t => t.name === 'social_post_tweet')!;
+    void post.handler({ text: 'replying', reply_to: '12345' });
+    const id = await waitForPending(approvals);
+    const row = approvals.listPending(10).find(r => r.id === id)!;
+    assert.deepEqual(JSON.parse(row.args_json), { text: 'replying', reply_to: '12345' });
+    approvals.decide(id, 'rejected', null, 'operator');
+  });
+});
