@@ -18,11 +18,9 @@
 # or from a clone:
 #   bash scripts/install.sh
 #
-# Interactive bits (do these BEFORE running, or the install completes but the
-# service won't be able to actually talk to Claude):
-#   - Install Claude Code CLI globally:   sudo npm install -g @anthropic-ai/claude-code
-#   - Auth as the ritsu user:             sudo -u ritsu -H claude login
-# The script will print a reminder if it detects the credentials are missing.
+# After it finishes, save a subscription token in the admin UI (API Keys) —
+# generate one anywhere with `claude setup-token`. Agents cannot dispatch
+# until one is stored; the installer prints a reminder.
 
 set -euo pipefail
 
@@ -32,7 +30,6 @@ ENV_DIR="${RITSU_ENV_DIR:-/etc/ritsu}"
 ENV_FILE="${ENV_DIR}/env"
 SERVICE_USER="${RITSU_USER:-ritsu}"
 SERVICE_NAME="${RITSU_SERVICE:-ritsu.service}"
-CLAUDE_HOME="/home/${SERVICE_USER}/.claude"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 note()  { printf '\033[2m  %s\033[0m\n' "$*"; }
@@ -79,6 +76,21 @@ fi
 bold "==> Install + build"
 sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
 
+bold "==> Master key"
+# Secrets are AES-256-GCM encrypted at rest and unwritable without this. Kept
+# out of ${INSTALL_DIR} on purpose: beside the database, one filesystem
+# snapshot would carry both the ciphertext and the key that opens it.
+KEY_FILE="${ENV_DIR}/master-key"
+if [[ -f "${KEY_FILE}" ]]; then
+  note "${KEY_FILE} exists — leaving it alone"
+else
+  sudo sh -c "umask 077; openssl rand -base64 32 > '${KEY_FILE}'"
+  sudo chown "${SERVICE_USER}:${SERVICE_USER}" "${KEY_FILE}"
+  sudo chmod 0600 "${KEY_FILE}"
+  warn "generated ${KEY_FILE} — BACK IT UP NOW"
+  warn "it is deliberately excluded from database backups; without it every stored secret is unrecoverable"
+fi
+
 bold "==> Env file"
 if [[ -f "${ENV_FILE}" ]]; then
   note "${ENV_FILE} exists — not overwriting"
@@ -108,15 +120,22 @@ sudo install -o root -g root -m 644 "${INSTALL_DIR}/systemd/${SERVICE_NAME}" "/e
 sudo systemctl daemon-reload
 note "/etc/systemd/system/${SERVICE_NAME}"
 
-bold "==> Claude CLI session check"
-if [[ ! -f "${CLAUDE_HOME}/.credentials.json" ]]; then
-  warn "${CLAUDE_HOME}/.credentials.json missing"
-  warn "the claude-direct dispatcher will fail at first call until you run:"
-  warn "  sudo npm install -g @anthropic-ai/claude-code   # if not already"
-  warn "  sudo -u ${SERVICE_USER} -H claude login"
-else
-  note "credentials present"
-fi
+bold "==> Subscription credential"
+# Direct-runtime agents authenticate with a long-lived subscription token.
+# It is account-scoped rather than machine-scoped, so generate it anywhere and
+# paste it into the admin UI — no interactive login on each host.
+note "generate:  claude setup-token       (on any machine, needs a subscription)"
+note "then save it under API Keys in the admin UI"
+note "agents cannot dispatch until one is stored" 
+
+bold "==> Update shortcut"
+sudo install -o root -g root -m 755 /dev/stdin /usr/local/bin/update-ritsu <<'SHIM'
+#!/usr/bin/env bash
+# Pull latest ritsu, rebuild, restart. Wraps the canonical script.
+exec sudo bash /opt/ritsu/scripts/update.sh "$@"
+SHIM
+note "/usr/local/bin/update-ritsu installed — future updates: sudo update-ritsu"
+note "to run it without a password prompt, add a scoped sudoers rule for that one path"
 
 bold "==> Start"
 sudo systemctl enable "${SERVICE_NAME}" >/dev/null
@@ -125,9 +144,12 @@ sleep 1
 sudo systemctl --no-pager status "${SERVICE_NAME}" | head -10
 
 bold "==> Smoke test"
-port="$(grep -E '^PORT=' "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' "')"
-admin_port="$(grep -E '^ADMIN_PORT=' "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' "')"
-mcp_host="$(grep -E '^MCP_HOST=' "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' "')"
+# The env file is 0600 and owned by the service user, so read it as root —
+# otherwise every install ends with a permission error that looks like failure.
+env_val() { sudo grep -E "^$1=" "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' "'; }
+port="$(env_val PORT)"
+admin_port="$(env_val ADMIN_PORT)"
+mcp_host="$(env_val MCP_HOST)"
 note "MCP healthz:    $(curl -s "http://${mcp_host:-127.0.0.1}:${port:-7333}/healthz" || echo failed)"
 note "admin healthz:  $(curl -s "http://127.0.0.1:${admin_port:-7334}/healthz" || echo failed)"
 

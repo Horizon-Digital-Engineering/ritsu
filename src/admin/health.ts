@@ -2,14 +2,13 @@
  * Live connectivity checks for System → Health. Read-only probes with short
  * timeouts; details carry HTTP status / error text only, never key material.
  */
-import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import type { ApiKeyStore } from '../auth/api-key-store.js';
 import type { AgentDefinitionStore } from '../agent-definition-store.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { LITELLM_NS } from '../model/ritsu-agent/client.js';
 import { SEARCH_NS } from '../tools/ritsu-agent/search-config.js';
+import { masterKeyStatus } from '../util/secret-crypto.js';
+import { CLAUDE_NS } from '../model/claude-direct-dispatcher.js';
 import { FLASHBACK_NS } from '../memory/config.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
@@ -35,7 +34,6 @@ export interface HealthDeps {
   apiKeys: Pick<ApiKeyStore, 'list' | 'reveal'>;
   secrets: { get(namespace: string, name: string): string | null };
   fetchImpl?: typeof fetch;
-  claudeCredsPath?: string;
   timeoutMs?: number;
 }
 
@@ -56,7 +54,8 @@ export async function runHealthChecks(deps: HealthDeps): Promise<{ checks: Healt
 
   const tasks: Array<Promise<HealthCheck>> = [
     dbCheck(deps.defStore),
-    Promise.resolve(claudeCheck(deps.claudeCredsPath)),
+    Promise.resolve(masterKeyCheck()),
+    Promise.resolve(claudeCheck(deps)),
     ...deps.apiKeys.list().filter(k => !k.revoked_at).map(k => providerKeyCheck(k.id, k.name, k.provider, deps, probe)),
     litellmProxyCheck(deps.secrets, probe),
     flashbackCheck(deps.secrets, probe),
@@ -86,11 +85,32 @@ async function dbCheck(defStore: HealthDeps['defStore']): Promise<HealthCheck> {
   }
 }
 
-function claudeCheck(credsPath?: string): HealthCheck {
-  const p = credsPath ?? join(homedir(), '.claude', '.credentials.json');
-  return existsSync(p)
-    ? { id: 'claude-token', label: 'Claude session (direct runtime)', group: 'core', status: 'ok' }
-    : { id: 'claude-token', label: 'Claude session (direct runtime)', group: 'core', status: 'fail', detail: 'credentials missing — run `claude login` as the service user' };
+/** No key means no secret can be stored — worth its own row, because every
+ *  connector below it will read as "not configured" for the same root cause. */
+function masterKeyCheck(): HealthCheck {
+  const base = { id: 'master-key', label: 'Secret storage (master key)', group: 'core' as const };
+  const st = masterKeyStatus();
+  return st.ok
+    ? { ...base, status: 'ok', detail: st.source === 'env' ? 'from the environment' : `from ${st.source}` }
+    : { ...base, status: 'fail', ...(st.detail ? { detail: st.detail } : {}) };
+}
+
+function claudeCheck(deps: HealthDeps): HealthCheck {
+  const base = { id: 'claude-token', label: 'Subscription token (direct runtime)', group: 'core' as const };
+  // The stored token is the supported path: portable, rotatable, one place.
+  // An env-supplied one is honoured too. A ~/.claude session may also exist and
+  // will quietly work, but it is per-machine and expires, so it is not checked.
+  if (deps.secrets.get(CLAUDE_NS, 'oauth_token')?.trim()) {
+    return { ...base, status: 'ok', detail: 'stored' };
+  }
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+    return { ...base, status: 'ok', detail: 'from the environment' };
+  }
+  return {
+    ...base,
+    status: 'fail',
+    detail: 'no token — direct-runtime agents cannot dispatch. Generate one with `claude setup-token` and save it under API Keys.',
+  };
 }
 
 async function providerKeyCheck(

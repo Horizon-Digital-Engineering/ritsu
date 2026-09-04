@@ -263,7 +263,8 @@ Checks:
 - MCP + admin ports are listening
 - `/opt/ritsu/data/.admin-token` exists and is mode 0600
 - ritsu user can write the DB dir
-- `~/.claude/.credentials.json` exists for the `ritsu` user (warn if missing)
+- a master key exists, so secrets can be stored (warn if missing)
+- a subscription token is stored for the direct runtime (warn if missing)
 - Declared sandbox paths exist
 - Tailscale is installed + authenticated
 

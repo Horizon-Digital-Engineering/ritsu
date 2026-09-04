@@ -215,5 +215,7 @@ fi
 
 bold "==> Done"
 note "future updates (from anywhere with SSH):  sudo update-ritsu"
-note "direct-runtime agents need a subscription token: admin UI -> System -> save it there,"
-note "or a CLI session at /home/${SERVICE_USER}/.claude/. Either one works; the stored token wins."
+note ""
+note "direct-runtime agents authenticate with a subscription token:"
+note "  claude setup-token   # on any machine, then save it under API Keys in the admin UI"
+note "A local CLI session at /home/${SERVICE_USER}/.claude/ also works if you have one."

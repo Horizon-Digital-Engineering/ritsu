@@ -302,10 +302,27 @@ function switchTab(name) {
 }
 
 // ---- info bar --------------------------------------------------------------
+function renderMasterKeyBanner(ok) {
+  let el = $('master-key-banner');
+  if (ok) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'master-key-banner';
+    el.className = 'mk-banner';
+    document.querySelector('main')?.prepend(el);
+  }
+  el.textContent = 'No master key — secrets cannot be stored. Create one on the server, then restart: '
+    + "sudo sh -c 'umask 077; openssl rand -base64 32 > /etc/ritsu/master-key' "
+    + '&& sudo chown ritsu:ritsu /etc/ritsu/master-key. Back it up: it is excluded from database backups.';
+}
+
 async function refreshInfo() {
   try {
     const d = await api('GET', '/admin/api/info');
     $('version').textContent = `v${d.version}`;
+    // Without a master key every secret write fails, and each connector then
+    // reads as "not configured" for the same hidden reason. Say it once, loudly.
+    renderMasterKeyBanner(d.master_key_ok !== false);
     const authChip = `<span class="chip ${d.auth_effective === 'open' ? 'warn' : 'ok'}">mcp: ${esc(d.auth_effective)}</span>`;
     const modeChip = `<span class="chip">mode: ${esc(d.auth_mode)}</span>`;
     const levelChip = `<span class="chip">log: ${esc(d.log_level)}</span>`;

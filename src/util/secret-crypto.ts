@@ -38,7 +38,10 @@ import {
   createHmac,
   randomBytes,
 } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync } from 'node:fs';
+import {
+  readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync,
+  accessSync, constants as fsConstants,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from './log.js';
 
@@ -49,11 +52,41 @@ const TAG_BYTES = 16;
 /** Versioned prefixes. v1 = no AAD (legacy reads only). v2 = AAD-bound (writes). */
 const ENC_PREFIX_V1 = 'enc:v1:';
 const ENC_PREFIX_V2 = 'enc:v2:';
+/** Whether a master key is available WITHOUT creating one. Lets the health
+ *  check and the admin API report the real reason instead of surfacing a
+ *  bootstrap failure as a 500 at save time. */
+export function masterKeyStatus(): { ok: boolean; source: string | null; detail?: string } {
+  if (process.env[ENV_KEY_VAR]?.trim()) return { ok: true, source: 'env' };
+  if (existsSync(SYSTEM_KEY_PATH)) return { ok: true, source: SYSTEM_KEY_PATH };
+  if (existsSync(FALLBACK_KEY_PATH)) {
+    return process.env.RITSU_ALLOW_COLOCATED_KEY === '1'
+      ? { ok: true, source: FALLBACK_KEY_PATH }
+      : { ok: false, source: null, detail: `key at ${FALLBACK_KEY_PATH} sits beside the database and is refused; move it to ${SYSTEM_KEY_PATH}` };
+  }
+  return {
+    ok: false,
+    source: null,
+    detail: `no master key — secrets cannot be stored. Create one: sudo sh -c 'umask 077; openssl rand -base64 32 > ${SYSTEM_KEY_PATH}' && sudo chown ritsu:ritsu ${SYSTEM_KEY_PATH}`,
+  };
+}
+
 /** Back-compat re-export for callers that previously checked the format. */
 const ENC_PREFIX = ENC_PREFIX_V2;
 
 const ENV_KEY_VAR = 'RITSU_MASTER_KEY';
 const SYSTEM_KEY_PATH = '/etc/ritsu/master-key';
+
+/** True when a key file can be created in `dir`. Checked rather than assumed:
+ *  the service runs unprivileged, so /etc/ritsu is writable only when the
+ *  installer made it so. */
+function canWriteDir(dir: string): boolean {
+  try {
+    accessSync(dir, fsConstants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 const FALLBACK_KEY_PATH = '/opt/ritsu/data/.master-key';
 
 let cachedKey: Buffer | null = null;
@@ -91,11 +124,24 @@ function loadOrBootstrapMasterKey(): Buffer {
     });
     return raw;
   }
-  // First boot — bootstrap. Refuses to drop the key into the colocated
-  // fallback path unless the operator has opted in.
+  // First boot — bootstrap into the proper location when we can. Writing to
+  // /etc/ritsu keeps the key off the volume the database lives on, which is
+  // the whole reason the colocated path is refused below.
+  const systemDir = dirname(SYSTEM_KEY_PATH);
+  if (canWriteDir(systemDir)) {
+    const key = randomBytes(KEY_BYTES);
+    writeFileSync(SYSTEM_KEY_PATH, key.toString('base64') + '\n', { mode: 0o600 });
+    logger.warn('crypto.master-key.bootstrapped', {
+      path: SYSTEM_KEY_PATH,
+      hint: 'Generated a master key. BACK IT UP — it is deliberately excluded from database backups, and losing it makes every stored secret unrecoverable.',
+    });
+    return key;
+  }
+  // Refuses to drop the key into the colocated fallback path unless the
+  // operator has opted in.
   if (process.env.RITSU_ALLOW_COLOCATED_KEY !== '1') {
     throw new Error(
-      `No master key found.\n` +
+      `No master key found, and ${dirname(SYSTEM_KEY_PATH)} is not writable to create one.\n` +
       `Bootstrap refuses to write to the fallback path (${FALLBACK_KEY_PATH}) because it sits\n` +
       `next to the DB. Pick one:\n` +
       `  1. echo "RITSU_MASTER_KEY=$(openssl rand -base64 32)" >> /etc/ritsu/env  (recommended)\n` +
@@ -279,6 +325,12 @@ export function generateMasterKey(): Buffer {
  *  otherwise FALLBACK_KEY_PATH. Refuses to write when the env var is the
  *  active source (rotation in that mode means swapping the env var, which
  *  the operator does manually). */
+/** Where a first key should be created. Not the colocated fallback: beside the
+ *  database, one snapshot carries both the ciphertext and the key for it. */
+export function masterKeyCreatePath(): string {
+  return SYSTEM_KEY_PATH;
+}
+
 export function masterKeyWritePath(source: string): string {
   if (source === 'env') {
     throw new Error('master key is sourced from RITSU_MASTER_KEY env var; rotate by setting a new value and restarting');

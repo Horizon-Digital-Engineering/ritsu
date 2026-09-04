@@ -886,3 +886,14 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .hstat-ok { color: var(--ok); border-color: #2c4a36; }
 .hstat-fail { color: var(--err); border-color: #4a2c2c; }
 .hstat-skip { color: var(--muted); }
+
+/* Missing master key: every secret write fails until it exists. */
+.mk-banner {
+  margin: 0 0 12px; padding: 10px 14px; border-radius: 6px;
+  border: 1px solid #4a2c2c; background: #2a1a1a; color: var(--err);
+  font-size: 13px; line-height: 1.5;
+}
+
+/* Note spanning both columns of a .grid form. Inline styles are CSP-blocked,
+   so anything positional has to live here. */
+.form-note { grid-column: 1 / -1; }

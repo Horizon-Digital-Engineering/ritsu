@@ -1,5 +1,5 @@
 /**
- * `ritsu backup` — snapshot / list / export / prune / restore the database.
+ * `ritsu backup` — create / list / export / prune / restore database snapshots.
  * The whole system is one SQLite file, so a snapshot is a consistent
  * `VACUUM INTO`. Restore is the break-glass path: it swaps the live DB file,
  * so the service must be stopped first (it can't hot-swap an open DB).

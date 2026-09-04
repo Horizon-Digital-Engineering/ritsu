@@ -19,6 +19,8 @@ import { AgentHost } from './agent-host.js';
 import { loadMemoryConfig } from './memory/config.js';
 import { buildMemoryService } from './memory/factory.js';
 import { SettingsStore } from './settings-store.js';
+import { masterKeyStatus } from './util/secret-crypto.js';
+import { CLAUDE_NS } from './model/claude-direct-dispatcher.js';
 import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
 import { BackupManager, snapshotPreMigration } from './backup.js';
 import { createMcpServer } from './mcp-server.js';
@@ -91,6 +93,20 @@ async function main(): Promise<void> {
   const dailyMaintenance = (): void => { pruneRuns?.(); runBackup(); };
   const backupSweep = setInterval(dailyMaintenance, 24 * 3_600_000);
   backupSweep.unref();
+
+  // Secrets are unusable without a key, and the failure would otherwise first
+  // appear as a 500 when an operator saves a credential.
+  const keyState = masterKeyStatus();
+  if (keyState.ok) logger.info('crypto.master-key.available', { source: keyState.source });
+  else logger.warn('crypto.master-key.missing', { detail: keyState.detail });
+
+  // Direct-runtime agents dispatch through a subscription token. Say at boot
+  // when there isn't one, rather than letting it surface as a failed turn.
+  if (!secrets.get(CLAUDE_NS, 'oauth_token')?.trim() && !process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+    logger.warn('claude.token.missing', {
+      hint: 'direct-runtime agents cannot dispatch — generate one with `claude setup-token` and save it under API Keys',
+    });
+  }
 
   bootstrapAdminToken(tokens, cfg);
   await seedIfEmpty(defStore);

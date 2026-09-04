@@ -33,7 +33,7 @@
 # After this, one interactive step on the remote (claude device-code login):
 #   ssh <host>
 #   which claude || sudo npm install -g @anthropic-ai/claude-code
-#   sudo -u ritsu -H claude login
+#   claude setup-token   (on any machine; save the token under API Keys in the admin UI)
 #
 # Re-run safely: every step is idempotent.
 
@@ -142,7 +142,7 @@ bold "==> Done"
 note "one-time interactive step on ${HOST}:"
 note "  ssh ${HOST}"
 note "  which claude || sudo npm install -g @anthropic-ai/claude-code"
-note "  sudo -u ritsu -H claude login"
+note "  claude setup-token   # then save it under API Keys in the admin UI"
 note ""
 note "future updates from anywhere with SSH:"
 note "  ssh ${HOST} update-ritsu"
