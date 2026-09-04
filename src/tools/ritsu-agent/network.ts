@@ -6,7 +6,8 @@
  * agent may override the searxng URL via `provider_options.searxng_url`.
  * Returns top-N results with title / url / snippet.
  *
- * WebFetch: HTTP GET with manually-followed redirects + size cap. SSRF
+ * WebFetch: HTTP GET with manually-followed redirects + size cap. Body comes
+ * back fenced — a fetched page is untrusted text like any other. SSRF
  * guard (see ssrf-guard.ts) rejects URLs / redirects / resolved IPs that
  * point into private ranges, cloud metadata, loopback, etc. Closes DNS
  * rebinding via a custom undici dispatcher that validates at connect
@@ -17,6 +18,7 @@ import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
+import { fenceUntrusted } from '../../util/untrusted.js';
 import { safeFetch, validateUrl } from './ssrf-guard.js';
 import {
   buildSearchRequest, formatHits, searchConfigError, type SearchConfig,
@@ -47,7 +49,6 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
     ? { ...opts.search, ...(opts.searxng_url ? { url: opts.searxng_url } : {}) }
     : (opts.searxng_url ? { provider: 'searxng', url: opts.searxng_url } : undefined);
   const searchError = search ? searchConfigError(search) : 'WebSearch is not configured';
-  const fetchImpl = opts.fetchImpl ?? fetch;
 
   return [
     {
@@ -95,7 +96,7 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
           if (!reader) {
             // Fallback: text() if streaming not available
             const text = await res.text();
-            return formatFetchBody(text, ct);
+            return formatFetchBody(text, ct, false, url);
           }
           const chunks: Uint8Array[] = [];
           let total = 0;
@@ -114,7 +115,7 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
           const bytes = Buffer.concat(chunks.map(c => Buffer.from(c)));
           const body = bytes.toString('utf8');
           logger.debug('ra.network.webfetch', { url, bytes: total, truncated });
-          return formatFetchBody(body, ct, truncated);
+          return formatFetchBody(body, ct, truncated, url);
         } catch (err) {
           const e = err as Error;
           return e.name === 'AbortError'
@@ -148,8 +149,17 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
           const req = buildSearchRequest(search, query, limit, WEBFETCH_USER_AGENT);
           const ctl = new AbortController();
           const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-          const res = await fetchImpl(req.url, { ...req.init, signal: ctl.signal })
-            .finally(() => clearTimeout(timer));
+          // Same guard stack as WebFetch: a self-hosted backend is still a
+          // URL an operator typed, and any backend can redirect inward.
+          const doSearch = opts.fetchImpl
+            ? () => opts.fetchImpl!(req.url, { ...req.init, signal: ctl.signal })
+            : () => safeFetch(req.url, {
+                signal: ctl.signal,
+                method: typeof req.init.method === 'string' ? req.init.method : 'GET',
+                body: typeof req.init.body === 'string' ? req.init.body : undefined,
+                headers: req.init.headers as Record<string, string> | undefined,
+              });
+          const res = await doSearch().finally(() => clearTimeout(timer));
           // Name the provider in the error: with several possible backends,
           // "HTTP 401" alone doesn't say which credential is wrong.
           if (!res.ok) return `error: ${search.provider} HTTP ${res.status} ${res.statusText}`;
@@ -167,8 +177,14 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
   ];
 }
 
-function formatFetchBody(body: string, contentType: string, truncated = false): string {
+function formatFetchBody(body: string, contentType: string, truncated: boolean, url: string): string {
   const ctTag = contentType ? `[${contentType}]\n` : '';
   const trunc = truncated ? `\n--- truncated at ${FETCH_MAX_BYTES} bytes ---` : '';
-  return ctTag + body + trunc;
+  // A fetched page is attacker-controlled text, same as an email body or a
+  // social mention. Fence it so instructions inside it read as data.
+  return fenceUntrusted(`web page ${hostOf(url)}`, ctTag + body + trunc);
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return 'unknown host'; }
 }

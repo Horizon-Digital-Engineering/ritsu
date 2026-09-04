@@ -256,6 +256,8 @@ export interface SafeFetchOptions {
   signal?: AbortSignal;
   headers?: Record<string, string>;
   maxRedirects?: number;
+  method?: string;
+  body?: string;
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -270,12 +272,15 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
   const dispatcher = createSafeDispatcher();
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   let current = rawUrl;
+  let method = opts.method ?? 'GET';
+  let body = opts.body;
   let hops = 0;
   while (true) {
     const v = validateUrl(current);
     if (!v.ok) throw new Error(`SSRF guard: ${v.reason}`);
     const res = await undiciFetch(v.url.href, {
-      method: 'GET',
+      method,
+      body,
       redirect: 'manual',
       signal: opts.signal,
       headers: opts.headers,
@@ -289,8 +294,10 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
       if (hops >= maxRedirects) {
         throw new Error(`SSRF guard: too many redirects (>${maxRedirects})`);
       }
-      // Resolve relative redirects against the current URL.
+      // Resolve relative redirects against the current URL. 307/308 keep the
+      // method and body; every other 3xx degrades to GET, per fetch.
       current = new URL(loc, v.url).href;
+      if (res.status !== 307 && res.status !== 308) { method = 'GET'; body = undefined; }
       hops++;
       continue;
     }

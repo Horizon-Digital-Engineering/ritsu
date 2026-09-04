@@ -26,8 +26,11 @@ import {
   RuntimeSchema,
   MemoryBackendSchema,
   assertGrantableCapabilities,
+  clearOperatorOnlyFields,
+  preserveOperatorOnlyFields,
 } from '../../admin/schema.js';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
 
 export const ADMIN_MCP_NAME = 'agent_admin';
@@ -47,7 +50,7 @@ export interface AgentAdminDeps {
   host: AdminHost;
 }
 
-export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) {
+export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps, gate: McpGateContext | null = null) {
   return createSdkMcpServer({
     name: ADMIN_MCP_NAME,
     version: '0.1.0',
@@ -76,7 +79,7 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
             .describe('Per-agent capabilities. Empty by default — DO NOT grant manage_agents to a new agent without a clear reason.'),
           enabled: z.boolean().default(true),
         },
-        async (args) => {
+        async (args) => gateMcpTool(gate, ADMIN_TOOL_NAMES[0], args, async () => {
           const validated = AgentDefinitionSchema.parse(args);
           // Defense-in-depth: the inline enum already blocks crm/social, but
           // assert again so the rule holds if that schema ever loosens.
@@ -85,11 +88,12 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
           if (existing) {
             return { content: [{ type: 'text', text: `error: agent ${validated.id} already exists; use update_agent` }] };
           }
+          clearOperatorOnlyFields(validated);
           const saved = await deps.defStore.upsert(validated);
           deps.host.addOrReplace(saved);
           logger.info('agent-admin.create', { by: callerAgentId, id: saved.id });
           return { content: [{ type: 'text', text: `created ${saved.id}` }] };
-        },
+        }),
       ),
       tool(
         'update_agent',
@@ -112,7 +116,7 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
             enabled: z.boolean().optional(),
           }).describe('Partial definition; only the fields you want to change.'),
         },
-        async ({ agent_id, patch }) => {
+        async ({ agent_id, patch }) => gateMcpTool(gate, ADMIN_TOOL_NAMES[1], { agent_id, patch }, async () => {
           // Self-modification via agent-admin is operator-only.
           if (agent_id === callerAgentId) {
             return { content: [{ type: 'text', text: 'error: an agent cannot modify itself via agent-admin (operator-only)' }] };
@@ -122,11 +126,12 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
           const validPatch = AgentDefinitionPatchSchema.parse(patch);
           assertGrantableCapabilities(validPatch.capabilities);
           const merged = AgentDefinitionSchema.parse({ ...current, ...validPatch, id: current.id });
+          preserveOperatorOnlyFields(current, merged);
           const saved = await deps.defStore.upsert(merged);
           deps.host.addOrReplace(saved);
           logger.info('agent-admin.update', { by: callerAgentId, id: saved.id, fields: Object.keys(validPatch) });
           return { content: [{ type: 'text', text: `updated ${saved.id}` }] };
-        },
+        }),
       ),
       tool(
         'reload_agent',
@@ -135,13 +140,13 @@ export function buildAgentAdminMcp(callerAgentId: string, deps: AgentAdminDeps) 
         {
           agent_id: z.string().describe('Stable id of the agent to reload.'),
         },
-        async ({ agent_id }) => {
+        async ({ agent_id }) => gateMcpTool(gate, ADMIN_TOOL_NAMES[2], { agent_id }, async () => {
           const def = await deps.defStore.read(agent_id);
           if (!def) return { content: [{ type: 'text', text: `error: agent ${agent_id} not found` }] };
           deps.host.addOrReplace(def);
           logger.info('agent-admin.reload', { by: callerAgentId, id: def.id });
           return { content: [{ type: 'text', text: `reloaded ${def.id}` }] };
-        },
+        }),
       ),
     ],
   });

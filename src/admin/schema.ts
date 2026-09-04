@@ -19,7 +19,12 @@ export const API_PROVIDERS = ['anthropic', 'openai', 'gemini', 'xai', 'openroute
  *  endpoint); every other api provider requires an api_key_ref. */
 export const KEYLESS_API_PROVIDERS: readonly string[] = ['litellm', 'custom'];
 
-export const MemoryBackendSchema = z.enum(['sqlite', 'flashback']);
+/** Per-agent memory backend. Only sqlite exists: the flashback value is a
+ *  leftover from the abandoned pluggable-MemoryStore design, and its store
+ *  throws on construction — accepting it here persisted a row that killed
+ *  every subsequent boot. The remote store is reached through the
+ *  MemoryService seam instead, configured once for the whole server. */
+export const MemoryBackendSchema = z.enum(['sqlite']);
 
 const AgentDefinitionBase = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'id must be lowercase kebab-case'),
@@ -101,6 +106,48 @@ export const AgentDefinitionSchema = AgentDefinitionBase.superRefine(refineRunti
 
 export type AgentDefinition = z.infer<typeof AgentDefinitionSchema>;
 
+/**
+ * Fields only an operator may set, on any agent-initiated or MCP-initiated
+ * write. Two distinct dangers:
+ *
+ *   api_key_ref + provider_options — together an exfiltration primitive.
+ *     One names a stored credential by a small integer id, the other carries
+ *     the base_url the decrypted key is sent to. A caller who can set both
+ *     enumerates every key straight to a host it controls.
+ *
+ *   capabilities, approval_tools, escalation_approvable, allow_monitor_read —
+ *     privilege and gating. An agent that can rewrite these on a peer can
+ *     strip that peer's operator approval, or make it readable by monitors.
+ *
+ * The admin API is deliberately NOT filtered: an operator setting these is
+ * the supported path.
+ */
+export const OPERATOR_ONLY_FIELDS = [
+  'api_key_ref', 'provider_options', 'capabilities',
+  'approval_tools', 'escalation_approvable', 'allow_monitor_read',
+] as const;
+
+/** Zero the operator-only fields on a newly-created definition. */
+export function clearOperatorOnlyFields(def: AgentDefinition): void {
+  def.api_key_ref = null;
+  def.provider_options = {};
+  def.capabilities = [];
+  def.approval_tools = [];
+  def.escalation_approvable = false;
+  def.allow_monitor_read = false;
+}
+
+/** Carry the operator-only fields over from the stored definition, so a patch
+ *  cannot change them however it was shaped. */
+export function preserveOperatorOnlyFields(current: AgentDefinition, next: AgentDefinition): void {
+  next.api_key_ref = current.api_key_ref;
+  next.provider_options = current.provider_options;
+  next.capabilities = current.capabilities;
+  next.approval_tools = current.approval_tools;
+  next.escalation_approvable = current.escalation_approvable;
+  next.allow_monitor_read = current.allow_monitor_read;
+}
+
 /** Capabilities an AGENT may grant another agent via the agent-admin tools.
  *  'crm' and 'social' unlock external-world access + stored credentials
  *  (mailbox, social accounts), so they are OPERATOR-ONLY — settable only via
@@ -123,5 +170,3 @@ export const AgentDefinitionPatchSchema = AgentDefinitionBase.partial().omit({
   created_at: true,
   updated_at: true,
 });
-
-export type AgentDefinitionPatch = z.infer<typeof AgentDefinitionPatchSchema>;

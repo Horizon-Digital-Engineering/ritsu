@@ -17,16 +17,14 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:7333:7333"   # MCP   (bind localhost only)
-      - "127.0.0.1:7334:7334"   # admin (bind localhost only — no auth)
+      - "127.0.0.1:7334:7334"   # admin (bearer-token gated; keep the bind private anyway)
     environment:
       PORT: 7333
       MCP_HOST: 0.0.0.0
       ADMIN_PORT: 7334
       ADMIN_HOST: 0.0.0.0
       DB_PATH: /app/data/ritsu.db
-      LITELLM_URL: http://litellm:4000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}  # leave unset to use the CLI session below
     volumes:
       - ritsu-data:/app/data
       # Bind the host's Claude CLI session so claude-direct dispatcher works.

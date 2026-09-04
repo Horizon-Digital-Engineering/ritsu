@@ -14,6 +14,7 @@ import type { ChatRequest, ChatResponse, ModelDispatcher } from '../model/dispat
 import { PluginHost } from '../plugins/host.js';
 import { projectsPlugin } from '../plugins/projects/plugin.js';
 import { MemoryService } from '../memory/service.js';
+import { SqliteJobStore } from '../scheduler/store.js';
 import { FakeMemoryBackend } from '../memory/fake-backend.js';
 
 function sampleDef(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
@@ -258,6 +259,31 @@ describe('AgentHost — plugin gating hardening', () => {
     assert.ok(g.includes('mcp__projects__create_task'));
   });
 
+  it('crm agent auto-gates scheduling — the most durable self-persistence there is', async () => {
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 'c', capabilities: ['crm'] })));
+    const g = gatedOf(0);
+    for (const t of ['schedule_create', 'schedule_pause', 'schedule_remove']) {
+      assert.ok(g.includes(`mcp__scheduler__${t}`), `${t} must be gated on the direct runtime`);
+    }
+  });
+
+  it('crm agent on the api runtime auto-gates the native scheduling + admin names', async () => {
+    host.addOrReplace(await defStore.upsert(sampleDef({
+      id: 'c2', runtime: 'api', provider: 'litellm', capabilities: ['crm'],
+    })));
+    const g = gatedOf(0);
+    assert.ok(g.includes('schedule_create'));
+    assert.ok(g.includes('agent_admin_create_agent'), 'minting an agent is privilege escalation');
+    assert.ok(g.includes('memory_remember'));
+  });
+
+  it('every agent gets the scheduler wired on the DEFAULT runtime, not just api', async () => {
+    host.setJobStore(new SqliteJobStore(openDatabase(':memory:')));
+    host.addOrReplace(await defStore.upsert(sampleDef({ id: 's' })));
+    const opts = stub.builds[0].opts as { scheduler?: unknown };
+    assert.ok(opts.scheduler, 'the direct runtime is the default; dropping scheduler there ships it to nobody');
+  });
+
   it('reloadForPlugin rebuilds only agents whose allowlist includes it', async () => {
     await defStore.upsert(sampleDef({ id: 'uses', plugins: ['projects'] }));
     await defStore.upsert(sampleDef({ id: 'nope', plugins: [] }));
@@ -273,13 +299,15 @@ describe('AgentHost — flow-level memory wiring', () => {
   let defStore: SqliteAgentDefinitionStore;
   let stub: ReturnType<typeof makeStubFactory>;
 
+  let conversations: SqliteConversationStore;
+
   function build(): { db: ReturnType<typeof openDatabase> } {
     const db = openDatabase(':memory:');
-    const convs = new SqliteConversationStore(db);
+    conversations = new SqliteConversationStore(db);
     defStore = new SqliteAgentDefinitionStore(db);
     const workspaces = new WorkspaceStore(db);
     stub = makeStubFactory();
-    host = new AgentHost(db, convs, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
+    host = new AgentHost(db, conversations, defStore, workspaces, new ApiKeyStore(db), new ApprovalStore(db), new SecretStore(db), new CommsDenialStore(db), stub.factory);
     return { db };
   }
 
@@ -292,23 +320,38 @@ describe('AgentHost — flow-level memory wiring', () => {
       'no flow-level context block when no MemoryService is wired');
   });
 
-  it('with a MemoryService: records the turn AND injects retrieved context on the next turn', async () => {
+  it('with a MemoryService: records the turn AND recalls it in a LATER conversation', async () => {
     build();
     const svc = new MemoryService({ mode: 'sqlite', sqlite: new FakeMemoryBackend() });
     host.setMemoryService(svc);
     host.addOrReplace(await defStore.upsert(sampleDef()));
 
-    // First turn seeds the memory with the (distinctive) user + assistant text.
+    // First conversation seeds the memory with the (distinctive) user text.
     await host.get('alice').onMessage({ message: 'remember zephyrantine dosage' });
 
-    // Second turn's getContext should retrieve the seeded record and inject it.
-    await host.get('alice').onMessage({ message: 'what about zephyrantine' });
+    // A SEPARATE conversation: recall is cross-thread, so this is where the
+    // block appears. Within one thread the turn is already in the transcript.
+    const later = conversations.start('alice');
+    await host.get('alice').onMessage({ message: 'what about zephyrantine', conversation_id: later });
     const sys = stub.chats[1].req.messages
       .filter(m => m.role === 'system')
       .map(m => (typeof m.content === 'string' ? m.content : ''));
     const ctxBlock = sys.find(c => c.startsWith('Relevant context retrieved'));
-    assert.ok(ctxBlock, 'the retrieved-context block is present on turn 2');
+    assert.ok(ctxBlock, 'the retrieved-context block is present in the later conversation');
     assert.match(ctxBlock, /zephyrantine/);
+  });
+
+  it('does NOT replay the live thread back into its own context block', async () => {
+    build();
+    host.setMemoryService(new MemoryService({ mode: 'sqlite', sqlite: new FakeMemoryBackend() }));
+    host.addOrReplace(await defStore.upsert(sampleDef()));
+    await host.get('alice').onMessage({ message: 'remember zephyrantine dosage' });
+    await host.get('alice').onMessage({ message: 'what about zephyrantine' });
+    const sys = stub.chats[1].req.messages
+      .filter(m => m.role === 'system')
+      .map(m => (typeof m.content === 'string' ? m.content : ''));
+    assert.ok(!sys.some(c => c.startsWith('Relevant context retrieved')),
+      'same-thread history is already in the transcript; re-injecting it is pure token cost');
   });
 
   it('a MemoryService in sqlite mode never blocks the turn (record + getContext both local)', async () => {

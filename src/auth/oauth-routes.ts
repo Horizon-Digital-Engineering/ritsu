@@ -2,6 +2,7 @@ import { type Express, type Request, type Response, urlencoded } from 'express';
 import { z } from 'zod';
 import type { OAuthStore } from './oauth-store.js';
 import type { TokenStore } from './token-store.js';
+import { RateLimiter } from '../util/rate-limit.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { html, sendHtml, type SafeHtml } from '../util/safe-html.js';
@@ -128,23 +129,12 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
   // which is enough for any real human setup but expensive enough to
   // dissuade flood-registration.
   const DCR_MAX_PER_IP = deps.settings?.getNumber('oauth.dcr_max_per_ip_hour', 5) ?? 5;
-  const dcrBuckets = new Map<string, { count: number; resetAt: number }>();
+  const dcrLimiter = new RateLimiter(DCR_WINDOW_MS, DCR_MAX_PER_IP);
   app.use('/oauth/register', (req, res, next) => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const now = Date.now();
-    const bucket = dcrBuckets.get(ip);
-    if (!bucket || bucket.resetAt < now) {
-      dcrBuckets.set(ip, { count: 1, resetAt: now + DCR_WINDOW_MS });
-      next();
-      return;
-    }
-    bucket.count++;
-    if (bucket.count > DCR_MAX_PER_IP) {
-      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
-      res.status(429).json({ error: 'rate limit exceeded', retry_after_s: Math.ceil((bucket.resetAt - now) / 1000) });
-      return;
-    }
-    next();
+    const retryAfter = dcrLimiter.hit(req.ip ?? req.socket.remoteAddress ?? 'unknown');
+    if (retryAfter === null) { next(); return; }
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({ error: 'rate limit exceeded', retry_after_s: retryAfter });
   });
 
   app.post('/oauth/register', (req: Request, res: Response) => {
@@ -205,23 +195,12 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
 
   const OAUTH_WINDOW_MS = 60 * 1000;
   const OAUTH_MAX_PER_IP = deps.settings?.getNumber('oauth.max_per_ip_minute', 60) ?? 60;
-  const oauthBuckets = new Map<string, { count: number; resetAt: number }>();
+  const oauthLimiter = new RateLimiter(OAUTH_WINDOW_MS, OAUTH_MAX_PER_IP);
   const oauthRateLimit = (req: Request, res: Response, next: () => void): void => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const now = Date.now();
-    const bucket = oauthBuckets.get(ip);
-    if (!bucket || bucket.resetAt < now) {
-      oauthBuckets.set(ip, { count: 1, resetAt: now + OAUTH_WINDOW_MS });
-      next();
-      return;
-    }
-    bucket.count++;
-    if (bucket.count > OAUTH_MAX_PER_IP) {
-      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
-      res.status(429).json({ error: 'rate limit exceeded', retry_after_s: Math.ceil((bucket.resetAt - now) / 1000) });
-      return;
-    }
-    next();
+    const retryAfter = oauthLimiter.hit(req.ip ?? req.socket.remoteAddress ?? 'unknown');
+    if (retryAfter === null) { next(); return; }
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({ error: 'rate limit exceeded', retry_after_s: retryAfter });
   };
   app.use('/oauth/authorize', oauthRateLimit);
   app.use('/oauth/token',     oauthRateLimit);

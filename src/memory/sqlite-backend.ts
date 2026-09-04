@@ -54,7 +54,7 @@ interface RawRow {
   event_time: number; ingest_time: number; source: string; source_ref: string | null;
   user_id: string; project_id: string | null; thread_id: string | null; mode: string | null;
   prev_source_ref: string | null;
-  importance: number | null; supersedes: string | null; acl: string | null;
+  supersedes: string | null; acl: string | null;
   ttl: number | null; payload: string | null;
 }
 
@@ -160,7 +160,13 @@ export class SqliteMemoryBackend implements MemoryBackend {
     scope: Scope, query: string, opts: { budget?: number; limit?: number } = {},
   ): Promise<AssembledContext> {
     const limit = opts.limit ?? 50;
-    const candidates = await this.query(scope, { limit: LITE_CANDIDATE_CAP });
+    // Memory means OTHER conversations. The live thread is already in the
+    // transcript, so it is EXCLUDED here rather than scoped to — matching
+    // flashback. A positive thread_id filter returns only what the caller
+    // just said, back to itself.
+    const { thread_id: live, ...crossThread } = scope;
+    const candidates = (await this.query(crossThread, { limit: LITE_CANDIDATE_CAP }))
+      .filter(r => live == null || r.thread_id !== live);
     // De-duped query terms, matched at WORD boundaries (so "at" doesn't hit
     // "cat" and a repeated term can't inflate the score).
     const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];

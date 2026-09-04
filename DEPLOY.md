@@ -73,7 +73,7 @@ sudo -u ritsu -H claude login
 
 It prints a URL; open it on whatever machine has a browser, complete the device-code flow. The credentials land at `/home/ritsu/.claude/.credentials.json`.
 
-Skip this only if you've set `ANTHROPIC_API_KEY` in `/etc/ritsu/env` instead (incurs API charges per call vs. $0 marginal on a Max plan).
+For metered calls, create an `api`-runtime agent with a key from the admin UI's API Keys tab instead — `ANTHROPIC_API_KEY` is deliberately stripped from the runtime's environment.
 
 ## Configuration
 
@@ -85,11 +85,10 @@ Skip this only if you've set `ANTHROPIC_API_KEY` in `/etc/ritsu/env` instead (in
 | `MCP_HOST` | 127.0.0.1 | Bind. Set to a private interface (Tailscale, WireGuard, internal LAN) for remote clients. |
 | `MCP_REQUIRE_AUTH` | auto | Set to `on` once you've minted at least one token — fail closed even if the token table is empty |
 | `ADMIN_PORT` | 7334 | Admin UI + ops endpoints |
-| `ADMIN_HOST` | 127.0.0.1 | **Do not expose** — admin has no auth in V1. SSH-tunnel to manage. |
+| `ADMIN_HOST` | 127.0.0.1 | Every `/admin` route requires a bearer admin token. Keep the bind private anyway — the network boundary is defence in depth, not the auth. |
 | `DB_PATH` | ./data/ritsu.db | All state in one file |
 | `LOG_LEVEL` | info | Runtime-changeable from the admin UI Logs tab |
-| `LITELLM_URL` | http://localhost:4000 | Only if any agent uses dispatcher: 'litellm' |
-| `ANTHROPIC_API_KEY` | _unset_ | Leave unset to use the Max-plan CLI auth |
+| `RITSU_BACKUP_DIR` | _(next to the DB)_ | Where snapshots are written |
 
 ## Verify
 

@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
 import type { MemoryStore } from '../../memory-store.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
 
 export const MONITOR_MCP_NAME = 'agent_monitor';
@@ -64,18 +65,22 @@ export function monitorOptOutMessage(targetAgentId: string): string {
     '(its allow_monitor_read is off), so its conversations and memory are opaque to you.';
 }
 
-export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDeps) {
+export function buildAgentMonitorMcp(
+  callerAgentId: string,
+  deps: AgentMonitorDeps,
+  gate: McpGateContext | null = null,
+) {
   return createSdkMcpServer({
     name: MONITOR_MCP_NAME,
     version: '0.1.0',
     tools: [
       tool(
         'list_agents',
-        'List every agent registered on this server (id, name, description, enabled, dispatcher). ' +
+        'List every agent registered on this server (id, name, description, enabled, runtime:provider/model). ' +
           'Unlike mcp__agent_comms__list_agents, this is NOT filtered to your can_call allowlist — ' +
           'monitoring sees the whole swarm.',
         {},
-        async () => {
+        async () => gateMcpTool(gate, MONITOR_TOOL_NAMES[0], {}, async () => {
           const all = await deps.defStore.list();
           const text = all.length === 0
             ? '(no agents registered)'
@@ -87,7 +92,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
                 .join('\n');
           logger.info('agent-monitor.list_agents', { by: callerAgentId, count: all.length });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
       tool(
         'list_conversations',
@@ -99,7 +104,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           kind: z.enum(['human', 'agent', 'all']).default('all'),
           limit: z.number().int().positive().max(200).default(50),
         },
-        async ({ agent_id, kind, limit }) => {
+        async ({ agent_id, kind, limit }) => gateMcpTool(gate, MONITOR_TOOL_NAMES[1], { agent_id, kind, limit }, async () => {
           // Targeted: the named agent must have opted in. Swarm-wide: keep only
           // conversations whose primary agent opted in (or the caller's own).
           if (agent_id && !(await monitorReadAllowed(deps.defStore, callerAgentId, agent_id))) {
@@ -123,7 +128,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
             by: callerAgentId, target: agent_id ?? null, count: summaries.length,
           });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
       tool(
         'read_conversation',
@@ -133,7 +138,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           conversation_id: z.number().int().positive(),
           limit: z.number().int().positive().max(500).default(50),
         },
-        async ({ conversation_id, limit }) => {
+        async ({ conversation_id, limit }) => gateMcpTool(gate, MONITOR_TOOL_NAMES[2], { conversation_id, limit }, async () => {
           const owner = deps.conversations.agentIdOf(conversation_id);
           if (owner === null) {
             return { content: [{ type: 'text', text: `(conversation ${conversation_id} not found)` }] };
@@ -157,7 +162,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
             by: callerAgentId, conv: conversation_id, count: msgs.length,
           });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
       tool(
         'read_memory',
@@ -167,7 +172,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           agent_id: z.string().describe('Target agent whose memories to read.'),
           limit: z.number().int().positive().max(500).default(50),
         },
-        async ({ agent_id, limit }) => {
+        async ({ agent_id, limit }) => gateMcpTool(gate, MONITOR_TOOL_NAMES[3], { agent_id, limit }, async () => {
           if (!(await monitorReadAllowed(deps.defStore, callerAgentId, agent_id))) {
             return { content: [{ type: 'text', text: monitorOptOutMessage(agent_id) }] };
           }
@@ -178,7 +183,7 @@ export function buildAgentMonitorMcp(callerAgentId: string, deps: AgentMonitorDe
           const text = mems.map(m => `[${m.id}] ${m.content}`).join('\n');
           logger.info('agent-monitor.read_memory', { by: callerAgentId, target: agent_id, count: mems.length });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
     ],
   });

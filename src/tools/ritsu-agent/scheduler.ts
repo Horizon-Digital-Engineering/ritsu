@@ -9,10 +9,9 @@
  *    `script`. Arbitrary commands on a timer is a blast radius nobody asked
  *    for, and the operator can still create those directly.
  *  - **No recursion.** `insideJobRun` suppresses these tools during a scheduled
- *    turn, so one fire cannot create more work. Nothing sets that flag yet —
- *    the runner has no channel to pass it through `onMessage` — so these tools
- *    must stay unwired until it does. A scheduled turn with `schedule_create`
- *    can create a job per tool round, every round, with no cap.
+ *    turn, so one fire cannot create more work. The dispatcher sets it from the
+ *    `scheduler:<jobId>` caller label. Without it a scheduled turn could create
+ *    a job per tool round, every round, with no cap.
  *
  * Schema patterns are bounded (`{0,63}`, not `*`). Some providers reject tool
  * schemas containing unbounded quantifiers outright, and the failure surfaces

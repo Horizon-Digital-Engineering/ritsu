@@ -96,9 +96,37 @@ export function loadEmailConfig(secrets: SecretStore): EmailConfig | null {
   };
 }
 
+/**
+ * The slice of ImapFlow / nodemailer these functions actually use. Declared
+ * narrowly so a test can stand in — every call below opens a real socket to a
+ * mail server, which must never happen in a test run.
+ */
+export interface ImapMessage {
+  uid: number;
+  envelope?: { subject?: string; date?: Date | string; from?: Array<{ name?: string; address?: string }> };
+  flags?: Set<string>;
+  source?: Buffer;
+  size?: number;
+}
+
+export interface ImapClient {
+  connect(): Promise<void>;
+  mailboxOpen(name: string): Promise<{ exists: number }>;
+  fetch(range: string, opts: Record<string, unknown>): AsyncIterable<ImapMessage>;
+  fetchOne(uid: string, opts: Record<string, unknown>, o2: Record<string, unknown>): Promise<ImapMessage | false | null>;
+  logout(): Promise<void>;
+}
+
+export interface SmtpTransport {
+  sendMail(opts: Record<string, unknown>): Promise<{ messageId: string }>;
+}
+
+export type ImapClientFactory = (cfg: EmailConfig) => ImapClient;
+export type SmtpTransportFactory = (cfg: EmailConfig) => SmtpTransport;
+
 /** Build an ImapFlow client. secure=true for 993 (implicit TLS); STARTTLS is
  *  negotiated automatically for 143. logger off so creds never hit our logs. */
-function imapClient(cfg: EmailConfig): ImapFlow {
+function imapClient(cfg: EmailConfig): ImapClient {
   const secure = cfg.imap.port === 993;
   return new ImapFlow({
     host: cfg.imap.host,
@@ -117,8 +145,10 @@ function imapClient(cfg: EmailConfig): ImapFlow {
 }
 
 /** Read the most recent `limit` envelopes from INBOX, newest first. */
-export async function readInbox(cfg: EmailConfig, limit = 15): Promise<EmailSummary[]> {
-  const client = imapClient(cfg);
+export async function readInbox(
+  cfg: EmailConfig, limit = 15, makeClient: ImapClientFactory = imapClient,
+): Promise<EmailSummary[]> {
+  const client = makeClient(cfg);
   await client.connect();
   try {
     const mbox = await client.mailboxOpen('INBOX');
@@ -146,8 +176,10 @@ export async function readInbox(cfg: EmailConfig, limit = 15): Promise<EmailSumm
 
 /** Fetch + parse one message by UID. Returns the plain-text body (HTML is
  *  stripped to text by mailparser). */
-export async function readMessage(cfg: EmailConfig, uid: number): Promise<EmailMessage | null> {
-  const client = imapClient(cfg);
+export async function readMessage(
+  cfg: EmailConfig, uid: number, makeClient: ImapClientFactory = imapClient,
+): Promise<EmailMessage | null> {
+  const client = makeClient(cfg);
   await client.connect();
   try {
     await client.mailboxOpen('INBOX');
@@ -180,9 +212,9 @@ export async function readMessage(cfg: EmailConfig, uid: number): Promise<EmailM
   }
 }
 
-/** Send a message via SMTP. Returns the provider message id. */
-export async function sendEmail(cfg: EmailConfig, input: SendEmailInput): Promise<{ messageId: string }> {
-  const transporter = nodemailer.createTransport({
+/** Build the SMTP transport. */
+function smtpTransport(cfg: EmailConfig): SmtpTransport {
+  return nodemailer.createTransport({
     host: cfg.smtp.host,
     port: cfg.smtp.port,
     secure: cfg.smtp.port === 465, // implicit TLS on 465; STARTTLS on 587
@@ -197,6 +229,13 @@ export async function sendEmail(cfg: EmailConfig, input: SendEmailInput): Promis
     greetingTimeout: SMTP_GREETING_TIMEOUT,
     socketTimeout: SMTP_SOCKET_TIMEOUT,
   });
+}
+
+/** Send a message via SMTP. Returns the provider message id. */
+export async function sendEmail(
+  cfg: EmailConfig, input: SendEmailInput, makeTransport: SmtpTransportFactory = smtpTransport,
+): Promise<{ messageId: string }> {
+  const transporter = makeTransport(cfg);
   const info = await transporter.sendMail({
     from: cfg.from,
     to: input.to,

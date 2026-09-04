@@ -49,7 +49,7 @@ What ritsu kills:
 
 What's baked in:
 
-- **Per-agent isolation enforced *before* tools fire.** `tools_allowlist` + per-path workspace permissions go through the SDK's `canUseTool` callback. An agent with no `Bash` and no writable workspace can't exfiltrate files even if perfectly socially-engineered.
+- **Per-agent isolation enforced *before* tools fire.** `tools_allowlist` + per-path workspace permissions are checked by the `api` runtime's own tool loop, and by the `PreToolUse` hook on `direct`. An agent with no `Bash` and no writable workspace can't exfiltrate files even if perfectly socially-engineered — with one caveat worth knowing: the vendor SDK runs its own built-ins without consulting the hook, so hard filesystem containment is an `api`-runtime guarantee. See [`docs/threat-model.md`](./docs/threat-model.md).
 - **AES-256-GCM secrets at rest.** Bot tokens, API keys; master key separable from the DB dir.
 - **Strict CSP, audit log, OAuth 2.1 + DCR + PKCE + RFC 8707** — full posture in [`docs/threat-model.md`](./docs/threat-model.md).
 - **Two runtime tiers.** `direct` rides a vendor agent runtime on a subscription (Claude via `@anthropic-ai/claude-agent-sdk`, $0 per turn; more vendors as their runtimes ship). `api` runs ritsu's own tool loop against a metered key — Anthropic, OpenAI, and Gemini through their official SDKs, Grok via xAI's OpenAI-compatible API, plus OpenRouter, a local LiteLLM proxy, or any custom OpenAI-compatible endpoint. Same tools, same memory, same UI.
@@ -111,10 +111,10 @@ Bind-mounts the host's `~/.claude/` so a local session is available if you have 
 |---|---|
 | `GET /mcp` (port 7333) | Real `@modelcontextprotocol/sdk` Streamable HTTP transport. Bearer-token-gated (`rt_*`). |
 | `POST /oauth/{register,authorize,token}` | RFC 7591/8414/9728/8707 OAuth 2.1 + DCR + PKCE for spec-compliant clients (claude.ai web, Claude Desktop Connectors). |
-| `/admin` (port 7334) | Tabbed UI: Dashboard, Agents, Workspaces, Memories, Conversations, Tools, MCP, Channels, Tokens, API Keys, OAuth Clients, Logs, Audit. |
+| `/admin` (port 7334) | Tabbed UI: Dashboard, Agents, Workspaces, Memories, Conversations, Approvals, Tools, Plugins, Extensions, MCP, Channels, Tokens, API Keys, OAuth Clients, System, Logs, Audit. |
 | `GET /healthz`, `/readyz`, `/version` | Liveness / readiness. |
 | `GET /metrics` | Prometheus exposition. |
-| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `url`, `doctor`. Full reference: [`docs/cli.md`](./docs/cli.md). |
+| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `master-key`, `backup`, `url`, `doctor`. Full reference: [`docs/cli.md`](./docs/cli.md). |
 
 ### MCP tools (current)
 
@@ -125,6 +125,10 @@ Each agent additionally has these in-process per-agent MCP tools:
 - `mcp__agent_comms__{ask_agent,list_agents}` — gated by `can_call` allowlist, depth-3 loop guard
 - `mcp__agent_admin__*` — only if the agent has the `manage_agents` capability
 - `mcp__agent_monitor__*` — only if the agent has the `monitor_agents` capability
+- `mcp__scheduler__*` — self-scheduled follow-ups; suppressed inside a scheduled run
+- `mcp__email__*` / `mcp__social__*` — only with the `crm` / `social` capability; sending and posting always block on operator approval
+
+On the `api` runtime the same groups are native function calls, named `memory_remember`, `agent_comms_ask_agent`, `email_send_email`, and so on.
 
 ### Comm channels
 
@@ -147,9 +151,10 @@ src/
   auth/                             token-store, api-key-store, oauth-store, oauth-routes
   admin/                            express CRUD + UI (ui.html / app.js / app.css)
   agents/                           AgentBase, GenericAgent, type registry
-  model/                            dispatcher interface, claude-direct, litellm, ritsu-agent
+  model/                            dispatcher interface, claude-direct, ritsu-agent (+ provider SDK clients)
   tools/
-    mcp-internal/                   per-agent in-process MCP servers (memory + comms + admin + monitor)
+    mcp-internal/                   per-agent in-process MCP servers (memory, comms, scheduler,
+                                    admin, monitor, email, social)
     ritsu-agent/                    native FS/process/network tools for the ritsu-agent runtime
     permissions.ts                  shared tool→permission map + checkToolUse
   cli/                              `ritsu` operator CLI
@@ -190,7 +195,7 @@ See [`SECURITY.md`](./SECURITY.md) (reporting + posture summary) and [`docs/thre
 - Scoped bearer tokens (`rt_*` MCP, `rat_*` admin) — sha256 at rest, optional `expires_at`, audit-logged.
 - OAuth 2.1 + DCR + PKCE + RFC 8707 audience binding for spec-compliant clients.
 - AES-256-GCM secrets at rest with master key separation (`RITSU_MASTER_KEY` env or `/etc/ritsu/master-key`).
-- Per-agent isolation enforced by the SDK's `canUseTool` BEFORE tools fire.
+- Per-agent isolation enforced BEFORE tools fire (the api runtime's own loop; the `PreToolUse` hook on direct).
 - Strict CSP (`script-src 'self'; style-src 'self'`), `X-Frame-Options: DENY`, body-size + per-IP rate limits.
 - Full audit trail: per-tool MCP calls in `mcp_token_usage`, per-admin-action mutations in `admin_audit` with body sha256.
 

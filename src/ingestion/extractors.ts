@@ -2,8 +2,8 @@
  * Extractors turn a raw document (text or image) into candidate structured
  * data for a doc type. Injected into the pipeline so it's swappable:
  *   - StaticExtractor: canned output, for tests + wiring the flow.
- *   - SdkVisionExtractor: a real one-shot vision/LLM call over the Max-plan SDK
- *     ($0 marginal) that reads the doc and returns JSON matching the doc type.
+ *   - SdkVisionExtractor: a real one-shot vision/LLM call over the direct
+ *     runtime's SDK that reads the doc and returns JSON matching the doc type.
  * The pipeline validates whatever comes back against the doc-type zod schema,
  * so a bad extraction fails the record rather than corrupting the domain.
  */

@@ -96,8 +96,8 @@ textarea { min-height: 8rem; resize: vertical; }
 .form-actions { grid-column: 2; display: flex; gap: 8px; }
 
 .badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.7rem; border: 1px solid var(--line); color: var(--muted); }
-.badge.dispatcher-claude-direct { color: #c89bff; border-color: #3b2d4f; }
-.badge.dispatcher-litellm { color: #5ad17a; border-color: #2c4a36; }
+.badge.runtime-direct { color: #c89bff; border-color: #3b2d4f; }
+.badge.runtime-api { color: #5ad17a; border-color: #2c4a36; }
 .badge.level-debug { color: var(--muted); }
 .badge.level-info { color: var(--accent); }
 .badge.level-warn { color: var(--warn); border-color: #4a3c2c; }

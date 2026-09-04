@@ -4,7 +4,10 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { AgentDefinitionSchema, AgentDefinitionPatchSchema, RuntimeSchema, MemoryBackendSchema, DIRECT_PROVIDERS, API_PROVIDERS } from './admin/schema.js';
+import {
+  AgentDefinitionSchema, AgentDefinitionPatchSchema, RuntimeSchema, MemoryBackendSchema,
+  DIRECT_PROVIDERS, API_PROVIDERS, clearOperatorOnlyFields, preserveOperatorOnlyFields,
+} from './admin/schema.js';
 import type { AgentHost } from './agent-host.js';
 import type { MemoryStore } from './memory-store.js';
 import type { AgentDefinitionStore } from './agent-definition-store.js';
@@ -12,6 +15,8 @@ import type { TokenStore } from './auth/token-store.js';
 import type { OAuthStore } from './auth/oauth-store.js';
 import { mountOAuthRoutes, RESOURCE_PATH } from './auth/oauth-routes.js';
 import { metrics } from './metrics.js';
+import { RateLimiter } from './util/rate-limit.js';
+import type { AuthMode } from './config.js';
 import { logger } from './util/log.js';
 import { stripTrailingSlashes } from './util/path-utils.js';
 
@@ -37,21 +42,6 @@ import { stripTrailingSlashes } from './util/path-utils.js';
  *   GET /readyz    — ready (db open, agents loaded)
  *   GET /version   — name, version, features
  */
-/**
- * Auth mode:
- *   - 'auto'  (default): require auth iff at least one active token exists.
- *             First-run / dev: open. Mint a token in the admin UI → auto-locks.
- *   - 'on':   always require.
- *   - 'off':  never require (use only when you genuinely want MCP open, e.g.
- *             a fully trusted private network).
- */
-export type AuthMode = 'auto' | 'on' | 'off';
-
-export function parseAuthMode(raw: string | undefined): AuthMode {
-  if (raw === 'true' || raw === 'on' || raw === 'required') return 'on';
-  if (raw === 'false' || raw === 'off' || raw === 'open') return 'off';
-  return 'auto';
-}
 
 export interface CreateMcpServerDeps {
   host: AgentHost;
@@ -117,25 +107,12 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
   // unauthenticated credential-stuffing loop should be unthrottled. Mirrors the
   // admin limiter. OAuth/DCR endpoints have their own limiter; health lives on
   // the admin port.
-  const MCP_RATE_WINDOW_MS = 60_000;
-  const MCP_RATE_MAX = 120;
-  const mcpBuckets = new Map<string, { count: number; resetAt: number }>();
+  const mcpLimiter = new RateLimiter(60_000, 120);
   app.use('/mcp', (req, res, next) => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const now = Date.now();
-    const bucket = mcpBuckets.get(ip);
-    if (!bucket || bucket.resetAt < now) {
-      mcpBuckets.set(ip, { count: 1, resetAt: now + MCP_RATE_WINDOW_MS });
-      next();
-      return;
-    }
-    bucket.count++;
-    if (bucket.count > MCP_RATE_MAX) {
-      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
-      res.status(429).json({ jsonrpc: '2.0', error: { code: -32000, message: 'rate limit exceeded' }, id: null });
-      return;
-    }
-    next();
+    const retryAfter = mcpLimiter.hit(req.ip ?? req.socket.remoteAddress ?? 'unknown');
+    if (retryAfter === null) { next(); return; }
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({ jsonrpc: '2.0', error: { code: -32000, message: 'rate limit exceeded' }, id: null });
   });
 
   // MCP port serves the protocol surface (/mcp) plus the OAuth 2.1 endpoints
@@ -158,7 +135,14 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
   const authState = (): 'required' | 'open' => {
     if (deps.authMode === 'on') return 'required';
     if (deps.authMode === 'off') return 'open';
-    return deps.tokens.hasAnyActive('mcp') ? 'required' : 'open';
+    // `auto` means open only on a genuinely fresh box. Scoping this to 'mcp'
+    // tokens left a fully provisioned host serving /mcp unauthenticated: the
+    // token minted on first boot is admin-scoped, so the check stayed false
+    // however much the operator had set up, and a configured OAuth stack was
+    // bypassed entirely. Any token at all — or an OAuth issuer — means
+    // credentials exist, so close it.
+    if (deps.publicUrl) return 'required';
+    return deps.tokens.hasAnyActive() ? 'required' : 'open';
   };
 
   // Custom bearer middleware. Accepts EITHER:
@@ -242,19 +226,20 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
   app.post('/mcp', async (req: Request, res: Response) => {
     let server: McpServer | undefined;
     let transport: StreamableHTTPServerTransport | undefined;
+    // Registered before anything can throw: connect() or handleRequest()
+    // failing used to skip teardown entirely, leaking a server + transport
+    // per malformed request. Both close() methods return promises but this
+    // is a sync callback, so .catch() is a noop sink — an unhandled
+    // rejection must not escape a path the caller already detached from.
+    res.on('close', () => {
+      transport?.close().catch(() => undefined);
+      server?.close().catch(() => undefined);
+    });
     try {
       server = buildMcpServer(deps);
       transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
-      res.on('close', () => {
-        // Both close() methods return promises but we're inside a sync
-        // res.on('close') callback. Explicit .catch() swallows any
-        // failure (a noop sink) so an unhandled-rejection doesn't bubble
-        // out of a teardown path the caller has already detached from.
-        transport?.close().catch(() => undefined);
-        server?.close().catch(() => undefined);
-      });
     } catch (err) {
       logger.error('mcp.handler.error', { err: (err as Error).message });
       if (!res.headersSent) {
@@ -399,10 +384,10 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         provider: z.string().default('claude').describe(`Provider under the runtime. direct: ${DIRECT_PROVIDERS.join('/')}. api: ${API_PROVIDERS.join('/')}.`),
         model: z.string().describe('Model name passed to the provider (e.g. "claude-sonnet-4-6", "gpt-5.2", "gemini-2.5-flash").'),
         memory_backend: MemoryBackendSchema.default('sqlite').describe('Memory backend (sqlite for V1).'),
-        tools_allowlist: z.array(z.string()).default([]).describe('Reserved for V2 tool gating; pass [].'),
+        tools_allowlist: z.array(z.string()).default([]).describe('Tool names the agent may use (Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch). This is the live tool gate on both runtimes — an empty list means the agent has no tools at all.'),
         can_call: z.array(z.string()).default([]).describe('Agent ids this agent is allowed to ask_agent. Empty = no inter-agent calls.'),
-        api_key_ref: z.number().int().positive().nullable().default(null).describe('api_keys.id for api-runtime providers. Null for direct runtime and keyless litellm/custom endpoints.'),
-        provider_options: z.record(z.string(), z.unknown()).default({}).describe('Provider-specific options (temperature, max_tokens, base_url, etc).'),
+        api_key_ref: z.number().int().positive().nullable().default(null).describe('OPERATOR-ONLY: ignored here and always stored as null. Naming a stored credential plus a base_url is a key-exfiltration primitive, so only the admin UI may set it.'),
+        provider_options: z.record(z.string(), z.unknown()).default({}).describe('OPERATOR-ONLY: ignored here and always stored as {}. See api_key_ref.'),
         capabilities: z.array(z.enum(['manage_agents', 'monitor_agents'])).default([])
           .describe('Per-agent capabilities. Empty by default.'),
         approval_tools: z.array(z.string()).default([])
@@ -424,6 +409,11 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         // a manage_agents/monitor_agents agent would be admin-equivalent power —
         // so MCP-created agents get NONE. Grant capabilities via the admin UI.
         validated.capabilities = [];
+        // Same reasoning, and a sharper edge: api_key_ref names a stored
+        // credential and provider_options carries base_url, which is where the
+        // decrypted key gets sent. Together they let an MCP caller point an
+        // agent at any host and receive every key by id. Operator-only.
+        clearOperatorOnlyFields(validated);
         const existing = await deps.defStore.read(validated.id);
         if (existing) throw new Error(`agent ${validated.id} already exists; use update_agent`);
         const saved = await deps.defStore.upsert(validated);
@@ -471,7 +461,8 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
         }
         const patch = AgentDefinitionPatchSchema.parse(args.patch);
         delete patch.capabilities;
-        const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id, capabilities: current.capabilities });
+        const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id });
+        preserveOperatorOnlyFields(current, merged);
         const saved = await deps.defStore.upsert(merged);
         deps.host.addOrReplace(saved);
         return { structured: saved, text: `updated ${saved.id}` };

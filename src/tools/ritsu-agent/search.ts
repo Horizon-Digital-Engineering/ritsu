@@ -11,13 +11,10 @@
  */
 import { asString } from '../../util/cast.js';
 import { stripTrailingSlashes } from '../../util/path-utils.js';
+import { validateUrl } from './ssrf-guard.js';
 
 export const SEARCH_PROVIDERS = ['searxng', 'brave', 'tavily', 'serper'] as const;
 export type SearchProvider = (typeof SEARCH_PROVIDERS)[number];
-
-/** Providers that authenticate with a key. searxng is self-hosted and takes
- *  a URL instead, which is why it is the one that works with nothing bought. */
-export const KEYED_PROVIDERS: readonly SearchProvider[] = ['brave', 'tavily', 'serper'];
 
 export interface SearchHit {
   title: string;
@@ -40,7 +37,10 @@ export function isSearchProvider(v: string): v is SearchProvider {
 /** Human-readable reason the config can't be used, or null when it can. */
 export function searchConfigError(cfg: SearchConfig): string | null {
   if (cfg.provider === 'searxng') {
-    return cfg.url?.trim() ? null : 'searxng selected but no instance URL is set';
+    const url = cfg.url?.trim();
+    if (!url) return 'searxng selected but no instance URL is set';
+    const v = validateUrl(url);
+    return v.ok ? null : `searxng URL rejected: ${v.reason}`;
   }
   return cfg.apiKey?.trim() ? null : `${cfg.provider} selected but no API key is set`;
 }

@@ -22,6 +22,7 @@
  */
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import type { JobStore } from '../../scheduler/store.js';
 import { createJob, listJobs, removeJob, pauseJob } from '../../scheduler/agent-ops.js';
 import { logger } from '../../util/log.js';
@@ -42,7 +43,11 @@ export const SCHEDULER_TOOL_NAMES = [
  */
 const JOB_ID = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'lowercase kebab-case, max 64 chars');
 
-export function buildAgentSchedulerMcp(agentId: string, store: JobStore) {
+export function buildAgentSchedulerMcp(
+  agentId: string,
+  store: JobStore,
+  gate: McpGateContext | null = null,
+) {
   return createSdkMcpServer({
     name: SCHEDULER_MCP_NAME,
     version: '0.1.0',
@@ -69,11 +74,11 @@ export function buildAgentSchedulerMcp(agentId: string, store: JobStore) {
           channel_ids: z.array(z.number().int()).max(20).optional()
             .describe('Channels to deliver to. Omit to use every running channel.'),
         },
-        async (args) => {
+        async (args) => gateMcpTool(gate, SCHEDULER_TOOL_NAMES[0], args, async () => {
           const text = createJob(store, agentId, args);
           logger.info('scheduler.agent-create', { agent_id: agentId, job: args.id, kind: args.kind });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
       tool(
         'schedule_list',
@@ -91,19 +96,19 @@ export function buildAgentSchedulerMcp(agentId: string, store: JobStore) {
         'schedule_remove',
         'Delete a job you created, and its run history. To stop one temporarily, use schedule_pause.',
         { id: JOB_ID },
-        async ({ id }) => {
+        async ({ id }) => gateMcpTool(gate, SCHEDULER_TOOL_NAMES[2], { id }, async () => {
           const text = removeJob(store, agentId, id);
           logger.info('scheduler.agent-remove', { agent_id: agentId, job: id });
           return { content: [{ type: 'text', text }] };
-        },
+        }),
       ),
       tool(
         'schedule_pause',
         'Stop a job firing without deleting it. Pass resume: true to start it again.',
         { id: JOB_ID, resume: z.boolean().optional() },
-        async ({ id, resume }) => ({
+        async ({ id, resume }) => gateMcpTool(gate, SCHEDULER_TOOL_NAMES[3], { id, resume }, async () => ({
           content: [{ type: 'text', text: pauseJob(store, agentId, id, resume === true) }],
-        }),
+        })),
       ),
     ],
   });

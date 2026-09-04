@@ -62,13 +62,20 @@ export interface RaToolCall {
 export interface RaTool {
   name: string;
   description: string;
-  /** Standard JSON Schema, sent as `parameters` to OpenAI-compat providers
-   *  and as `input_schema` to Anthropic (Phase B+, future). */
+  /** Standard JSON Schema, sent as `parameters` to OpenAI-compatible providers
+   *  and as `input_schema` to the Anthropic client. */
   parameters: Record<string, unknown>;
   /** Pure function: takes the parsed args, returns the result text the
    *  model will see. Errors should be caught + stringified so the model
    *  can still continue (it sees the error and decides what to do). */
   handler: (args: Record<string, unknown>) => Promise<string>;
+  /**
+   * This handler raises its own operator approval on every call, so the loop
+   * must NOT gate it as well. Without this an operator who also names the tool
+   * in `approval_tools` gets two identical cards for one action, and has to
+   * approve twice. The tool still cannot act unapproved — it owns the gate.
+   */
+  selfGated?: boolean;
 }
 
 export interface RaResponseUsage {

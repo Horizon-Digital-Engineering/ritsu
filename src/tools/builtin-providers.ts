@@ -28,14 +28,14 @@ export function commsProvider(deps: AgentCommsDeps): McpProvider {
 export function adminProvider(deps: AgentAdminDeps): McpProvider {
   return {
     namespace: ADMIN_MCP_NAME,
-    build: (ctx) => ({ server: buildAgentAdminMcp(ctx.agentId, deps), toolNames: [...ADMIN_TOOL_NAMES], gatedTools: [] }),
+    build: (ctx) => ({ server: buildAgentAdminMcp(ctx.agentId, deps, ctx.gate), toolNames: [...ADMIN_TOOL_NAMES], gatedTools: [] }),
   };
 }
 
 export function monitorProvider(deps: AgentMonitorDeps): McpProvider {
   return {
     namespace: MONITOR_MCP_NAME,
-    build: (ctx) => ({ server: buildAgentMonitorMcp(ctx.agentId, deps), toolNames: [...MONITOR_TOOL_NAMES], gatedTools: [] }),
+    build: (ctx) => ({ server: buildAgentMonitorMcp(ctx.agentId, deps, ctx.gate), toolNames: [...MONITOR_TOOL_NAMES], gatedTools: [] }),
   };
 }
 
@@ -43,7 +43,7 @@ export function emailProvider(secrets: SecretStore, approvals: ApprovalStore): M
   return {
     namespace: EMAIL_MCP_NAME,
     build: (ctx) => ({
-      server: buildAgentEmailMcp({ agentId: ctx.agentId, secrets, approvals, conversationId: ctx.conversationId }),
+      server: buildAgentEmailMcp({ agentId: ctx.agentId, secrets, approvals, conversationId: ctx.conversationId, gate: ctx.gate }),
       toolNames: [...EMAIL_TOOL_NAMES],
       gatedTools: [],
     }),
@@ -54,7 +54,7 @@ export function socialProvider(secrets: SecretStore, approvals: ApprovalStore): 
   return {
     namespace: SOCIAL_MCP_NAME,
     build: (ctx) => ({
-      server: buildAgentSocialMcp({ agentId: ctx.agentId, secrets, approvals, conversationId: ctx.conversationId }),
+      server: buildAgentSocialMcp({ agentId: ctx.agentId, secrets, approvals, conversationId: ctx.conversationId, gate: ctx.gate }),
       toolNames: [...SOCIAL_TOOL_NAMES],
       gatedTools: [],
     }),
@@ -69,7 +69,7 @@ export function schedulerProvider(store: JobStore): McpProvider {
   return {
     namespace: SCHEDULER_MCP_NAME,
     build: (ctx) => ({
-      server: buildAgentSchedulerMcp(ctx.agentId, store),
+      server: buildAgentSchedulerMcp(ctx.agentId, store, ctx.gate),
       toolNames: ctx.insideJobRun ? [] : [...SCHEDULER_TOOL_NAMES],
       gatedTools: [],
     }),

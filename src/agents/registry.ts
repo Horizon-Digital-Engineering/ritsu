@@ -9,10 +9,10 @@ type AgentCtor = new (def: AgentDefinition, deps: AgentDeps) => AgentBase;
  * via the `type` field.
  *
  * Default and intended path: every agent uses 'generic'. The agent's behavior
- * is fully captured by its JSON definition (system_prompt, dispatcher, model).
+ * is fully captured by its definition (system_prompt, runtime, provider, model).
  *
  * Extensibility: if/when you need behavior that the prompt can't express
- * (custom memory shaping, dispatcher escalation per turn, specialized
+ * (custom memory shaping, runtime escalation per turn, specialized
  * retrieval, tool wiring), write a subclass of AgentBase and add an entry
  * here. Then JSON definitions can opt-in via `"type": "<your-type>"`.
  *

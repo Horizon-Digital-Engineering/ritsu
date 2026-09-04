@@ -90,6 +90,9 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
           ...this.opts.toolDeps,
           approvals: this.opts.approval?.store,
           conversationId: req.conversation_id ?? null,
+          // So a conditionally self-gating tool (ask_agent, which only asks on
+          // capability escalation) can tell whether the loop already asked.
+          gatedTools: this.opts.approval?.gatedTools ?? [],
           // A scheduled turn must not be able to schedule more work. Without
           // this the scheduling tools are present in a job run and one fire can
           // create a job per tool round, with no cap and no natural stop.
@@ -168,7 +171,9 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
     // Human-in-the-loop gate. We own this loop, so blocking here is reliable:
     // the tool does NOT run until the operator approves. On reject, the reason
     // goes back to the model as the tool result. No SDK / timeout to bypass us.
-    const gate = this.opts.approval;
+    // A self-gated tool has already promised to ask; gating here too would put
+    // two identical cards in front of the operator for one action.
+    const gate = tool.selfGated ? null : this.opts.approval;
     if (gate && gate.gatedTools.includes(call.function.name)) {
       logger.info('ra.approval.gate', { agent_id: gate.agentId, tool: call.function.name, conversation_id: conversationId });
       const decision = await gate.store.request({

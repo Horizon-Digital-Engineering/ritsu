@@ -31,9 +31,8 @@ import { logger } from '../util/log.js';
  * PreToolUse hook — canUseTool never sees them on the Max-plan subprocess path;
  * in-process MCP tools gate inside their own handlers.
  */
-/** SecretStore namespace + keys for the Claude subscription session. */
+/** SecretStore namespace for the subscription session token. */
 export const CLAUDE_NS = 'claude';
-export const CLAUDE_SECRET_KEYS = ['oauth_token'] as const;
 
 export interface ClaudeDirectOpts {
   /** The agent this dispatcher serves. Used to scope plugin tool calls. */

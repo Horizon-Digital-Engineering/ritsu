@@ -64,7 +64,45 @@ to an operator decision instead of a flat hard-deny.
   cannot escalate even if an operator clicks approve.
 - `escalation_approvable` defaults off, so existing agents keep the strict
   hard-deny behavior until an operator explicitly opts a specific agent in.
+- Operator-only agent fields (credentials, provider endpoint, capabilities,
+  gating flags) are no longer settable from any agent- or MCP-initiated write.
+- Fetched web pages are fenced as untrusted text, and web search runs through
+  the same guarded fetch path as WebFetch.
+- Every in-process tool group now honours `approval_tools`; previously some
+  groups accepted the setting and ignored it. Where a runtime genuinely cannot
+  enforce a gate, ritsu now says so — on save, in the agent form, and in the
+  log — instead of reporting the tool as gated.
 - Further hardening across the runtime, tool, auth, and plugin surfaces.
+
+### Fixed
+
+- **Restore is safe again.** The write-ahead log is cleared on restore and the
+  result is integrity-checked before the command reports success.
+- **Backups are verified and retention is honest.** A snapshot that fails its
+  integrity check is discarded, `keep` is floored at 1, retention orders on
+  sub-second mtime, and the boot snapshot is taken before migrations run.
+  `backup list` / `prune` no longer open the database at all.
+- **JSON export round-trips.** BLOB columns are base64-tagged instead of being
+  rendered as an unusable digit map, the file carries a format stamp, and
+  `ritsu backup import <export.json> <new.db>` rebuilds a database from one.
+  It writes a new file and refuses to overwrite: an export omits credentials by
+  design, so importing over a live database would leave it half-populated.
+- Cross-conversation recall works: memory retrieval now excludes the live
+  thread instead of scoping to it, on every backend.
+- Scheduling reaches `direct`-runtime agents; it was silently dropped in the
+  dispatcher option projection.
+- CRM (`crm` / `social`) tools now exist on the `api` runtime, which is the
+  runtime the docs point injection-exposed agents at.
+- `Bash` no longer wedges a turn when a command backgrounds something.
+- Plugin uninstall takes the plugin out of service instead of leaving its tools
+  wired and reinstalling it on the next boot.
+- `?limit=` is clamped at both ends; a negative value used to mean unlimited.
+- Rate-limit buckets are swept, the MCP transport is closed on the error path,
+  and messages persist with their attachments in one transaction.
+- An agent's memory chain root survives a config edit that rebuilds the agent.
+- One action raises one approval. Tools that always ask the operator themselves
+  are no longer gated a second time by the runtime loop, which produced two
+  identical cards for a single send.
 
 ## [0.10.0] — 2026-07-21
 

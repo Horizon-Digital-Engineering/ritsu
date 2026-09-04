@@ -215,10 +215,7 @@ fi
 
 bold "==> Done"
 note "future updates (from anywhere with SSH):  sudo update-ritsu"
-if [[ ! -f "/home/${SERVICE_USER}/.claude/.credentials.json" ]]; then
-  warn ""
-  warn "Claude CLI session not present at /home/${SERVICE_USER}/.claude/.credentials.json"
-  warn "claude-direct dispatcher won't work until you run:"
-  warn "  which claude || sudo npm install -g @anthropic-ai/claude-code"
-  warn "  claude setup-token   # on any machine, then save it under API Keys in the admin UI"
-fi
+note ""
+note "direct-runtime agents authenticate with a subscription token:"
+note "  claude setup-token   # on any machine, then save it under API Keys in the admin UI"
+note "A local CLI session at /home/${SERVICE_USER}/.claude/ also works if you have one."

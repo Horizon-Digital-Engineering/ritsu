@@ -123,7 +123,7 @@ describe('PluginHost registry + version + uninstall', () => {
     assert.equal(count(db, 'SELECT count(*) c FROM plugin_registry'), 1);
   });
 
-  it('uninstall drops exactly the plugin tables + registry row, never core', () => {
+  it('uninstall drops exactly the plugin tables, never core, and leaves it disabled', () => {
     const db = openDatabase(':memory:');
     const host = new PluginHost(db, new SecretStore(db));
     host.register(projectsPlugin);
@@ -131,9 +131,24 @@ describe('PluginHost registry + version + uninstall', () => {
     const coreTables = count(db, "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('mcp_tokens','agent_definitions','plugin_registry')");
     assert.equal(host.uninstall('projects'), true);
     assert.equal(count(db, "SELECT count(*) c FROM sqlite_master WHERE name LIKE 'plugin_projects_%'"), 0);
-    assert.equal(count(db, 'SELECT count(*) c FROM plugin_registry WHERE id = ?', 'projects'), 0);
     assert.equal(count(db, "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('mcp_tokens','agent_definitions','plugin_registry')"), coreTables);
-    assert.equal(host.uninstall('projects'), false);
+    // The row survives, disabled — deleting it would let the next boot's
+    // discovery re-register the plugin as a fresh install.
+    assert.equal(count(db, 'SELECT count(*) c FROM plugin_registry WHERE id = ?', 'projects'), 1);
+    assert.equal(host.isEnabled('projects'), false, 'uninstalled plugin must not report enabled');
+    assert.equal(host.toolsFor('projects').length > 0, true, 'tools stay defined; isEnabled is the gate');
+    assert.equal(host.uninstall('unknown-plugin'), false);
+  });
+
+  it('a re-registered uninstalled plugin stays disabled across a restart', () => {
+    const db = openDatabase(':memory:');
+    new PluginHost(db, new SecretStore(db)).register(projectsPlugin);
+    new PluginHost(db, new SecretStore(db)).uninstall('projects');
+    // Restart: discovery re-registers every plugin it finds on disk.
+    const rebooted = new PluginHost(db, new SecretStore(db));
+    rebooted.register(projectsPlugin);
+    assert.equal(rebooted.isEnabled('projects'), false);
+    assert.equal(rebooted.manifests().find(x => x.id === 'projects')?.enabled, false);
   });
 });
 

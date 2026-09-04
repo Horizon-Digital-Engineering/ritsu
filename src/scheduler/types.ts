@@ -18,7 +18,6 @@ import { z } from 'zod';
  * those into a time-only scheduler means reworking how due-ness is computed.
  */
 export const ScheduleKindSchema = z.enum(['at', 'every', 'cron']);
-export type ScheduleKind = z.infer<typeof ScheduleKindSchema>;
 
 export const ScheduleSchema = z.object({
   kind: ScheduleKindSchema,
@@ -64,7 +63,6 @@ export const PayloadSchema = z.discriminatedUnion('kind', [
     conversation_id: z.number().int().nullable().default(null),
   }),
 ]);
-export type Payload = z.infer<typeof PayloadSchema>;
 
 export const DeliverySchema = z.object({
   /** Channel row ids. Resolved at fire time so channels added later are picked up. */
@@ -76,7 +74,6 @@ export const DeliverySchema = z.object({
   failure_channel_id: z.number().int().nullable().default(null),
   failure_cooldown_s: z.number().int().min(0).default(3600),
 });
-export type Delivery = z.infer<typeof DeliverySchema>;
 
 /**
  * Cheap gate in front of an expensive payload. Returns `{ fire, message?, state? }`.
@@ -126,8 +123,6 @@ export type Job = z.infer<typeof JobSchema>;
 export type RunStatus = 'running' | 'ok' | 'error' | 'skipped' | 'gate_error';
 
 /** Statuses that count toward the consecutive-failure budget. */
-export const FAILURE_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(['error', 'gate_error']);
-
 /** Mutable per-job state. Kept apart from the definition so a job can be edited without losing history. */
 export interface JobState {
   job_id: string;

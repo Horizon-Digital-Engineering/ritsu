@@ -21,10 +21,6 @@ export const TelegramConfigSchema = z.object({
 });
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 
-export const ChannelConfigSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('telegram'), config: TelegramConfigSchema }),
-]);
-
 export interface ChannelRow {
   id: number;
   name: string;

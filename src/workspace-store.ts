@@ -36,8 +36,8 @@ export interface WorkspaceWrite {
 
 /**
  * Per-agent filesystem roots. Each row is "agent X is allowed on path Y with
- * permissions Z". V0.3 uses the lowest-id row as the agent's cwd for tool
- * dispatch. V0.4 will enforce permissions per tool call.
+ * permissions Z". The lowest-id row is the agent's cwd; permissions are
+ * enforced per tool call.
  *
  * Path traversal protection happens at the tool layer; this store stores
  * exactly what was set. The admin UI should resolve to absolute paths

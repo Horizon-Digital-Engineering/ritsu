@@ -19,11 +19,14 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
 import type { CommsDenialStore } from '../../comms-denial-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
+import type { SecretStore } from '../../auth/secret-store.js';
 import type { Workspace } from '../../workspace-store.js';
 import {
   AgentDefinitionSchema,
   AgentDefinitionPatchSchema,
   assertGrantableCapabilities,
+  clearOperatorOnlyFields,
+  preserveOperatorOnlyFields,
   type AgentDefinition,
 } from '../../admin/schema.js';
 import {
@@ -37,6 +40,7 @@ import { buildPluginTools, type PluginToolSet } from './plugin.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
 import type { JobStore } from '../../scheduler/store.js';
 import { buildSchedulerTools } from './scheduler.js';
+import { buildEmailTools, buildSocialTools } from './crm.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
@@ -78,11 +82,17 @@ export interface RaToolDeps {
    *  (this runtime is the real enforcement layer, so it must reach parity). */
   approvals?: ApprovalStore;
   conversationId?: number | null;
+  /** Tool names the LOOP already gates. A tool that raises its own approval
+   *  conditionally checks this so one action never costs two operator cards. */
+  gatedTools?: readonly string[];
   /** Agent-allowlisted plugin tool sets. Exposed to the native loop as RaTools
    *  (parity with the claude-direct MCP plugin path). */
   plugins?: PluginToolSet[];
   /** Scheduled-job store. Present means the agent can manage its own jobs. */
   jobs?: JobStore;
+  /** SecretStore for the CRM connectors (email/social). Present + the matching
+   *  capability is what surfaces those tools. */
+  secrets?: SecretStore;
   /** True when a scheduled job woke this turn. Suppresses the scheduling tools
    *  so a fire cannot create more work — set from the caller label, per call. */
   insideJobRun?: boolean;
@@ -234,18 +244,24 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
             return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
               `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
           }
-          logger.info('ra.comms.escalation-approval', { caller: agentId, target, escalated });
-          const decision = await approvals.request({
-            agentId,
-            conversationId: conversationId ?? null,
-            toolName: 'agent_comms_ask_agent',
-            args: { agent_id: target, message, _escalation: { capabilities: escalated } },
-          });
-          if (decision.state === 'rejected') {
-            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
-            return decision.reason?.trim()
-              ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
-              : `Operator rejected this escalated call to ${target}.`;
+          // If the loop already gated this exact call the operator has decided
+          // once; asking again for the same action is noise they have to clear.
+          if (deps.gatedTools?.includes('agent_comms_ask_agent')) {
+            logger.info('ra.comms.escalation-already-gated', { caller: agentId, target, escalated });
+          } else {
+            logger.info('ra.comms.escalation-approval', { caller: agentId, target, escalated });
+            const decision = await approvals.request({
+              agentId,
+              conversationId: conversationId ?? null,
+              toolName: 'agent_comms_ask_agent',
+              args: { agent_id: target, message, _escalation: { capabilities: escalated } },
+            });
+            if (decision.state === 'rejected') {
+              denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
+              return decision.reason?.trim()
+                ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
+                : `Operator rejected this escalated call to ${target}.`;
+            }
           }
           // approved → continue to the normal call path below.
         }
@@ -360,6 +376,7 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
           assertGrantableCapabilities(validated.capabilities);
           const existing = await defStore.read(validated.id);
           if (existing) return `error: agent ${validated.id} already exists; use agent_admin_update_agent`;
+          clearOperatorOnlyFields(validated);
           const saved = await defStore.upsert(validated);
           adminHost.addOrReplace(saved);
           logger.info('ra.agent-admin.create', { by: agentId, id: saved.id });
@@ -395,6 +412,7 @@ export function buildAgentAdminTools(deps: RaToolDeps): RaTool[] {
           // crm/social are operator-only; an agent cannot grant them here.
           assertGrantableCapabilities(validPatch.capabilities);
           const merged = AgentDefinitionSchema.parse({ ...current, ...validPatch, id: current.id });
+          preserveOperatorOnlyFields(current, merged);
           const saved = await defStore.upsert(merged);
           adminHost.addOrReplace(saved);
           logger.info('ra.agent-admin.update', { by: agentId, id: saved.id, fields: Object.keys(validPatch) });
@@ -553,6 +571,10 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
  *  - memory_* (4 tools)
  *  - agent_comms_* (2 tools)
  *
+ * Capability-gated:
+ *  - agent_admin_* / agent_monitor_*      manage_agents / monitor_agents
+ *  - email_* / social_*                   crm / social
+ *
  * Allowlist-gated (mirroring claude-sdk's SDK built-ins):
  *  - FS: Read, Write, Edit                — exposed if workspaces present
  *  - Process: Bash, Glob, Grep            — exposed if workspaces present
@@ -567,6 +589,16 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   const caps = new Set(deps.capabilities ?? []);
   if (caps.has('manage_agents')) out.push(...buildAgentAdminTools(deps));
   if (caps.has('monitor_agents')) out.push(...buildAgentMonitorTools(deps));
+  // CRM. Both groups need a credential store and the approval gate; the
+  // sending/publishing tools block on the operator inside their own handlers.
+  if (deps.secrets && deps.approvals) {
+    const crm = {
+      agentId: deps.agentId, secrets: deps.secrets, approvals: deps.approvals,
+      conversationId: deps.conversationId ?? null,
+    };
+    if (caps.has('crm')) out.push(...buildEmailTools(crm));
+    if (caps.has('social')) out.push(...buildSocialTools(crm));
+  }
   const allowed = new Set(deps.toolsAllowlist ?? []);
   if (deps.workspaces && deps.workspaces.length > 0) {
     out.push(

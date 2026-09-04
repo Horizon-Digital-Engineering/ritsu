@@ -20,6 +20,7 @@ import { loadTwitterConfig, getMentions, getMyTweets, postTweet } from '../../co
 import { loadLinkedInConfig, publishPost } from '../../connectors/linkedin.js';
 import { scrubSecrets } from '../../util/scrub.js';
 import { fenceUntrusted } from '../../util/untrusted.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
 
 export const SOCIAL_MCP_NAME = 'social';
@@ -39,6 +40,9 @@ export interface SocialMcpDeps {
   secrets: SecretStore;
   approvals: ApprovalStore;
   conversationId: number | null;
+  /** approval_tools gate. READ tools only — the posting tools raise their own
+   *  approval unconditionally, so gating them here would ask twice. */
+  gate?: McpGateContext | null;
 }
 
 function notConfigured() {
@@ -53,6 +57,7 @@ function err(prefix: string, e: unknown) {
 
 export function buildAgentSocialMcp(deps: SocialMcpDeps) {
   const { agentId, secrets, approvals, conversationId } = deps;
+  const gate = deps.gate ?? null;
   return createSdkMcpServer({
     name: SOCIAL_MCP_NAME,
     version: '0.1.0',
@@ -62,7 +67,7 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
         'Read recent mentions of the connected X/Twitter account (id, author, text, date). ' +
           'Use these to decide what to reply to. (Reading needs the paid API tier.)',
         { limit: z.number().int().min(5).max(100).optional().describe('how many recent mentions (default 10)') },
-        async ({ limit }) => {
+        async ({ limit }) => gateMcpTool(gate, SOCIAL_TOOL_NAMES[0], { limit }, async () => {
           const cfg = loadTwitterConfig(secrets);
           if (!cfg) return notConfigured();
           try {
@@ -75,13 +80,13 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
             logger.warn('social.read_mentions.error', { agent_id: agentId, err: (e as Error).message });
             return err('error reading mentions', e);
           }
-        },
+        }),
       ),
       tool(
         'read_my_posts',
         'Read the connected account\'s own recent posts (id, text, date). Useful to avoid repeating yourself.',
         { limit: z.number().int().min(5).max(100).optional().describe('how many recent posts (default 10)') },
-        async ({ limit }) => {
+        async ({ limit }) => gateMcpTool(gate, SOCIAL_TOOL_NAMES[1], { limit }, async () => {
           const cfg = loadTwitterConfig(secrets);
           if (!cfg) return notConfigured();
           try {
@@ -93,7 +98,7 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
             logger.warn('social.read_my_posts.error', { agent_id: agentId, err: (e as Error).message });
             return err('error reading posts', e);
           }
-        },
+        }),
       ),
       tool(
         'post_tweet',

@@ -269,15 +269,17 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
               }],
             };
           }
-          inflightPerCaller.set(callerAgentId, inflight + 1);
-
           const nextCtx: CallContext = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
           // Canonical (caller, target) thread, derived server-side from the
-          // two ids — never model-supplied.
+          // two ids — never model-supplied. Resolved BEFORE the slot is taken:
+          // a SQLITE_BUSY here used to escape the try whose finally releases it,
+          // burning the slot permanently (two of those and the agent could
+          // never ask_agent again).
           const convoId = deps.conversations.findOrStartInterAgentThread(callerAgentId, target);
           logger.info('comms.ask', {
             caller: callerAgentId, target, conv: convoId, depth: nextCtx.depth, chain: nextCtx.chain.join('->'),
           });
+          inflightPerCaller.set(callerAgentId, inflight + 1);
           try {
             // Gate the relay when the caller reads untrusted content: a
             // prompt-injected message must not reach a peer (possibly one with
