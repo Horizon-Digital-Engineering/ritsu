@@ -226,8 +226,12 @@ describe('every in-process MCP group honours the gate', () => {
     const id = await waitForPending(approvals);
     approvals.decide(id, 'rejected', 'no', 'operator');
     const out = JSON.stringify(await call);
-    assert.match(out, new RegExp(`Operator rejected this ${fullName.replace(/[_]/g, '_')} call`),
-      `${fullName} must be blocked by the gate`);
+    // Substring, not a built regex: the tool name is full of underscores and
+    // has no business being compiled as a pattern.
+    assert.ok(
+      out.includes(`Operator rejected this ${fullName} call`),
+      `${fullName} must be blocked by the gate — got: ${out}`,
+    );
   }
 
   it('agent_monitor blocks a gated read', async () => {

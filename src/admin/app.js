@@ -400,7 +400,10 @@ function renderApprovalToolsCheckboxes(selected) {
   // Keep a ticked name visible even if a capability was since turned off,
   // otherwise unchecking a capability would silently drop its gates.
   const names = [...new Set([...approvalToolCandidates(), ...set])];
-  const sig = `${runtime}|${names.join(',')}|${[...set].sort().join(',')}`;
+  // Explicit comparator: deterministic and locale-independent, since this
+  // string is only ever compared against the previous render's.
+  const sorted = [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const sig = `${runtime}|${names.join(',')}|${sorted.join(',')}`;
   if (sig === approvalToolsRendered) return;
   approvalToolsRendered = sig;
   $('f-approval-tools').innerHTML = names.map(t => {

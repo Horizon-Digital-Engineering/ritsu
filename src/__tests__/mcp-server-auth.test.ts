@@ -105,8 +105,11 @@ describe('/mcp auth gate — auto mode with OAuth configured', () => {
   it('401 points spec clients at the resource metadata (RFC 9728)', async () => {
     const res = await post(h.baseUrl);
     const wa = res.headers.get('www-authenticate') ?? '';
-    assert.match(wa, /^Bearer realm="ritsu"/);
-    assert.match(wa, /resource_metadata="https:\/\/example\.test:9443\/\.well-known\/oauth-protected-resource"/);
+    assert.ok(wa.startsWith('Bearer realm="ritsu"'));
+    assert.ok(
+      wa.includes('resource_metadata="https://example.test:9443/.well-known/oauth-protected-resource"'),
+      `expected the resource-metadata pointer, got: ${wa}`,
+    );
   });
 });
 
