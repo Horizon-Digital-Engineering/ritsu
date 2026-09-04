@@ -283,7 +283,7 @@ async function cmdInit(_ctx: CommandContext): Promise<number> {
 
 export const masterKeyCommand: Command = {
   name: 'master-key',
-  summary: 're-encrypt at-rest secrets under a fresh master key (and back up the old one)',
+  summary: 'create the master key, or rotate it and re-encrypt every secret',
   needsRoot: true,
   help: () => [
     'ritsu master-key — manage the AES-256-GCM master key',

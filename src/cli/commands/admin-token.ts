@@ -141,7 +141,7 @@ function writeAdminTokenFile(path: string, token: string): void {
 
 export const adminTokenCommand: Command = {
   name: 'admin-token',
-  summary: 'manage the bootstrap admin token (print or rotate)',
+  summary: 'manage the bootstrap admin token (show or rotate)',
   needsRoot: true, // reads/writes /opt/ritsu/data/.admin-token (mode 0600)
   help: () => [
     'ritsu admin-token — manage the bootstrap admin token',
