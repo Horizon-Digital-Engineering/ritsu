@@ -1,6 +1,11 @@
 # Agent types + unified tool/plugin management
 
-**Status:** future direction, not yet implemented. Captured 2026-05-17.
+**Status:** built, but this page still uses the vocabulary from when it was
+written (2026-05-17). Both runtimes shipped: what it calls `claude-sdk` is the
+`direct` runtime, and `ritsu-agent` is the `api` runtime, now covering several
+providers rather than one. The plugin system described below also shipped.
+Treat the shapes here as accurate and the names as historical — a rewrite is
+tracked separately, since the tier names are themselves being reconsidered.
 
 ## The split
 

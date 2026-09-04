@@ -23,6 +23,7 @@ import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
 import { runHealthChecks } from './health.js';
 import { CLAUDE_NS } from '../model/claude-direct-dispatcher.js';
+import { masterKeyStatus } from '../util/secret-crypto.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { JobStore, JobUpsert } from '../scheduler/store.js';
@@ -386,6 +387,15 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  */
 export function createAdminApp(deps: AdminDeps) {
   const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup } = deps;
+
+  /** Secrets are unwritable without a master key. Answering with the reason
+   *  beats a 500 whose cause is only visible in the journal. */
+  function keyMissing(res: Response): boolean {
+    const st = masterKeyStatus();
+    if (st.ok) return false;
+    res.status(503).json({ error: st.detail ?? 'no master key — secrets cannot be stored' });
+    return true;
+  }
   const app = express();
   app.disable('x-powered-by');
   // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
@@ -667,6 +677,8 @@ export function createAdminApp(deps: AdminDeps) {
 
   app.get('/admin/api/info', (_req: Request, res: Response) => {
     res.json({
+      // Drives the header warning: no key means every secret write fails.
+      master_key_ok: masterKeyStatus().ok,
       name: 'ritsu',
       version: deps.version,
       auth_mode: deps.authMode,
@@ -915,6 +927,7 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   app.post('/admin/api/secrets', (req: Request, res: Response) => {
+    if (keyMissing(res)) return;
     const body = parseBody(req, res, SecretSetBody);
     if (!body) return;
     secrets.set(body.namespace, body.name, body.value);
@@ -1501,6 +1514,7 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   app.post('/admin/api/claude-token', async (req: Request, res: Response) => {
+    if (keyMissing(res)) return;
     const body = parseBody(req, res, ClaudeTokenBody);
     if (!body) return;
     secrets.set(CLAUDE_NS, 'oauth_token', body.token.trim());
@@ -1521,6 +1535,7 @@ export function createAdminApp(deps: AdminDeps) {
   app.post('/admin/api/api-keys', (req: Request, res: Response) => {
     const body = parseBody(req, res, ApiKeyMintBody);
     if (!body) return;
+    if (keyMissing(res)) return;
     const { name, provider, plaintext } = body;
     // A subscription token authenticates the direct runtime only; the metered
     // API rejects it. Caught here so the failure is a clear message now rather

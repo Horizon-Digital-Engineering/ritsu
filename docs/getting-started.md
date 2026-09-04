@@ -14,16 +14,21 @@ guide is the dev / evaluation flow.
 git clone https://github.com/Horizon-Digital-Engineering/ritsu.git
 cd ritsu
 npm install
-claude login         # one-time, drops your Max-plan creds at ~/.claude/.credentials.json
+claude setup-token   # generate a subscription token; save it in the admin UI
 cp .env.example .env # sets RITSU_ADMIN_TOKEN_FILE=./data/.admin-token for dev
 mkdir -p data        # bootstrap path; the server refuses to start if it's missing
 npm run dev          # MCP on :7333, admin on :7334
 ```
 
-If `claude login` is unfamiliar: it's the device-code flow from
-`@anthropic-ai/claude-code`. Without it the `claude-sdk` dispatcher won't
-have a session to call. If you'd rather use an API key, set
-`ANTHROPIC_API_KEY=...` in `.env` and skip `claude login`.
+`claude setup-token` prints a long-lived token tied to your subscription
+(valid about a year). It is account-scoped, not machine-scoped, so generate it
+anywhere and paste it into the admin UI under **API Keys → subscription
+session** — it is stored encrypted, and every host does not need its own login.
+Agents on the direct runtime cannot dispatch until one is saved.
+
+To pay per token instead, mint a provider key on the same page and set an
+agent's runtime to `api`. The two are separate paths: a subscription token
+authenticates the vendor CLI, and the metered API rejects it.
 
 At this point you'll see something like:
 
@@ -59,8 +64,9 @@ Click the `hello-world` tile. The slide-in chat panel opens. Type
 "hi" and hit Send. You should get a reply within a few seconds. If you
 don't, check the **Logs** tab for the actual error — usually it's either:
 
-- Missing `~/.claude/.credentials.json` (run `claude login`), or
-- `ANTHROPIC_API_KEY` set to a stale value, or
+- No subscription token saved (API Keys → subscription session), or
+- No master key on the host, so nothing can be stored at all — the admin UI
+  shows a banner and **System → Health** names it, or
 - Network blocked by a corporate firewall
 
 ## 4. Create your own agent
