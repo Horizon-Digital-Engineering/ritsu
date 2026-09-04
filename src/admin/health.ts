@@ -89,8 +89,8 @@ async function dbCheck(defStore: HealthDeps['defStore']): Promise<HealthCheck> {
 function claudeCheck(credsPath?: string): HealthCheck {
   const p = credsPath ?? join(homedir(), '.claude', '.credentials.json');
   return existsSync(p)
-    ? { id: 'claude-session', label: 'Claude session (direct runtime)', group: 'core', status: 'ok' }
-    : { id: 'claude-session', label: 'Claude session (direct runtime)', group: 'core', status: 'fail', detail: 'credentials missing — run `claude login` as the service user' };
+    ? { id: 'claude-token', label: 'Claude session (direct runtime)', group: 'core', status: 'ok' }
+    : { id: 'claude-token', label: 'Claude session (direct runtime)', group: 'core', status: 'fail', detail: 'credentials missing — run `claude login` as the service user' };
 }
 
 async function providerKeyCheck(

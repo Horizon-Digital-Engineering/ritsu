@@ -1,5 +1,6 @@
 import { ClaudeDirectDispatcher, type ClaudeDirectOpts } from './claude-direct-dispatcher.js';
 import { LITELLM_NS } from './ritsu-agent/client.js';
+import { CLAUDE_NS } from './claude-direct-dispatcher.js';
 import { RitsuAgentDispatcher } from './ritsu-agent/dispatcher.js';
 import type { RaToolDeps } from '../tools/ritsu-agent/builtin.js';
 import type { RaProvider, RaProviderOptions } from './ritsu-agent/types.js';
@@ -84,7 +85,7 @@ export interface DispatcherOpts {
  */
 export function buildDispatcher(kind: DispatcherKind, model: string, opts: DispatcherOpts = {}): ModelDispatcher {
   switch (kind) {
-    case 'claude-direct': return new ClaudeDirectDispatcher(model, claudeOptsFrom(opts));
+    case 'claude-direct': return new ClaudeDirectDispatcher(model, claudeOptsFrom(opts));  // token resolved inside
     case 'ritsu-agent':   return new RitsuAgentDispatcher(ritsuAgentOptsFrom(opts, model));
     default: {
       const _exhaustive: never = kind;
@@ -97,6 +98,10 @@ export function buildDispatcher(kind: DispatcherKind, model: string, opts: Dispa
  *  are undefined so the spread doesn't violate exactOptionalPropertyTypes. */
 function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   const out: ClaudeDirectOpts = {};
+  // Read per-build (not per-call): AgentHost rebuilds every agent on reload, so
+  // saving a new token in the UI takes effect without restarting the service.
+  const token = opts.secrets?.get(CLAUDE_NS, 'oauth_token')?.trim();
+  if (token) out.oauthToken = token;
   if (opts.cwd        !== undefined) out.cwd        = opts.cwd;
   if (opts.tools      !== undefined) out.tools      = opts.tools;
   if (opts.workspaces !== undefined) out.workspaces = opts.workspaces;

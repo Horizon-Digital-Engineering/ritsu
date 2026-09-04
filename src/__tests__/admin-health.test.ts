@@ -78,7 +78,7 @@ describe('runHealthChecks (System → Health)', () => {
     const email = checks.find(c => c.id === 'email')!;
     assert.equal(email.status, 'fail');
     assert.match(email.detail ?? '', /partially configured/);
-    assert.equal(checks.find(c => c.id === 'claude-session')?.status, 'fail');
+    assert.equal(checks.find(c => c.id === 'claude-token')?.status, 'fail');
   });
 
   it('appends /v1/models to a litellm url that lacks the /v1 suffix', async () => {

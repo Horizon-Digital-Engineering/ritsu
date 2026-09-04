@@ -283,7 +283,7 @@ function switchTab(name) {
   if (name === 'extensions') loadExtensionsTab();
   if (name === 'mcp') loadMcpTools();
   else if (name === 'tokens') refreshTokens();
-  else if (name === 'api-keys') refreshApiKeys();
+  else if (name === 'api-keys') { refreshApiKeys(); loadClaudeToken(); }
   else if (name === 'oauth-clients') loadOAuthClientsTab();
   else if (name === 'channels') loadChannelsTab();
   else if (name === 'jobs') loadJobsTab();
@@ -1921,6 +1921,40 @@ async function deleteChannel(id, name) {
 }
 
 // ---- api keys ---------------------------------------------------------
+async function loadClaudeToken() {
+  const el = $('claude-token-state');
+  if (!el) return;
+  try {
+    const d = await api('GET', '/admin/api/claude-token');
+    const chip = d.token_set
+      ? `<span class="hstat hstat-ok">token set</span> <code>${esc(d.token_hint || '')}</code>`
+      : '<span class="hstat hstat-skip">no token stored</span>';
+    // An env-provided token still works; say so, or clearing here looks broken.
+    const envNote = d.env_fallback
+      ? ' <span class="badge">CLAUDE_CODE_OAUTH_TOKEN also set in the service environment</span>'
+      : '';
+    el.innerHTML = chip + envNote;
+  } catch (e) { el.textContent = e.message; }
+}
+async function saveClaudeToken() {
+  const token = $('cs-token').value.trim();
+  if (!token) { toast('paste a token first', 'err'); return; }
+  try {
+    await api('POST', '/admin/api/claude-token', { token });
+    $('cs-token').value = '';   // never keep the secret in the DOM
+    toast('saved — agents reloaded');
+    loadClaudeToken();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function clearClaudeToken() {
+  if (!confirm('Clear the stored Claude session token? claude-direct agents stop working unless the service environment provides one.')) return;
+  try {
+    await api('DELETE', '/admin/api/claude-token');
+    toast('cleared — agents reloaded');
+    loadClaudeToken();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function refreshApiKeys() {
   try {
     const { api_keys } = await api('GET', '/admin/api/api-keys');
@@ -2944,6 +2978,8 @@ const ACTIONS = {
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
   'backup-now':             () => backupNow(),
   'health-refresh':         () => loadHealthTab(),
+  'claude-token-save':    () => saveClaudeToken(),
+  'claude-token-clear':   () => clearClaudeToken(),
   'memory-save':            () => saveMemoryConfig(),
   'memory-probe':           () => probeFlashback(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
