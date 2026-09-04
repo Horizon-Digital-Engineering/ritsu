@@ -107,19 +107,3 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 }
 
-/**
- * Stub. Replace with a real implementation when Flashback's agent-mode API is
- * available. Because MemoryStore is the only interface consumed by AgentBase,
- * swapping backends does not touch any agent code.
- */
-export class FlashbackMemoryStore implements MemoryStore {
-  constructor(_config: { endpoint: string; apiKey: string }) {
-    throw new Error('FlashbackMemoryStore not implemented — use SqliteMemoryStore for V1');
-  }
-  async write(_m: MemoryWrite): Promise<number> { throw new Error('not implemented'); }
-  async list(_agent_id: string, _limit?: number): Promise<Memory[]> { throw new Error('not implemented'); }
-  async read(_id: number): Promise<Memory | null> { throw new Error('not implemented'); }
-  async lineage(_id: number): Promise<Memory[]> { throw new Error('not implemented'); }
-  async supersede(_old: number, _new: number): Promise<void> { throw new Error('not implemented'); }
-  async delete(_id: number): Promise<boolean> { throw new Error('not implemented'); }
-}

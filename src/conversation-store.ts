@@ -103,16 +103,21 @@ export class SqliteConversationStore implements ConversationStore {
     caller_label?: string | null,
     attachments?: MessageAttachment[],
   ): number {
-    const r = this.db
-      .prepare('INSERT INTO messages (conversation_id, role, content, caller_label) VALUES (?, ?, ?, ?)')
-      .run(conversation_id, role, content, caller_label ?? null);
-    const messageId = Number(r.lastInsertRowid);
-    if (attachments && attachments.length > 0) {
-      const ins = this.db.prepare(
-        'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) VALUES (?, ?, ?, ?)',
-      );
-      for (const a of attachments) ins.run(messageId, conversation_id, a.media_type, a.data);
-    }
+    // One transaction: an attachment insert that fails partway used to leave
+    // the message row with some of its images and no way to tell.
+    const messageId = this.db.transaction((): number => {
+      const r = this.db
+        .prepare('INSERT INTO messages (conversation_id, role, content, caller_label) VALUES (?, ?, ?, ?)')
+        .run(conversation_id, role, content, caller_label ?? null);
+      const id = Number(r.lastInsertRowid);
+      if (attachments && attachments.length > 0) {
+        const ins = this.db.prepare(
+          'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) VALUES (?, ?, ?, ?)',
+        );
+        for (const a of attachments) ins.run(id, conversation_id, a.media_type, a.data);
+      }
+      return id;
+    })();
     // Look up agent_id once so SSE subscribers can scope by agent without
     // a second round-trip. Cheap (indexed lookup on the row we just touched).
     const row = this.db

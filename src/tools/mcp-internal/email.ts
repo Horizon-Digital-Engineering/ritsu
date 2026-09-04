@@ -21,6 +21,7 @@ import type { ApprovalStore } from '../../approval-store.js';
 import { loadEmailConfig, readInbox, readMessage, sendEmail } from '../../connectors/email.js';
 import { scrubSecrets } from '../../util/scrub.js';
 import { fenceUntrusted } from '../../util/untrusted.js';
+import { gateMcpTool, type McpGateContext } from './approval-gate.js';
 import { logger } from '../../util/log.js';
 
 export const EMAIL_MCP_NAME = 'email';
@@ -38,6 +39,9 @@ export interface EmailMcpDeps {
   secrets: SecretStore;
   approvals: ApprovalStore;
   conversationId: number | null;
+  /** approval_tools gate. Applies to the READ tools only — send_email raises
+   *  its own approval unconditionally, so gating it here would ask twice. */
+  gate?: McpGateContext | null;
 }
 
 function notConfigured() {
@@ -46,6 +50,7 @@ function notConfigured() {
 
 export function buildAgentEmailMcp(deps: EmailMcpDeps) {
   const { agentId, secrets, approvals, conversationId } = deps;
+  const gate = deps.gate ?? null;
   return createSdkMcpServer({
     name: EMAIL_MCP_NAME,
     version: '0.1.0',
@@ -55,7 +60,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
         'List the most recent messages in the mailbox (newest first): uid, from, subject, date, read/unread. ' +
           'Use the uid with read_email to open one. Does not mark anything read.',
         { limit: z.number().int().min(1).max(50).optional().describe('how many recent messages (default 15)') },
-        async ({ limit }) => {
+        async ({ limit }) => gateMcpTool(gate, EMAIL_TOOL_NAMES[0], { limit }, async () => {
           const cfg = loadEmailConfig(secrets);
           if (!cfg) return notConfigured();
           try {
@@ -70,13 +75,13 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             logger.warn('email.read_inbox.error', { agent_id: agentId, err: (e as Error).message });
             return { content: [{ type: 'text', text: `error reading inbox: ${scrubSecrets((e as Error).message)}` }] };
           }
-        },
+        }),
       ),
       tool(
         'read_email',
         'Read one message in full by its uid (from read_inbox): headers + plain-text body.',
         { uid: z.number().int().positive().describe('the uid from read_inbox') },
-        async ({ uid }) => {
+        async ({ uid }) => gateMcpTool(gate, EMAIL_TOOL_NAMES[1], { uid }, async () => {
           const cfg = loadEmailConfig(secrets);
           if (!cfg) return notConfigured();
           try {
@@ -88,7 +93,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
             logger.warn('email.read_email.error', { agent_id: agentId, err: (e as Error).message });
             return { content: [{ type: 'text', text: `error reading message: ${scrubSecrets((e as Error).message)}` }] };
           }
-        },
+        }),
       ),
       tool(
         'send_email',

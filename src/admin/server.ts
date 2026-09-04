@@ -38,9 +38,11 @@ import { conversationBus, type ConversationEvent } from '../conversation-bus.js'
 import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
+import { RateLimiter } from '../util/rate-limit.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
-import { TOOL_NAMES, TOOL_INFO, type AuthMode } from '../mcp-server.js';
+import { TOOL_NAMES, TOOL_INFO } from '../mcp-server.js';
+import type { AuthMode } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +54,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 function param(v: string | string[] | undefined): string {
   return Array.isArray(v) ? (v[0] ?? '') : (v ?? '');
+}
+
+/**
+ * Clamp a `?limit=` query param into [1, max]. Math.min alone is not enough:
+ * SQLite reads a negative LIMIT as unlimited, so `?limit=-1` dumps the whole
+ * table (attachments included), and `?limit=abc` reaches the driver as NaN
+ * and 500s on a datatype mismatch.
+ */
+export function clampLimit(raw: unknown, fallback: number, max: number): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.floor(n), 1), max);
 }
 
 export interface AdminDeps {
@@ -454,25 +468,12 @@ export function createAdminApp(deps: AdminDeps) {
   // Covers /admin/api AND /admin/agents (create/delete/ask, incl. the large
   // image-paste /ask body). Health endpoints (/healthz, /readyz, /version,
   // /metrics) are intentionally exempted so monitors can hammer them.
-  const RATE_LIMIT_WINDOW_MS = 60_000;
-  const RATE_LIMIT_MAX = 240;  // 4/sec average, room for UI bursts
-  const ipBuckets = new Map<string, { count: number; resetAt: number }>();
+  const adminLimiter = new RateLimiter(60_000, 240);  // 4/sec average, room for UI bursts
   const rateLimiter = (req: Request, res: Response, next: () => void): void => {
-    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
-    const now = Date.now();
-    const bucket = ipBuckets.get(ip);
-    if (!bucket || bucket.resetAt < now) {
-      ipBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      next();
-      return;
-    }
-    bucket.count++;
-    if (bucket.count > RATE_LIMIT_MAX) {
-      res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
-      res.status(429).json({ error: 'rate limit exceeded', retry_after_s: Math.ceil((bucket.resetAt - now) / 1000) });
-      return;
-    }
-    next();
+    const retryAfter = adminLimiter.hit(req.ip ?? req.socket.remoteAddress ?? 'unknown');
+    if (retryAfter === null) { next(); return; }
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({ error: 'rate limit exceeded', retry_after_s: retryAfter });
   };
   app.use('/admin/api', rateLimiter);
   app.use('/admin/agents', rateLimiter);
@@ -653,7 +654,7 @@ export function createAdminApp(deps: AdminDeps) {
 
   // List recent admin actions. Read-only.
   app.get('/admin/api/audit', (req: Request, res: Response) => {
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const limit = clampLimit(req.query.limit, 100, 500);
     const rows = auditDb.prepare(
       `SELECT a.id, a.ts, a.token_id, t.name AS token_name, a.ip, a.method, a.path,
               a.status, a.body_sha256, a.duration_ms
@@ -749,7 +750,7 @@ export function createAdminApp(deps: AdminDeps) {
   // ---- log events --------------------------------------------------------
 
   app.get('/admin/api/events/recent', (req: Request, res: Response) => {
-    const limit = Math.min(Number(req.query.limit ?? 200), 1000);
+    const limit = clampLimit(req.query.limit, 200, 1000);
     res.json({ events: eventBus.recent(limit) });
   });
 
@@ -804,7 +805,7 @@ export function createAdminApp(deps: AdminDeps) {
   // ?state=pending (default) | decided | all. Pending is sorted oldest-first
   // (work queue); decided is newest-first (recent history).
   app.get('/admin/api/approvals', (req: Request, res: Response) => {
-    const limit = Math.min(Number(req.query.limit ?? 200), 1000);
+    const limit = clampLimit(req.query.limit, 200, 1000);
     const state = typeof req.query.state === 'string' ? req.query.state : 'pending';
     const convo = req.query.conversation_id !== undefined ? Number(req.query.conversation_id) : undefined;
     if (convo !== undefined) {
@@ -829,7 +830,7 @@ export function createAdminApp(deps: AdminDeps) {
   // Blocked inter-agent calls (ask_agent refused by a guard). Recent-first.
   // Live updates ride the approvals SSE stream as {kind:'comms-denied'} events.
   app.get('/admin/api/comms-denials', (req: Request, res: Response) => {
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const limit = clampLimit(req.query.limit, 100, 500);
     res.json({ denials: commsDenials.listRecent(limit) });
   });
 
@@ -948,6 +949,16 @@ export function createAdminApp(deps: AdminDeps) {
     res.json(def);
   });
 
+  /** A save that silently drops a gate is the failure mode worth shouting
+   *  about: the operator ticked a box and believes the tool is held. */
+  function ungateableWarning(id: string): string | undefined {
+    const tools = host.ungateableFor(id);
+    if (!tools.length) return undefined;
+    return `approval_tools names ${tools.join(', ')}, which the direct runtime cannot enforce — ` +
+      'the vendor SDK runs its own built-ins without consulting the gate. ' +
+      'Switch the agent to the api runtime, or remove those tools from its allowlist.';
+  }
+
   app.post('/admin/agents', async (req: Request, res: Response) => {
     try {
       const def = AgentDefinitionSchema.parse(req.body);
@@ -958,7 +969,7 @@ export function createAdminApp(deps: AdminDeps) {
       }
       const saved = await defStore.upsert(def);
       host.addOrReplace(saved);
-      res.status(201).json(saved);
+      res.status(201).json({ ...saved, warning: ungateableWarning(saved.id) });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -975,7 +986,7 @@ export function createAdminApp(deps: AdminDeps) {
       const merged = AgentDefinitionSchema.parse({ ...current, ...patch, id: current.id });
       const saved = await defStore.upsert(merged);
       host.addOrReplace(saved);
-      res.json(saved);
+      res.json({ ...saved, warning: ungateableWarning(saved.id) });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -1096,7 +1107,7 @@ export function createAdminApp(deps: AdminDeps) {
   app.get('/admin/api/conversations', (req: Request, res: Response) => {
     const agentId = (req.query.agent_id as string | undefined) ?? undefined;
     const involves = (req.query.involves as string | undefined) ?? undefined;
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const limit = clampLimit(req.query.limit, 100, 500);
     const rawKind = typeof req.query.kind === 'string' ? req.query.kind : 'all';
     const kind = rawKind === 'human' || rawKind === 'agent' ? rawKind : 'all';
     res.json({ conversations: conversations.listSummaries(agentId, limit, kind, involves) });
@@ -1117,7 +1128,7 @@ export function createAdminApp(deps: AdminDeps) {
       res.status(400).json({ error: 'id must be integer' });
       return;
     }
-    const limit = Math.min(Number(req.query.limit ?? 500), 2000);
+    const limit = clampLimit(req.query.limit, 500, 2000);
     res.json({ messages: conversations.recent(id, limit) });
   });
 
@@ -1127,7 +1138,7 @@ export function createAdminApp(deps: AdminDeps) {
       res.status(400).json({ error: 'agent_id required' });
       return;
     }
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const limit = clampLimit(req.query.limit, 100, 500);
     res.json({ memories: await memory.list(agentId, limit) });
   });
 
@@ -1478,13 +1489,13 @@ export function createAdminApp(deps: AdminDeps) {
       res.status(400).json({ error: 'id must be integer' });
       return;
     }
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const limit = clampLimit(req.query.limit, 100, 500);
     res.json({ usage: tokens.recentUsage(id, limit) });
   });
 
   // ---- api keys (third-party model provider credentials) -----------------
-  // Phase A: storage + UI. Phase B will wire these into the ritsu-agent
-  // runtime so agents can run against Anthropic/OpenAI/OpenRouter/etc.
+  // Referenced by an api-runtime agent's api_key_ref; the dispatcher decrypts
+  // one at call time. Operator-only — an agent can never name a key itself.
 
   // ---- claude subscription session (claude-direct credential) ------------
   // Stored in the SecretStore like every other credential, so it is managed
@@ -1666,13 +1677,22 @@ export function createAdminApp(deps: AdminDeps) {
     res.json({ runs: deps.jobs.runs(id, 50) });
   });
 
+  const JobPatchSchema = z.object({
+    enabled: z.boolean().optional(),
+    run_now: z.literal(true).optional(),
+  }).strict();
+
   app.post('/admin/api/jobs', (req: Request, res: Response) => {
     try {
       const input = JobInputSchema.parse(req.body);
       const job = deps.jobs.upsert({ ...input, owner: 'operator' } as JobUpsert);
       // upsert deliberately does not arm a job — only the caller knows the
       // clock to compute from, and an unarmed job is invisible to the runner.
-      const first = nextRun(job.schedule, Date.now(), null);
+      // A throw here (malformed cron) has to take the row with it, or the
+      // 400 leaves an unarmed orphan behind.
+      let first: number | null;
+      try { first = nextRun(job.schedule, Date.now(), null); }
+      catch (err) { deps.jobs.delete(job.id); throw err; }
       if (first === null) {
         deps.jobs.delete(job.id);
         res.status(400).json({ error: 'that schedule will never fire' });
@@ -1689,8 +1709,9 @@ export function createAdminApp(deps: AdminDeps) {
     const id = param(req.params.id);
     const existing = deps.jobs.read(id);
     if (!existing) { res.status(404).json({ error: 'job not found' }); return; }
+    const body = parseBody(req, res, JobPatchSchema);
+    if (!body) return;
     try {
-      const body = req.body as { enabled?: boolean; run_now?: boolean };
       if (body.run_now === true) {
         deps.jobs.setNextRun(id, Date.now() - 1);
       }

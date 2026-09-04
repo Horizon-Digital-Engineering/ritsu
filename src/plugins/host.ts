@@ -188,7 +188,7 @@ export class PluginHost {
 
   isEnabled(id: string): boolean {
     const row = this.db.prepare('SELECT enabled FROM plugin_registry WHERE id = ?').get(id) as { enabled: number } | undefined;
-    return !row || row.enabled === 1;
+    return row?.enabled === 1;
   }
 
   setEnabled(id: string, enabled: boolean): boolean {
@@ -199,14 +199,24 @@ export class PluginHost {
     return r.changes > 0;
   }
 
+  /**
+   * Wipe a plugin's data and take it out of service. The registry row stays,
+   * flipped to disabled — deleting it would let the next boot's discovery
+   * re-register the plugin as a fresh install, silently resurrecting it.
+   * Re-enabling is the reinstall path; it comes back with empty tables.
+   */
   uninstall(id: string): boolean {
     const row = this.db.prepare('SELECT tables FROM plugin_registry WHERE id = ?').get(id) as { tables: string } | undefined;
     if (!row) return false;
     const tables = JSON.parse(row.tables) as string[];
-    for (const t of tables) {
-      if (/^plugin_[a-z0-9_]+$/i.test(t)) this.db.exec(`DROP TABLE IF EXISTS "${t}"`);
-    }
-    this.db.prepare('DELETE FROM plugin_registry WHERE id = ?').run(id);
+    this.db.transaction(() => {
+      for (const t of tables) {
+        if (/^plugin_[a-z0-9_]+$/i.test(t)) this.db.exec(`DROP TABLE IF EXISTS "${t}"`);
+      }
+      this.db
+        .prepare("UPDATE plugin_registry SET enabled = 0, tables = '[]', updated_at = strftime('%s','now') WHERE id = ?")
+        .run(id);
+    })();
     // Its schedule goes too — otherwise a removed plugin's jobs keep firing
     // against tables that no longer exist.
     let jobsRemoved = 0;
@@ -322,7 +332,7 @@ export class PluginHost {
           : undefined,
         tables: row ? (JSON.parse(row.tables) as string[]) : [],
         mcpTools: this.toolsFor(p.manifest.id).map(t => `mcp__${p.manifest.id}__${t.name}`),
-        enabled: row ? row.enabled === 1 : true,
+        enabled: row?.enabled === 1,
         installed_at: row?.installed_at,
         updated_at: row?.updated_at,
         agent: p.agent ? { id: p.agent.id ?? `${p.manifest.id}-assistant`, name: p.agent.name } : null,

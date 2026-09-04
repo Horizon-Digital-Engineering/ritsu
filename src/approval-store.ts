@@ -2,8 +2,6 @@ import type { Db } from './db.js';
 import { approvalBus, type ApprovalSnapshot } from './approval-bus.js';
 import { logger } from './util/log.js';
 
-export type ApprovalState = 'pending' | 'approved' | 'rejected';
-
 /** Max pending approvals one agent may have outstanding. Beyond this, request()
  *  returns a synthetic rejection rather than minting another row. */
 const MAX_PENDING_PER_AGENT = 8;

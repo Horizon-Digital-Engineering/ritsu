@@ -9,6 +9,9 @@ import type { SecretStore } from '../auth/secret-store.js';
 import type { MemoryBackend, Scope, RawRecordInput, AssembledContext, RawRecord, QueryFilter } from '../memory/backend.js';
 
 const scope: Scope = { user_id: 'operator', project_id: 'alice', thread_id: '1' };
+/** A LATER conversation with the same agent. getContext is cross-thread by
+ *  design — recall from the writing thread returns nothing, on every backend. */
+const laterThread: Scope = { ...scope, thread_id: '2' };
 
 /** A backend that fails on demand, to prove fire-and-forget + fallback. */
 class FlakyBackend implements MemoryBackend {
@@ -85,7 +88,7 @@ describe('MemoryService', () => {
     const svc = new MemoryService({ mode: 'sqlite', sqlite });
     const { id } = await svc.record(rec('hello'));
     assert.ok(id);
-    const ctx = await svc.getContext(scope, 'hello');
+    const ctx = await svc.getContext(laterThread, 'hello');
     assert.equal(ctx.records.length, 1);
   });
 
@@ -99,7 +102,7 @@ describe('MemoryService', () => {
     await new Promise(r => setTimeout(r, 10));
     assert.equal((await flashback.query(scope)).length, 1);
     // reads come from sqlite in dual mode.
-    const ctx = await svc.getContext(scope, 'lisinopril');
+    const ctx = await svc.getContext(laterThread, 'lisinopril');
     assert.match(ctx.records[0].content, /lisinopril/);
   });
 
@@ -136,7 +139,7 @@ describe('MemoryService', () => {
     assert.equal((await flashback.query(scope)).length, 1);
     assert.equal((await sqlite.query(scope)).length, 1);
     // getContext reads flashback.
-    const ctx = await svc.getContext(scope, 'remote');
+    const ctx = await svc.getContext(laterThread, 'remote');
     assert.equal(ctx.records.length, 1);
   });
 
@@ -146,7 +149,7 @@ describe('MemoryService', () => {
     // Seed via the service so both stores have it, THEN break flashback.
     await svc.record(rec('backstop me'));
     flaky.fail = true;
-    const ctx = await svc.getContext(scope, 'backstop');
+    const ctx = await svc.getContext(laterThread, 'backstop');
     // Fell back to sqlite; still got the record instead of throwing.
     assert.equal(ctx.records.length, 1);
     assert.match(ctx.records[0].content, /backstop/);
@@ -156,7 +159,7 @@ describe('MemoryService', () => {
     const svc = new MemoryService({ mode: 'dual', sqlite }); // flashback omitted
     const { id } = await svc.record(rec('local only'));
     assert.ok(id);
-    assert.equal((await svc.getContext(scope, 'local')).records.length, 1);
+    assert.equal((await svc.getContext(laterThread, 'local')).records.length, 1);
   });
 });
 

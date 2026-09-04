@@ -82,7 +82,7 @@ function topLevelHelp(): string {
 function reexecWithSudo(): never {
   // Re-invoke ourselves under sudo, preserving env vars the CLI honors so
   // the operator doesn't have to re-type --token / --url.
-  const passEnv = ['RITSU_ADMIN_TOKEN', 'RITSU_URL', 'RITSU_NONINTERACTIVE']
+  const passEnv = ['RITSU_ADMIN_TOKEN', 'RITSU_URL']
     .filter(k => process.env[k] !== undefined)
     .map(k => `${k}=${process.env[k]}`);
   const args = ['-E', ...passEnv, process.execPath, ...process.argv.slice(1)];

@@ -29,7 +29,12 @@ export function buildPluginToolServer(
       const fullName = `mcp__${pluginId}__${def.name}`;
       return tool(def.name, def.description, def.input, async (args: Record<string, unknown>) => {
         const run = () => Promise.resolve(def.handler(args, { agentId }));
-        const result = await (def.needsApproval ? gateMcpTool(gate, fullName, args, run) : run());
+        // Unconditional: gateMcpTool already no-ops unless the name is in the
+        // agent's gated list, and `needsApproval` is only the PLUGIN AUTHOR's
+        // opinion. AgentHost gates a wider set — every tool of every plugin for
+        // an injection-exposed agent, plus anything the operator named — and
+        // checking the author's flag here quietly dropped all of those.
+        const result = await gateMcpTool(gate, fullName, args, run);
         return def.untrustedOutput ? fenceResult(pluginId, result) : result;
       });
     }),

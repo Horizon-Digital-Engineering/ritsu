@@ -51,7 +51,11 @@ export class FakeMemoryBackend implements MemoryBackend {
     scope: Scope, query: string, opts: { budget?: number; limit?: number } = {},
   ): Promise<AssembledContext> {
     const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
-    const candidates = this.active(scope)
+    // Memory means OTHER conversations — the live thread is excluded, matching
+    // both real backends.
+    const { thread_id: live, ...crossThread } = scope;
+    const candidates = this.active(crossThread)
+      .filter(r => live == null || r.thread_id !== live)
       .sort((a, b) => b.event_time - a.event_time)
       .slice(0, LITE_CANDIDATE_CAP);
     const scored = candidates.map(r => {

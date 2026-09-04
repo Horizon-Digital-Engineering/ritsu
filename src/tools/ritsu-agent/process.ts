@@ -137,10 +137,14 @@ async function runBash(command: string, cwd: string, timeoutMs: number): Promise
     : ['/bin/bash', ['-lc', command]];
 
   return new Promise(resolveOuter => {
+    // Own process group: a command that backgrounds something leaves a
+    // grandchild holding the pipes, and killing only the shell leaves it
+    // running. `detached` lets the timeout kill the whole group.
     const child = spawn(bin, argv, {
       cwd,
       env: buildBashEnv(cwd),
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
     let out = '';
     let err = '';
@@ -157,10 +161,18 @@ async function runBash(command: string, cwd: string, timeoutMs: number): Promise
     child.stderr.on('data', d => append(d as Buffer, 'err'));
 
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      // Negative pid = the whole group, so a backgrounded grandchild dies too.
+      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); }
+      catch { child.kill('SIGKILL'); }
     }, timeoutMs);
 
-    child.on('close', (code, signal) => {
+    // Settle on 'exit', not 'close': 'close' waits for every pipe to end, and
+    // a surviving grandchild that inherited stdout holds them open forever —
+    // which hung the agent's turn with no timeout above it to rescue it.
+    let settled = false;
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       const parts: string[] = [];
       if (out) parts.push(out);
@@ -169,8 +181,11 @@ async function runBash(command: string, cwd: string, timeoutMs: number): Promise
       else if (code !== 0) parts.push(`--- exit code ${code} ---`);
       if (truncated) parts.push(`--- output truncated at ${BASH_OUTPUT_CAP} bytes ---`);
       resolveOuter(parts.join('\n') || '(no output)');
-    });
+    };
+    child.on('exit', finish);
     child.on('error', e => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       resolveOuter(`error spawning bash: ${e.message}`);
     });

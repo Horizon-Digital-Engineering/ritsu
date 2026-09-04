@@ -1,7 +1,7 @@
 import type { AgentBase, AgentDeps } from './agents/base.js';
 import { buildAgent } from './agents/registry.js';
 import { buildDispatcher, type DispatcherOpts } from './model/factory.js';
-import { SqliteMemoryStore, FlashbackMemoryStore, type MemoryStore } from './memory-store.js';
+import { SqliteMemoryStore, type MemoryStore } from './memory-store.js';
 import type { ConversationStore } from './conversation-store.js';
 import type { DispatcherKind, ModelDispatcher } from './model/dispatcher.js';
 import type { RaProvider } from './model/ritsu-agent/types.js';
@@ -45,10 +45,30 @@ export function dispatcherKindFor(def: AgentDefinition): DispatcherKind {
  * `addOrReplace`/`remove` is called (admin endpoints invoke these directly
  * after writing to the store — no event bus, no race window).
  */
+/**
+ * Which `approval_tools` entries this agent's runtime cannot actually enforce.
+ *
+ * On `api` ritsu owns the loop, so every tool call passes the gate — nothing is
+ * ungateable. On `direct` the vendor SDK runs its own built-ins without
+ * consulting us; only in-process MCP tools (`mcp__*`) reach a handler that
+ * calls `gateMcpTool`. Naming a built-in there is silently inert, which is
+ * worse than not gating at all — the operator believes there is a gate.
+ */
+export function ungateableApprovalTools(
+  approvalTools: readonly string[],
+  runtime: AgentDefinition['runtime'],
+): string[] {
+  if (runtime === 'api') return [];
+  return approvalTools.filter(t => !t.startsWith('mcp__'));
+}
+
 export class AgentHost {
   private readonly agents = new Map<string, AgentBase>();
   private pluginHost?: PluginHost;
   private jobStore?: JobStore;
+  /** Per-agent `approval_tools` entries the runtime cannot enforce. Surfaced by
+   *  the admin API so a save says so instead of only the log. */
+  private readonly ungateable = new Map<string, string[]>();
   private memoryService?: MemoryService;
   private settings?: SettingsStore;
 
@@ -101,8 +121,20 @@ export class AgentHost {
 
   async loadAll(): Promise<void> {
     const defs = await this.defStore.list();
-    for (const def of defs) this.addOrReplace(def);
-    logger.info('host.loaded', { count: defs.length });
+    let failed = 0;
+    for (const def of defs) {
+      // One unbuildable definition disables that agent, never the server.
+      // Without this a single bad row — a backend that throws, a provider with
+      // no dispatcher — takes the process down on every boot, and the row is
+      // only editable through the admin API the crash prevents from starting.
+      try {
+        this.addOrReplace(def);
+      } catch (err) {
+        failed++;
+        logger.error('agent.wire-failed', { id: def.id, err: (err as Error).message });
+      }
+    }
+    logger.info('host.loaded', { count: defs.length - failed, ...(failed ? { failed } : {}) });
   }
 
   /** Rebuild every agent whose allowlist includes `pluginId`, so a plugin
@@ -156,6 +188,14 @@ export class AgentHost {
         autoGated.push(
           'memory_remember', 'memory_update_memory', 'memory_forget',
           'agent_comms_ask_agent',
+          // Scheduling is the most durable self-persistence there is: a job
+          // feeds attacker text back as a user turn on a timer and delivers
+          // the reply to every channel, outliving the conversation the
+          // injection arrived in.
+          'schedule_create', 'schedule_pause', 'schedule_remove',
+          // Minting or patching an agent is a privilege-escalation primitive:
+          // the new agent carries whatever the caller writes into it.
+          'agent_admin_create_agent', 'agent_admin_update_agent', 'agent_admin_reload_agent',
           ...UNGATEABLE_BUILTIN_EGRESS,
         );
       } else {
@@ -163,8 +203,12 @@ export class AgentHost {
         // (the path the SDK can't bypass); the built-in egress tools can't, so
         // strip those.
         autoGated.push(
+          'mcp__scheduler__schedule_create', 'mcp__scheduler__schedule_pause',
+          'mcp__scheduler__schedule_remove',
           'mcp__memory__remember', 'mcp__memory__update_memory', 'mcp__memory__forget',
           'mcp__agent_comms__ask_agent',
+          'mcp__agent_admin__create_agent', 'mcp__agent_admin__update_agent',
+          'mcp__agent_admin__reload_agent',
         );
         const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
         if (stripped.length) {
@@ -195,6 +239,14 @@ export class AgentHost {
     // Normal agents gate only the plugin's declared-mutating tools.
     const pluginGating = readsUntrusted ? pluginAll : pluginGated;
     const gatedTools = [...new Set([...def.approval_tools, ...autoGated, ...pluginGating])];
+    // Fail loudly rather than logging an enforced-looking list that isn't.
+    const ungateable = ungateableApprovalTools(def.approval_tools, def.runtime);
+    if (ungateable.length) {
+      logger.warn('agent.approval-tools-ungateable', {
+        id: def.id, runtime: def.runtime, tools: ungateable,
+      });
+    }
+    this.ungateable.set(def.id, ungateable);
     // For ritsu-agent runtime: same memory + agent-comms toolset, just
     // exposed as native function-calls instead of MCP transport. The
     // dispatcher decides whether to use this (kind === 'ritsu-agent') or
@@ -228,6 +280,9 @@ export class AgentHost {
       // The same mcp__<id>__<name> gatedTools list below gates them.
       plugins: pluginToolSets,
       jobs: this.jobStore,
+      // CRM credentials. The native email/social tools resolve the mailbox
+      // and social accounts through this; the model never sees them.
+      secrets: this.secrets,
     } : null;
     const dispatcher = this.dispatcherFactory(def, {
       agentId: def.id,
@@ -285,7 +340,10 @@ export class AgentHost {
       // even with no other gated tools). Re-read fresh on every addOrReplace,
       // so editing approval_tools / escalation_approvable in the admin UI takes
       // effect on the next reload.
-      ...((gatedTools.length > 0 || def.escalation_approvable) ? {
+      // crm/social also need it unconditionally: their send/post tools block
+      // on the operator from inside their own handlers, independent of
+      // approval_tools.
+      ...((gatedTools.length > 0 || def.escalation_approvable || readsUntrusted) ? {
         approval: {
           agentId: def.id,
           store: this.approvals,
@@ -353,6 +411,13 @@ export class AgentHost {
 
   remove(id: string): void {
     if (this.agents.delete(id)) logger.info('agent.removed', { id });
+    this.ungateable.delete(id);
+  }
+
+  /** `approval_tools` entries wired for this agent that its runtime cannot
+   *  enforce. Empty when everything named is really gated. */
+  ungateableFor(id: string): string[] {
+    return this.ungateable.get(id) ?? [];
   }
 
   list(): Array<{ id: string; name: string; description: string }> {
@@ -373,11 +438,10 @@ export class AgentHost {
     switch (def.memory_backend) {
       case 'sqlite':
         return new SqliteMemoryStore(this.db);
-      case 'flashback':
-        // V1: only one backend type works. The schema accepts 'flashback' so
-        // V2 wiring is a one-line change here.
-        return new FlashbackMemoryStore({ endpoint: '', apiKey: '' });
       default: {
+        // The per-agent backend is sqlite-only. A remote store is reached
+        // through the MemoryService seam, configured once for the server, not
+        // chosen per agent.
         const _exhaustive: never = def.memory_backend;
         throw new Error(`Unknown memory_backend: ${JSON.stringify(_exhaustive)}`);
       }

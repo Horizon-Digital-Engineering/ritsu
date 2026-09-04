@@ -20,7 +20,7 @@ import { loadMemoryConfig } from './memory/config.js';
 import { buildMemoryService } from './memory/factory.js';
 import { SettingsStore } from './settings-store.js';
 import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
-import { BackupManager } from './backup.js';
+import { BackupManager, snapshotPreMigration } from './backup.js';
 import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
@@ -39,6 +39,12 @@ async function main(): Promise<void> {
   // Refuse to start if the bootstrap path isn't a sane place for a 0600 file.
   // Runs BEFORE openDatabase so a bad config doesn't even touch the DB.
   assertAdminTokenFileWritable(cfg);
+
+  // Snapshot BEFORE the migrations, so the newest backup is always a copy of
+  // the database as it was before this boot touched it. Best-effort.
+  const backupDirOverride = process.env.RITSU_BACKUP_DIR?.trim() || undefined;
+  try { snapshotPreMigration(cfg.dbPath, backupDirOverride); }
+  catch (err) { logger.warn('backup.pre-migration-failed', { err: (err as Error).message }); }
 
   const db = openDatabase(cfg.dbPath);
   const memory = new SqliteMemoryStore(db);
@@ -72,7 +78,7 @@ async function main(): Promise<void> {
 
   // Data safety: a consistent DB snapshot on boot (pre-deploy safety) + daily,
   // keeping the newest N. Best-effort — a backup failure never blocks startup.
-  const backup = new BackupManager(db, cfg.dbPath, process.env.RITSU_BACKUP_DIR?.trim() || undefined);
+  const backup = new BackupManager(db, cfg.dbPath, backupDirOverride);
   const BACKUP_KEEP = settings.getNumber('backups.keep', 14);
   const runBackup = (): void => {
     try { backup.createBackup(); backup.prune(BACKUP_KEEP); }
@@ -151,10 +157,13 @@ async function main(): Promise<void> {
   });
   scheduler.start();
   pruneRuns = () => scheduler.prune();
-  // Trim before the boot snapshot. Running the first prune a day later meant
-  // the pre-deploy backup always copied untrimmed history, and a service
-  // redeployed daily never pruned at all.
-  dailyMaintenance();
+  // Trim scheduler history now rather than a day later — a service redeployed
+  // daily would otherwise never prune at all. The boot snapshot is already
+  // taken (pre-migration, above), so this only prunes; taking a second one
+  // here would halve backup retention on every restart.
+  pruneRuns();
+  try { backup.prune(BACKUP_KEEP); }
+  catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
 
   const mcpApp = createMcpServer({
     host,

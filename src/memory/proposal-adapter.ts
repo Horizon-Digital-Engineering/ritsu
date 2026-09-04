@@ -55,6 +55,10 @@ export interface ProposalClientConfig {
 
 /** Thin REST client over flashback's `/proposals` doors. Kept separate from
  *  the record adapter — proposals are a different concern from raw records. */
+/** Sentinel row id: minted, but its approval row could not be located. Keeps
+ *  the proposal out of the next sync without pretending we can route it. */
+const UNKNOWN_ROW = -1;
+
 export class FlashbackProposalClient {
   constructor(private readonly cfg: ProposalClientConfig) {}
 
@@ -151,7 +155,15 @@ export class ProposalAdapter {
       // Map the row id back to the proposal so bus decisions route correctly.
       // listPending after the mint gives us the row; match on the proposal id.
       const row = this.findRowFor(p.id);
-      if (row != null) this.minted.set(p.id, row);
+      if (row == null) {
+        // Minted but not findable — the pending list is capped, or request()
+        // resolved it synchronously. Record it anyway: re-minting every sync
+        // forever is worse than dropping one proposal, and it is not "created".
+        this.minted.set(p.id, UNKNOWN_ROW);
+        logger.warn('proposal.row-not-found', { proposal_id: p.id });
+        continue;
+      }
+      this.minted.set(p.id, row);
       created++;
     }
     if (created) logger.info('proposal.synced', { created });

@@ -13,6 +13,7 @@ import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
 import type { AgentMonitorDeps } from '../tools/mcp-internal/agent-monitor.js';
 import type { ApprovalStore } from '../approval-store.js';
 import type { McpProvider } from '../tools/mcp-gateway.js';
+import type { JobStore } from '../scheduler/store.js';
 
 /**
  * Per-agent dispatcher options. claude-direct consumes the SDK opts;
@@ -51,13 +52,17 @@ export interface DispatcherOpts {
   /**
    * Human-in-the-loop approval gate. gatedTools is the agent's approval_tools
    * list; when non-empty, the dispatcher blocks on operator approval before
-   * each listed tool runs. Currently honored by the claude-direct dispatcher.
+   * each listed tool runs. The api runtime is where this is reliable — we own
+   * that loop. On direct, only in-process MCP tools can be gated (their own
+   * handlers call the gate); the vendor SDK's built-ins are stripped instead.
    */
   approval?: { agentId: string; store: ApprovalStore; gatedTools: string[] };
   /** CRM email tools — wired when the agent has the 'crm' capability. */
   email?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
   /** CRM social tools — wired when the agent has the 'social' capability. */
   social?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
+  /** Scheduling tools. Suppressed inside a scheduled run by the provider. */
+  scheduler?: { store: JobStore };
   /**
    * Ritsu-agent runtime config (Phase B). When present + kind is
    * 'ritsu-agent', the dispatcher uses its own tool-calling loop against
@@ -112,6 +117,7 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.approval   !== undefined) out.approval   = opts.approval;
   if (opts.email      !== undefined) out.email      = opts.email;
   if (opts.social     !== undefined) out.social     = opts.social;
+  if (opts.scheduler  !== undefined) out.scheduler  = opts.scheduler;
   if (opts.agentId    !== undefined) out.agentId    = opts.agentId;
   if (opts.plugins    !== undefined) out.plugins    = opts.plugins;
   return out;

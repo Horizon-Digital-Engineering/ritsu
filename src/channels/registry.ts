@@ -75,8 +75,10 @@ export class ChannelRegistry {
         return;
       }
       const instance = this.build(row);
-      this.running.set(row.id, instance);
+      // Recorded only once it actually started: a channel whose start() threw
+      // would otherwise sit in the running map forever and be reported live.
       await instance.start();
+      this.running.set(row.id, instance);
     });
   }
 
@@ -112,7 +114,10 @@ export class ChannelRegistry {
     });
   }
 
-  private build(row: ChannelRow): CommChannel {
+  /** Constructs the concrete channel. `protected` is the test seam: the
+   *  lifecycle (start/stop ordering, the running map, the per-id lock) is worth
+   *  exercising without standing up a real long-poll. */
+  protected build(row: ChannelRow): CommChannel {
     if (row.kind === 'telegram') {
       const config = TelegramConfigSchema.parse(row.config);
       return new TelegramChannel({

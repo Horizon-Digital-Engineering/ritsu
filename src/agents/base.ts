@@ -57,17 +57,27 @@ export interface AgentDeps {
 export abstract class AgentBase {
   /** Last turn written per conversation, so the next one can link to it. Bounded
    *  because a long-running host sees unboundedly many conversations; evicting
-   *  the oldest only costs a chain root on a conversation nobody has touched. */
+   *  the oldest only costs a chain root on a conversation nobody has touched.
+   *
+   *  Process-wide, not per-instance: AgentHost builds a fresh AgentBase on every
+   *  addOrReplace, so saving a system prompt or toggling a plugin would
+   *  otherwise drop prev_source_ref for every in-flight conversation. Losing it
+   *  on a process restart is the sanctioned case; losing it on a config edit is
+   *  not. Keyed by agent so two agents in one thread keep separate chains. */
   private static readonly MAX_TRACKED_THREADS = 512;
-  private readonly lastTurnRef = new Map<number, string>();
+  private static readonly lastTurnRef = new Map<string, string>();
+
+  private turnKey(conversationId: number): string { return `${this.id}:${conversationId}`; }
 
   private rememberTurn(conversationId: number, ref: string): void {
-    this.lastTurnRef.delete(conversationId);
-    this.lastTurnRef.set(conversationId, ref);
-    while (this.lastTurnRef.size > AgentBase.MAX_TRACKED_THREADS) {
-      const oldest = this.lastTurnRef.keys().next().value;
+    const refs = AgentBase.lastTurnRef;
+    const key = this.turnKey(conversationId);
+    refs.delete(key);
+    refs.set(key, ref);
+    while (refs.size > AgentBase.MAX_TRACKED_THREADS) {
+      const oldest = refs.keys().next().value;
       if (oldest === undefined) break;
-      this.lastTurnRef.delete(oldest);
+      refs.delete(oldest);
     }
   }
 
@@ -145,7 +155,7 @@ export abstract class AgentBase {
         role: 'system',
         content:
           'You have the manage_agents capability. You can mint and edit other agents on this server:\n' +
-          '  - mcp__agent_admin__create_agent(id, name, description, system_prompt, dispatcher, model, ...)\n' +
+          '  - mcp__agent_admin__create_agent(id, name, description, system_prompt, runtime, provider, model, ...)\n' +
           '  - mcp__agent_admin__update_agent(agent_id, patch)\n' +
           '  - mcp__agent_admin__reload_agent(agent_id)\n' +
           'Use sparingly. Each agent has cost (model calls, attention surface) — prefer reusing or updating ' +
@@ -289,7 +299,7 @@ export abstract class AgentBase {
     const ref = (msgId: number) => `ritsu:${conversationId}:${msgId}`;
     // The chain links each turn to the one before it, so order survives clock
     // skew and ties. A restart starts a new chain root rather than guessing.
-    const prevRef = this.lastTurnRef.get(conversationId) ?? null;
+    const prevRef = AgentBase.lastTurnRef.get(this.turnKey(conversationId)) ?? null;
     try {
       await this.deps.memoryService.record({
         type: 'conversation', content: user.text, source: `ritsu:${this.id}:user`,

@@ -128,9 +128,9 @@ CREATE TABLE IF NOT EXISTS mcp_token_usage (
 CREATE INDEX IF NOT EXISTS idx_mcp_token_usage_token ON mcp_token_usage(token_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_mcp_token_usage_ts ON mcp_token_usage(ts DESC);
 
--- Filesystem roots an agent can operate on. The first row (lowest id) is
--- treated as the agent's working directory for V0.3; future tool-level
--- enforcement will check the full set + permissions per call.
+-- Filesystem roots an agent can operate on. The first row (lowest id) is the
+-- agent's working directory; every FS/process tool call is checked against the
+-- full set and its per-path permissions.
 CREATE TABLE IF NOT EXISTS agent_workspaces (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id    TEXT NOT NULL,
@@ -511,12 +511,10 @@ function migrate(db: Db): void {
   // populated rows are rejected by verify() once strftime('%s','now') > expires_at.
   addColumnIfMissing(db, 'mcp_tokens', 'expires_at', 'INTEGER');
   backfillCallerLabels(db);
-  consolidateHumanThreads(db);
   ensureChannelsTable(db);
   ensureAdminAuditTable(db);
   ensureApiKeysTable(db);
-  // Per-agent model provider config — added late so legacy rows just have
-  // NULL here and continue using the claude-direct dispatcher unchanged.
+  // Per-agent model provider config.
   addColumnIfMissing(db, 'agent_definitions', 'provider', 'TEXT');
   addColumnIfMissing(db, 'agent_definitions', 'api_key_ref', 'INTEGER');
   addColumnIfMissing(db, 'agent_definitions', 'provider_options', "TEXT NOT NULL DEFAULT '{}'");
@@ -578,7 +576,7 @@ function migrateAgentRuntime(db: Db): void {
   tx();
 }
 
-/** API keys for the ritsu-agent runtime (Phase B). Stored AES-256-GCM
+/** API keys for the api runtime. Stored AES-256-GCM
  *  encrypted via secret-crypto; the plaintext is shown to the operator at
  *  mint time exactly once and is never readable from the API thereafter.
  *  Each agent that needs a paid model references one of these by id. */
@@ -639,61 +637,6 @@ function ensureChannelsTable(db: Db): void {
   `);
 }
 
-/**
- * Collapse legacy mess: keep the longest human-kind conversation per agent,
- * delete the rest. Agent-to-agent threads (caller_agent_id IS NOT NULL) are
- * untouched. Tiebreaker among equal-length convos: lowest id (oldest wins).
- *
- * Idempotent — once every agent has at most one human-kind thread the
- * `HAVING COUNT(*) > 1` filter returns empty and the rest of the function
- * is a no-op.
- */
-function consolidateHumanThreads(db: Db): void {
-  const dupes = db.prepare(`
-    SELECT agent_id
-      FROM conversations
-     WHERE caller_agent_id IS NULL
-     GROUP BY agent_id
-    HAVING COUNT(*) > 1
-  `).all() as Array<{ agent_id: string }>;
-  if (dupes.length === 0) return;
-  const findKeeper = db.prepare(`
-    SELECT c.id,
-           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS mc
-      FROM conversations c
-     WHERE c.agent_id = ? AND c.caller_agent_id IS NULL
-     ORDER BY mc DESC, c.id ASC
-     LIMIT 1
-  `);
-  const purgeMsgs = db.prepare(`
-    DELETE FROM messages
-     WHERE conversation_id IN (
-       SELECT id FROM conversations
-        WHERE agent_id = ? AND caller_agent_id IS NULL AND id != ?
-     )
-  `);
-  const purgeConvos = db.prepare(`
-    DELETE FROM conversations
-     WHERE agent_id = ? AND caller_agent_id IS NULL AND id != ?
-  `);
-  const tx = db.transaction(() => {
-    for (const { agent_id } of dupes) {
-      const keeper = findKeeper.get(agent_id) as { id: number; mc: number };
-      purgeMsgs.run(agent_id, keeper.id);
-      const removed = purgeConvos.run(agent_id, keeper.id);
-      console.log(JSON.stringify({
-        t: new Date().toISOString(),
-        level: 'info',
-        msg: 'consolidate.human-threads',
-        agent_id,
-        kept: keeper.id,
-        kept_msg_count: keeper.mc,
-        deleted_count: removed.changes,
-      }));
-    }
-  });
-  tx();
-}
 
 /**
  * Best-effort backfill for caller_label on legacy `messages` rows that

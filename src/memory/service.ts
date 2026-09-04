@@ -17,12 +17,12 @@
  * always resolves from a store that's on this box, so the caller's turn
  * completes regardless of the remote's health.
  */
+import type { MemoryMode } from './config.js';
 import { logger } from '../util/log.js';
 import type {
   MemoryBackend, RawRecordInput, Scope, QueryFilter, AssembledContext, RawRecord,
 } from './backend.js';
 
-export type MemoryMode = 'sqlite' | 'flashback' | 'dual';
 
 export interface MemoryServiceDeps {
   mode: MemoryMode;
@@ -136,15 +136,24 @@ export class MemoryService {
   }
 
   async read(id: string): Promise<RawRecord | null> {
-    return this.reader.read(id);
+    try {
+      return await this.reader.read(id);
+    } catch (err) {
+      // Same backstop the context/query reads get: a remote outage degrades to
+      // the local shadow copy rather than failing the turn.
+      logger.warn('memory.flashback-read-failed', { err: msg(err) });
+      return this.sqlite.read(id);
+    }
   }
 
   async lineage(id: string): Promise<RawRecord[]> {
-    return this.reader.lineage(id);
+    try {
+      return await this.reader.lineage(id);
+    } catch (err) {
+      logger.warn('memory.flashback-lineage-failed', { err: msg(err) });
+      return this.sqlite.lineage(id);
+    }
   }
-
-  /** Wrap a flashback write so a slow/failing remote never surfaces to a turn:
-   *  bounded by a timeout, errors caught + logged as a single line. */
 
   /** Turns in one thread must reach the store in order: the chain links each
    *  record to the previous one, so an out-of-order write cannot resolve its

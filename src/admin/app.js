@@ -343,11 +343,16 @@ async function loadAgentTypes() {
 }
 
 let availableTools = [];
+/** Signature of the last rendered approval-tools list, so a re-render only
+ *  happens when the candidates actually changed — rebuilding innerHTML on every
+ *  keystroke would yank focus out of a checkbox the operator is tabbing through. */
+let approvalToolsRendered = null;
 async function loadAvailableTools() {
   try {
     const { tools } = await api('GET', '/admin/api/tools/available');
     availableTools = tools;
     renderToolCheckboxes([]);
+    approvalToolsRendered = null;
     renderApprovalToolsCheckboxes([]);
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -360,11 +365,49 @@ function renderToolCheckboxes(selected) {
 function readToolsAllowlist() {
   return [...$('f-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
 }
+/**
+ * Every tool name that could be put behind an approval, for the agent as the
+ * form currently describes it. Built-ins first, then the in-process groups the
+ * selected capabilities switch on. Offering only the built-ins was the trap:
+ * on the direct runtime those are exactly the names the gate cannot enforce.
+ */
+function approvalToolCandidates() {
+  const runtime = $('f-runtime')?.value || 'direct';
+  const caps = {
+    manage_agents: !!$('f-cap-manage')?.checked,
+    monitor_agents: !!$('f-cap-monitor')?.checked,
+    crm: !!$('f-cap-crm')?.checked,
+    social: !!$('f-cap-social')?.checked,
+  };
+  const servers = ['memory', 'agent_comms', 'scheduler'];
+  if (caps.manage_agents) servers.push('agent_admin');
+  if (caps.monitor_agents) servers.push('agent_monitor');
+  if (caps.crm) servers.push('email');
+  if (caps.social) servers.push('social');
+  const mcp = servers.flatMap(srv => MCP_TOOL_MAP[srv].map(t => toolName(runtime, srv, t)));
+  return [...availableTools, ...mcp];
+}
+
+/** True when the runtime genuinely enforces a gate on this name. Mirrors
+ *  ungateableApprovalTools() on the server — keep the two in step. */
+function isGateable(toolName_, runtime) {
+  return runtime === 'api' || toolName_.startsWith('mcp__');
+}
+
 function renderApprovalToolsCheckboxes(selected) {
   const set = new Set(selected || []);
-  $('f-approval-tools').innerHTML = availableTools.map(t =>
-    `<label class="row fs-md1"><input type="checkbox" value="${esc(t)}" ${set.has(t) ? 'checked' : ''} class="input-auto" /> ${esc(t)}</label>`,
-  ).join('');
+  const runtime = $('f-runtime')?.value || 'direct';
+  // Keep a ticked name visible even if a capability was since turned off,
+  // otherwise unchecking a capability would silently drop its gates.
+  const names = [...new Set([...approvalToolCandidates(), ...set])];
+  const sig = `${runtime}|${names.join(',')}|${[...set].sort().join(',')}`;
+  if (sig === approvalToolsRendered) return;
+  approvalToolsRendered = sig;
+  $('f-approval-tools').innerHTML = names.map(t => {
+    const inert = !isGateable(t, runtime);
+    const note = inert ? ' <span class="txt-muted">(not enforceable on direct)</span>' : '';
+    return `<label class="row fs-md1"><input type="checkbox" value="${esc(t)}" ${set.has(t) ? 'checked' : ''} class="input-auto" /> ${esc(t)}${note}</label>`;
+  }).join('');
 }
 function readApprovalTools() {
   return [...$('f-approval-tools').querySelectorAll('input[type=checkbox]:checked')].map(el => el.value);
@@ -426,7 +469,7 @@ function renderAgents() {
       <td class="id-cell">${glyphFor(a.id)}${esc(a.id)}</td>
       <td><span class="badge">${esc(a.type)}</span></td>
       <td>${esc(a.name)}</td>
-      <td><span class="badge dispatcher-${esc(a.runtime)}">${esc(a.runtime)}:${esc(a.provider)}</span> ${esc(a.model)}</td>
+      <td><span class="badge runtime-${esc(a.runtime)}">${esc(a.runtime)}:${esc(a.provider)}</span> ${esc(a.model)}</td>
       <td>${esc(a.memory_backend)}</td>
       <td title="${a.last_used_at ? new Date(a.last_used_at * 1000).toISOString() : ''}">${fmtRelative(a.last_used_at)}</td>
       <td>${a.enabled ? 'on' : 'off'}</td>
@@ -532,6 +575,7 @@ function loadAgentForm(a) {
     : '';
   refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); });
   renderToolCheckboxes(a.tools_allowlist || []);
+  approvalToolsRendered = null;
   renderApprovalToolsCheckboxes(a.approval_tools || []);
   renderPluginCheckboxes(a.plugins || []);
   renderCanCallCheckboxes(a.can_call || []);
@@ -671,14 +715,20 @@ function applyToolPreset(name) {
 async function recomputeFormWarnings() {
   const banner = $('f-warnings');
   if (!banner) return;
+  // The candidate list depends on runtime + capabilities, both of which live in
+  // this form; re-render it here so it tracks them without its own listener.
+  renderApprovalToolsCheckboxes(readApprovalTools());
   await ensureWorkspaceCache();
-  banner.innerHTML = buildWarningHtml(readToolsAllowlist(), editingWorkspaces, editingAgentId);
+  banner.innerHTML = buildWarningHtml(
+    readToolsAllowlist(), editingWorkspaces, editingAgentId,
+    readApprovalTools(), $('f-runtime')?.value || 'direct',
+  );
 }
 
 /** Map (selected tools, workspace cache, editingAgentId) → the warning-banner
  *  HTML string. Pure function — easier to reason about than mutating banner
  *  in-flight across branches, and unit-testable if we ever want to. */
-function buildWarningHtml(toolList, workspaces, agentId) {
+function buildWarningHtml(toolList, workspaces, agentId, approvalTools = [], runtime = 'direct') {
   const tools = new Set(toolList);
   const needs = {
     read:  ['Read','Glob','Grep'].some(t => tools.has(t)),
@@ -692,8 +742,21 @@ function buildWarningHtml(toolList, workspaces, agentId) {
     return `<div class="warn-banner">⚠ <strong>Could not load workspaces for this agent</strong> — ${esc(workspaces.error)}. The tool-vs-workspace check is paused; the agent may still work if workspaces exist server-side.</div>`;
   }
   const wsList = Array.isArray(workspaces) ? workspaces : [];
-  const lines = collectFormWarningLines(needs, anyFsTool, wsList, agentId);
+  const lines = [
+    ...collectFormWarningLines(needs, anyFsTool, wsList, agentId),
+    ...ungateableWarningLines(approvalTools, runtime),
+  ];
   return lines.length ? `<div class="warn-banner">⚠ ${lines.join('<br>')}</div>` : '';
+}
+
+/** An approval that cannot fire is worse than no approval — the operator ticks
+ *  the box and stops worrying. Say so at the point of the tick. */
+function ungateableWarningLines(approvalTools, runtime) {
+  const inert = (approvalTools || []).filter(t => !isGateable(t, runtime));
+  if (!inert.length) return [];
+  return [`<strong>${inert.map(esc).join(', ')} cannot be gated on the direct runtime.</strong> ` +
+    'The vendor SDK runs its built-ins without consulting the gate, so these approvals will never fire. ' +
+    'Switch this agent to the api runtime, or drop those tools from its allowlist.'];
 }
 
 /** Decide which tool-vs-workspace mismatch lines to surface. Extracted from
@@ -2232,18 +2295,24 @@ const MCP_TOOL_MAP = {
   agent_monitor: ['list_agents', 'list_conversations', 'read_conversation', 'read_memory'],
   email: ['read_inbox', 'read_email', 'send_email'],
   social: ['read_mentions', 'read_my_posts', 'post_tweet', 'post_linkedin'],
+  scheduler: ['schedule_create', 'schedule_list', 'schedule_remove', 'schedule_pause'],
 };
 
-function deriveAgentTools(agent) {
-  // Memory + agent_comms MCP servers are always wired (every agent gets
-  // them at host construction). Admin + monitor are capability-gated.
+/** The two runtimes name the same tool differently: the direct runtime reaches
+ *  them over MCP (mcp__memory__remember), the api runtime as native function
+ *  calls (memory_remember). Rendering one naming for both is a lie an operator
+ *  copies into approval_tools, where it silently matches nothing. */
+function toolName(runtime, server, tool) {
+  if (runtime === 'api') return server === 'scheduler' ? tool : `${server}_${tool}`;
+  return `mcp__${server}__${tool}`;
+}
+
+function deriveAgentTools(agent, pluginManifests = []) {
+  // Memory + agent_comms are always wired (every agent gets them at host
+  // construction). Everything else is capability- or allowlist-gated.
   const caps = new Set(agent.capabilities || []);
-  const mcp = [
-    {
-      server: 'memory',
-      tools: MCP_TOOL_MAP.memory,
-      note: `memory backend: ${agent.memory_backend}`,
-    },
+  const groups = [
+    { server: 'memory', tools: MCP_TOOL_MAP.memory, note: `memory backend: ${agent.memory_backend}` },
     {
       server: 'agent_comms',
       tools: MCP_TOOL_MAP.agent_comms,
@@ -2251,6 +2320,7 @@ function deriveAgentTools(agent) {
         ? `can_call: ${agent.can_call.join(', ')}`
         : '(can_call empty — ask_agent has no allowed targets)',
     },
+    { server: 'scheduler', tools: MCP_TOOL_MAP.scheduler, note: 'suppressed inside a scheduled run' },
     ...(caps.has('manage_agents')
       ? [{ server: 'agent_admin', tools: MCP_TOOL_MAP.agent_admin, note: 'capability: manage_agents' }]
       : []),
@@ -2261,10 +2331,25 @@ function deriveAgentTools(agent) {
       ? [{ server: 'email', tools: MCP_TOOL_MAP.email, note: 'capability: crm — send_email always needs approval' }]
       : []),
     ...(caps.has('social')
-      ? [{ server: 'social', tools: MCP_TOOL_MAP.social, note: 'capability: social — post_tweet always needs approval' }]
+      ? [{ server: 'social', tools: MCP_TOOL_MAP.social, note: 'capability: social — posting always needs approval' }]
       : []),
-  ];
-  return { builtin: agent.tools_allowlist || [], mcp };
+  ].map(g => ({
+    label: `${toolName(agent.runtime, g.server, '*')}`,
+    note: g.note,
+    names: g.tools.map(t => toolName(agent.runtime, g.server, t)),
+  }));
+  // Plugins are always mcp__<id>__<tool> on both runtimes — the native loop
+  // exposes plugin tools under the same names.
+  for (const id of agent.plugins || []) {
+    const manifest = pluginManifests.find(p => p.id === id);
+    if (!manifest) continue;
+    groups.push({
+      label: `mcp__${id}__*`,
+      note: `plugin: ${manifest.name || id}`,
+      names: manifest.mcpTools || [],
+    });
+  }
+  return { builtin: agent.tools_allowlist || [], groups };
 }
 
 let toolsAgentId = null;
@@ -2290,24 +2375,25 @@ async function renderToolsFor(agentId) {
   try {
     // Pull the full agent record (definitive over agentCache, which omits
     // some derived fields on its list payload), plus the workspaces.
-    const [agent, wsResp] = await Promise.all([
+    const [agent, wsResp, plugResp] = await Promise.all([
       api('GET', `/admin/agents/${encodeURIComponent(agentId)}`),
       api('GET', `/admin/agents/${encodeURIComponent(agentId)}/workspaces`).catch(() => ({ workspaces: [] })),
+      api('GET', '/admin/api/plugins').catch(() => ({ plugins: [] })),
     ]);
-    const { builtin, mcp } = deriveAgentTools(agent);
+    const { builtin, groups } = deriveAgentTools(agent, plugResp.plugins || []);
     const wsList = wsResp.workspaces || [];
 
     const builtinSection = builtin.length
       ? builtin.map(t => `<span class="badge accent-tint">${esc(t)}</span>`).join('')
       : '<em class="txt-muted">(none — agent has no built-in SDK tools allowlisted)</em>';
 
-    const mcpSection = mcp.map(s => `
+    const mcpSection = groups.map(g => `
       <div class="mb-4">
-        <div class="fw-600">mcp__${esc(s.server)}__*
-          <span class="panel-sub-label ml-2">${esc(s.note)}</span>
+        <div class="fw-600">${esc(g.label)}
+          <span class="panel-sub-label ml-2">${esc(g.note)}</span>
         </div>
         <div class="mt-1">
-          ${s.tools.map(t => `<code class="mr-3 fs-md">mcp__${esc(s.server)}__${esc(t)}</code>`).join('')}
+          ${g.names.map(n => `<code class="mr-3 fs-md">${esc(n)}</code>`).join('')}
         </div>
       </div>
     `).join('');

@@ -15,8 +15,14 @@ export function asString(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
 }
 
-/** Like `asString` but only accepts non-empty strings. Use when the caller
- *  treats `''` as "missing" anyway — saves the `.trim() === ''` check. */
-export function asNonEmptyString(v: unknown): string | undefined {
-  return typeof v === 'string' && v.trim() ? v : undefined;
+/** Coerce an unknown to a finite number, or null. Tool arguments arrive as
+ *  parsed JSON, so a provider can send a string where the schema said integer;
+ *  numeric strings are accepted, everything else is null. */
+export function asNumber(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }

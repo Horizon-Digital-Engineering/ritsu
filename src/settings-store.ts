@@ -5,10 +5,12 @@
  * whose values the admin API never returns.
  *
  * Deliberately not a mirror of the environment: a setting lives here or it
- * lives in the env file, never both. Values that gate security (auth mode,
- * sandbox switches, allowed hosts) stay in the root-owned env file on purpose,
- * because the admin UI is reachable with an admin token and a leaked token
- * must not be able to turn a protection off.
+ * lives in the env file, never both. Values that can turn a protection OFF
+ * (auth mode, sandbox switches, allowed hosts) stay in the root-owned env file
+ * on purpose — the admin UI is reachable with an admin token, and a leaked
+ * token must not be able to disable a defence. Knobs that only tighten or
+ * loosen a bound, like the OAuth rate limits, do live here: the floor is the
+ * code default, so the worst an editor can do is inconvenience themselves.
  */
 import type { Db } from './db.js';
 import { logger } from './util/log.js';
