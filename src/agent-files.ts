@@ -12,7 +12,8 @@
  * roots, keeping containment while ignoring the agent-facing flags.
  */
 import { readdirSync, lstatSync } from 'node:fs';
-import { readFile, writeFile, mkdir, unlink, lstat } from 'node:fs/promises';
+import { open, mkdir, unlink, lstat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { join, resolve, relative, dirname } from 'node:path';
 import type { Workspace } from './workspace-store.js';
 import { canonicalizeUnderWorkspace, assertNotSymlink } from './tools/permissions.js';
@@ -117,15 +118,24 @@ export async function readWorkspaceFile(
 ): Promise<FileResult<{ canonical: string; data: Buffer }> | FileError> {
   const c = await contain(rawPath, workspaces);
   if (!c.ok) return c;
-  let st;
-  try { st = await lstat(c.canonical); }
+  // Everything below happens through ONE descriptor. contain() proved the
+  // path safe, but an agent writing inside the root could swap file→symlink
+  // between that check and the read; O_NOFOLLOW makes the open itself fail
+  // on a symlink, so there is no window to race.
+  let fh;
+  try { fh = await open(c.canonical, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); }
   catch { return { ok: false, reason: 'no such file' }; }
-  if (!st.isFile()) return { ok: false, reason: 'not a regular file' };
-  if (st.size > MAX_DOWNLOAD_BYTES) {
-    return { ok: false, reason: `file is ${st.size} bytes; the download cap is ${MAX_DOWNLOAD_BYTES}` };
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) return { ok: false, reason: 'not a regular file' };
+    if (st.size > MAX_DOWNLOAD_BYTES) {
+      return { ok: false, reason: `file is ${st.size} bytes; the download cap is ${MAX_DOWNLOAD_BYTES}` };
+    }
+    const data = await fh.readFile();
+    return { ok: true, value: { canonical: c.canonical, data } };
+  } finally {
+    await fh.close();
   }
-  const data = await readFile(c.canonical);
-  return { ok: true, value: { canonical: c.canonical, data } };
 }
 
 export async function writeWorkspaceFile(
@@ -139,17 +149,33 @@ export async function writeWorkspaceFile(
   }
   const c = await contain(rawPath, workspaces);
   if (!c.ok) return c;
-  let exists = true;
-  try { await lstat(c.canonical); } catch { exists = false; }
-  if (exists && !overwrite) {
-    return { ok: false, reason: 'file exists; pass overwrite to replace it' };
-  }
   // Parent dirs may be new (uploading into a fresh subfolder) — but the
   // parent must still canonicalize inside a root, which contain() proved
   // for the leaf, and mkdir cannot escape what resolve already pinned.
   await mkdir(dirname(c.canonical), { recursive: true });
-  await writeFile(c.canonical, data);
-  logger.info('workspace-file.written', { path: c.canonical, bytes: data.length, overwrote: exists });
+  // One open enforces everything atomically: O_EXCL is the no-overwrite
+  // answer (no exists-then-write race), and O_NOFOLLOW on the overwrite
+  // path refuses a symlink swapped in after contain() checked — otherwise
+  // the write would land wherever the link points.
+  const flags = overwrite
+    ? fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW
+    : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL;
+  let fh;
+  try { fh = await open(c.canonical, flags, 0o644); }
+  catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EEXIST') return { ok: false, reason: 'file exists; pass overwrite to replace it' };
+    if (e.code === 'ELOOP') return { ok: false, reason: 'refusing to write through a symlink' };
+    return { ok: false, reason: `open failed: ${e.message}` };
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) return { ok: false, reason: 'not a regular file' };
+    await fh.writeFile(data);
+  } finally {
+    await fh.close();
+  }
+  logger.info('workspace-file.written', { path: c.canonical, bytes: data.length });
   return { ok: true, value: { canonical: c.canonical } };
 }
 
