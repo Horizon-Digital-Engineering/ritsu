@@ -1,9 +1,10 @@
 /**
  * Native network tools for the ritsu-agent runtime: WebFetch + WebSearch.
  *
- * WebSearch: targets a searxng instance (self-hosted, anonymized, no API
- * keys). URL comes from RITSU_SEARXNG_URL or `provider_options.searxng_url`
- * on the agent definition. Returns top-N results with title / url / snippet.
+ * WebSearch: runs against the operator-selected provider (see search.ts) —
+ * a self-hosted searxng, or a hosted API. Configured in the admin UI; an
+ * agent may override the searxng URL via `provider_options.searxng_url`.
+ * Returns top-N results with title / url / snippet.
  *
  * WebFetch: HTTP GET with manually-followed redirects + size cap. SSRF
  * guard (see ssrf-guard.ts) rejects URLs / redirects / resolved IPs that
@@ -16,8 +17,10 @@ import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
-import { stripTrailingSlashes } from '../../util/path-utils.js';
 import { safeFetch, validateUrl } from './ssrf-guard.js';
+import {
+  buildSearchRequest, formatHits, searchConfigError, type SearchConfig,
+} from './search.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
 const FETCH_MAX_BYTES = 200 * 1024;     // 200KB content cap
@@ -27,31 +30,23 @@ const SEARCH_MAX_RESULTS = 10;
 // the major-version of a recent Firefox so requests pattern-match what
 // non-headless traffic looks like.
 const WEBFETCH_USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0';
-// No default — set RITSU_SEARXNG_URL to point at your searxng instance.
-// If unset, the WebSearch tool returns an error rather than fetching from
-// a hardcoded host (avoids shipping operator-specific infra in source).
-const DEFAULT_SEARXNG_URL = process.env.RITSU_SEARXNG_URL ?? '';
-
-interface SearxngResult {
-  title?: string;
-  url?: string;
-  content?: string;
-}
-
-interface SearxngResponse {
-  query?: string;
-  results?: SearxngResult[];
-}
-
 export interface NetworkOptions {
-  /** Per-agent override for the searxng URL. Falls back to env / default. */
+  /** Operator-configured provider + credential, resolved by the caller. When
+   *  absent, WebSearch reports that it is unconfigured instead of guessing. */
+  search?: SearchConfig;
+  /** Per-agent override for the searxng URL, applied over `search.url`. */
   searxng_url?: string;
   /** Optional custom fetch (tests inject). */
   fetchImpl?: typeof fetch;
 }
 
 export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
-  const searxngUrl = stripTrailingSlashes(opts.searxng_url ?? DEFAULT_SEARXNG_URL);
+  // The per-agent searxng override wins over the operator default, so one
+  // agent can point at a different instance without changing the global.
+  const search: SearchConfig | undefined = opts.search
+    ? { ...opts.search, ...(opts.searxng_url ? { url: opts.searxng_url } : {}) }
+    : (opts.searxng_url ? { provider: 'searxng', url: opts.searxng_url } : undefined);
+  const searchError = search ? searchConfigError(search) : 'WebSearch is not configured';
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   return [
@@ -131,9 +126,8 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
     {
       name: 'WebSearch',
       description:
-        'Web search via a self-hosted searxng instance. Returns the top results as ' +
-        '`[N] title — url — snippet` lines. The searxng URL is operator-configured ' +
-        '(RITSU_SEARXNG_URL env or per-agent provider_options.searxng_url).',
+        'Web search. Returns the top results as `[N] title — url — snippet` lines. ' +
+        'The backend is operator-configured; results look the same whichever it is.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -146,29 +140,22 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
       handler: async (args) => {
         const query = asString(args.query).trim();
         if (!query) return 'error: query required';
-        if (!searxngUrl) return 'error: WebSearch unavailable — set RITSU_SEARXNG_URL';
+        if (!search || searchError) return `error: WebSearch unavailable — ${searchError}`;
         const limit = typeof args.limit === 'number' ? args.limit : SEARCH_MAX_RESULTS;
         const auth = checkToolUse('WebSearch', {}, []);
         if (!auth.ok) return `denied: ${auth.reason}`;
         try {
-          const url = `${searxngUrl}/search?` + new URLSearchParams({ q: query, format: 'json' }).toString();
+          const req = buildSearchRequest(search, query, limit, WEBFETCH_USER_AGENT);
           const ctl = new AbortController();
           const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-          const res = await fetchImpl(url, {
-            signal: ctl.signal,
-            headers: { 'User-Agent': WEBFETCH_USER_AGENT },
-          }).finally(() => clearTimeout(timer));
-          if (!res.ok) return `error: searxng HTTP ${res.status} ${res.statusText}`;
-          const json = await res.json() as SearxngResponse;
-          const results = (json.results ?? []).slice(0, limit);
-          logger.debug('ra.network.websearch', { query, count: results.length });
-          if (results.length === 0) return '(no results)';
-          return results.map((r, i) => {
-            const title = (r.title ?? '(no title)').replace(/\s+/g, ' ').trim();
-            const u = r.url ?? '(no url)';
-            const snippet = (r.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 280);
-            return `[${i + 1}] ${title} — ${u}${snippet ? '\n    ' + snippet : ''}`;
-          }).join('\n');
+          const res = await fetchImpl(req.url, { ...req.init, signal: ctl.signal })
+            .finally(() => clearTimeout(timer));
+          // Name the provider in the error: with several possible backends,
+          // "HTTP 401" alone doesn't say which credential is wrong.
+          if (!res.ok) return `error: ${search.provider} HTTP ${res.status} ${res.statusText}`;
+          const hits = req.parse(await res.json()).slice(0, limit);
+          logger.debug('ra.network.websearch', { provider: search.provider, query, count: hits.length });
+          return formatHits(hits);
         } catch (err) {
           const e = err as Error;
           return e.name === 'AbortError'

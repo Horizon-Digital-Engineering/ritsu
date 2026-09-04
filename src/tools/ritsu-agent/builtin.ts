@@ -557,7 +557,7 @@ export function buildAgentMonitorTools(deps: RaToolDeps): RaTool[] {
  *  - FS: Read, Write, Edit                — exposed if workspaces present
  *  - Process: Bash, Glob, Grep            — exposed if workspaces present
  *  - Network: WebFetch, WebSearch         — exposed always (no fs scope needed);
- *                                           WebSearch needs RITSU_SEARXNG_URL
+ *                                           WebSearch needs a configured backend
  *
  * The toolsAllowlist filter is name-based and case-sensitive (matches the
  * Claude SDK convention: "Read", "Write", "Bash" — capitalized).

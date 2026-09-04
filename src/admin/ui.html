@@ -764,6 +764,47 @@
       </div>
     </section>
 
+    <section id="pane-settings" class="pane">
+      <div class="panel">
+        <h2>Web search</h2>
+        <p>The backend the <code>WebSearch</code> tool runs against. <strong>searxng</strong> is self-hosted and needs no key — only an instance URL. The hosted providers need an API key, stored encrypted. An agent can point at a different searxng instance with <code>provider_options.searxng_url</code>. Results are formatted identically whichever backend answers, so switching is invisible to agents.</p>
+        <form class="grid" id="search-form">
+          <label for="set-search-provider">provider</label>
+          <select id="set-search-provider"></select>
+
+          <label for="set-search-url">searxng url</label>
+          <input id="set-search-url" placeholder="http://searxng.example:8080" />
+
+          <label for="set-search-key">api key</label>
+          <input id="set-search-key" type="password" autocomplete="off" placeholder="hosted providers only; encrypted at rest" />
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Runtime</h2>
+        <p>Operational knobs. Blank restores the built-in default, shown as the placeholder. Security switches — auth mode, sandboxing, allowed hosts — deliberately stay in the service environment file: this page is reachable with an admin token, and a leaked token must not be able to turn a protection off.</p>
+        <form class="grid" id="runtime-form">
+          <label for="set-backups-keep">backups kept</label>
+          <input id="set-backups-keep" data-setting="backups.keep" />
+
+          <label for="set-approval-ttl">approval TTL (seconds)</label>
+          <input id="set-approval-ttl" data-setting="approvals.ttl_seconds" />
+
+          <label for="set-oauth-min">OAuth requests / IP / minute</label>
+          <input id="set-oauth-min" data-setting="oauth.max_per_ip_minute" />
+
+          <label for="set-dcr-hour">client registrations / IP / hour</label>
+          <input id="set-dcr-hour" data-setting="oauth.dcr_max_per_ip_hour" />
+
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="settings-save">Save</button>
+            <span id="settings-note" class="txt-muted"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+
     <section id="pane-backups" class="pane">
       <div class="panel">
         <h2>Backups</h2>

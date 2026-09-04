@@ -77,6 +77,8 @@ export interface AdminDeps {
   /** Memory config resolved at boot — what the running process is actually
    *  using (stored secrets may differ until the next restart). */
   memoryBoot?: { mode: string; remote: string | null };
+  /** Operator-tunable runtime knobs. Absent = the settings UI reports 503. */
+  settings?: import('../settings-store.js').SettingsStore;
 }
 
 /**
@@ -1368,7 +1370,10 @@ export function createAdminApp(deps: AdminDeps) {
 
   // ---- health (live connectivity checks) ---------------------------------
   app.get('/admin/api/health', async (_req: Request, res: Response) => {
-    res.json(await runHealthChecks({ defStore, apiKeys: deps.apiKeys, secrets }));
+    res.json(await runHealthChecks({
+      defStore, apiKeys: deps.apiKeys, secrets,
+      ...(deps.settings ? { settings: deps.settings } : {}),
+    }));
   });
 
   // ---- backups + export (data safety) ------------------------------------
