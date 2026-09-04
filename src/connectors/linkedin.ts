@@ -40,9 +40,17 @@ export function loadLinkedInConfig(secrets: SecretStore): LinkedInConfig | null 
 }
 
 /** Publish a text post to the configured author (person or company page).
- *  Returns the post URN + a viewable URL. */
-export async function publishPost(cfg: LinkedInConfig, text: string): Promise<{ id: string; url: string }> {
-  const res = await fetch('https://api.linkedin.com/rest/posts', {
+ *  Returns the post URN + a viewable URL.
+ *
+ *  `fetchImpl` is the test seam, matching the convention in health.ts and the
+ *  network tools — this reaches a third-party API that must not be called from
+ *  a test run. */
+export async function publishPost(
+  cfg: LinkedInConfig,
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ id: string; url: string }> {
+  const res = await fetchImpl('https://api.linkedin.com/rest/posts', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${cfg.accessToken}`,

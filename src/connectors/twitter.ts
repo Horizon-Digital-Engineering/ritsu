@@ -44,14 +44,33 @@ export function loadTwitterConfig(secrets: SecretStore): TwitterConfig | null {
   return { appKey, appSecret, accessToken, accessSecret };
 }
 
-function client(cfg: TwitterConfig): TwitterApi {
-  return new TwitterApi({
-    appKey: cfg.appKey,
-    appSecret: cfg.appSecret,
-    accessToken: cfg.accessToken,
-    accessSecret: cfg.accessSecret,
-  });
+/** A tweet as the v2 timeline endpoints return it. */
+interface RawTweet { id: string; text: string; author_id?: string; created_at?: string }
+type Timeline = Promise<{ data: { data?: RawTweet[] } }>;
+
+/**
+ * The slice of twitter-api-v2 these functions actually use. Declared narrowly
+ * so a test can stand in for the client — these calls reach a paid third-party
+ * API and must never fire from a test run.
+ */
+export interface TwitterClient {
+  v2: {
+    me(): Promise<{ data: { id: string; username?: string } }>;
+    userMentionTimeline(id: string, opts: Record<string, unknown>): Timeline;
+    userTimeline(id: string, opts: Record<string, unknown>): Timeline;
+    tweet(text: string): Promise<{ data: { id: string } }>;
+    reply(text: string, replyToId: string): Promise<{ data: { id: string } }>;
+  };
 }
+
+export type TwitterClientFactory = (cfg: TwitterConfig) => TwitterClient;
+
+const client: TwitterClientFactory = (cfg) => new TwitterApi({
+  appKey: cfg.appKey,
+  appSecret: cfg.appSecret,
+  accessToken: cfg.accessToken,
+  accessSecret: cfg.accessSecret,
+});
 
 /** v2 caps max_results at 100 and floors mention/timeline at 5. */
 function clampResults(n: number): number {
@@ -59,8 +78,10 @@ function clampResults(n: number): number {
 }
 
 /** Recent mentions of the authenticated account. */
-export async function getMentions(cfg: TwitterConfig, limit = 10): Promise<TweetSummary[]> {
-  const c = client(cfg);
+export async function getMentions(
+  cfg: TwitterConfig, limit = 10, makeClient: TwitterClientFactory = client,
+): Promise<TweetSummary[]> {
+  const c = makeClient(cfg);
   const me = await c.v2.me();
   const res = await c.v2.userMentionTimeline(me.data.id, {
     max_results: clampResults(limit),
@@ -74,8 +95,10 @@ export async function getMentions(cfg: TwitterConfig, limit = 10): Promise<Tweet
 }
 
 /** Recent posts by the authenticated account. */
-export async function getMyTweets(cfg: TwitterConfig, limit = 10): Promise<TweetSummary[]> {
-  const c = client(cfg);
+export async function getMyTweets(
+  cfg: TwitterConfig, limit = 10, makeClient: TwitterClientFactory = client,
+): Promise<TweetSummary[]> {
+  const c = makeClient(cfg);
   const me = await c.v2.me();
   const res = await c.v2.userTimeline(me.data.id, {
     max_results: clampResults(limit),
@@ -89,8 +112,10 @@ export async function getMyTweets(cfg: TwitterConfig, limit = 10): Promise<Tweet
 }
 
 /** Post a tweet, optionally as a reply. Returns the new tweet id + URL. */
-export async function postTweet(cfg: TwitterConfig, text: string, replyToId?: string): Promise<{ id: string; url: string }> {
-  const c = client(cfg);
+export async function postTweet(
+  cfg: TwitterConfig, text: string, replyToId?: string, makeClient: TwitterClientFactory = client,
+): Promise<{ id: string; url: string }> {
+  const c = makeClient(cfg);
   const res = replyToId
     ? await c.v2.reply(text, replyToId)
     : await c.v2.tweet(text);
