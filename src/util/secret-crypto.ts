@@ -40,7 +40,7 @@ import {
 } from 'node:crypto';
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync,
-  accessSync, constants as fsConstants,
+  accessSync, openSync, closeSync, constants as fsConstants,
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from './log.js';
@@ -91,6 +91,27 @@ const FALLBACK_KEY_PATH = '/opt/ritsu/data/.master-key';
 
 let cachedKey: Buffer | null = null;
 
+/**
+ * Create a new key file and write to it, or fail. Never `writeFileSync` on a
+ * path we only checked with `existsSync` earlier: that call follows symlinks,
+ * and its `mode` is ignored when the file already exists. Between the check
+ * and the write, anything able to write the directory could drop a symlink
+ * (the key lands wherever it points) or a pre-made 0644 file (the key lands
+ * world-readable, because the mode is only applied on create). The data-dir
+ * fallback path makes that reachable by the service user itself.
+ *
+ * O_EXCL closes both: it fails if the path exists at all, symlink included,
+ * so the race becomes a clean error instead of a leaked key.
+ */
+export function writeNewKeyFile(path: string, key: Buffer): void {
+  const fd = openSync(path, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+  try {
+    writeFileSync(fd, key.toString('base64') + '\n');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function loadOrBootstrapMasterKey(): Buffer {
   const envVal = process.env[ENV_KEY_VAR];
   if (envVal?.trim()) {
@@ -130,7 +151,7 @@ function loadOrBootstrapMasterKey(): Buffer {
   const systemDir = dirname(SYSTEM_KEY_PATH);
   if (canWriteDir(systemDir)) {
     const key = randomBytes(KEY_BYTES);
-    writeFileSync(SYSTEM_KEY_PATH, key.toString('base64') + '\n', { mode: 0o600 });
+    writeNewKeyFile(SYSTEM_KEY_PATH, key);
     logger.warn('crypto.master-key.bootstrapped', {
       path: SYSTEM_KEY_PATH,
       hint: 'Generated a master key. BACK IT UP — it is deliberately excluded from database backups, and losing it makes every stored secret unrecoverable.',
@@ -155,7 +176,7 @@ function loadOrBootstrapMasterKey(): Buffer {
   // mkdirSync respects existing dir perms; explicitly chmod so an
   // already-present 0755 dir gets tightened.
   try { chmodSync(dir, 0o700); } catch { /* not the owner — operator must fix */ }
-  writeFileSync(FALLBACK_KEY_PATH, key.toString('base64') + '\n', { mode: 0o600 });
+  writeNewKeyFile(FALLBACK_KEY_PATH, key);
   logger.warn('crypto.master-key.bootstrapped', {
     path: FALLBACK_KEY_PATH,
     hint: 'Auto-generated master key. Back it up — losing it makes every encrypted secret unrecoverable.',
