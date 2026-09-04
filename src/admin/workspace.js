@@ -1403,8 +1403,8 @@ async function boot() {
     await loadAgents();
   } catch (e) {
     $('view-chat').classList.add('active');
-    // DOM construction, not innerHTML: the message can carry server-derived
-    // text, and textContent needs no escaping to be inert.
+    // Built as DOM nodes: the message can carry server-derived text, and
+    // textContent is inert without any escaping.
     const div = document.createElement('div');
     div.className = 'empty txt-err';
     div.textContent = `could not load agents: ${e.message}`;
