@@ -55,6 +55,22 @@ export interface AgentDeps {
  * construction time — no hardcoded fields in subclasses.
  */
 export abstract class AgentBase {
+  /** Last turn written per conversation, so the next one can link to it. Bounded
+   *  because a long-running host sees unboundedly many conversations; evicting
+   *  the oldest only costs a chain root on a conversation nobody has touched. */
+  private static readonly MAX_TRACKED_THREADS = 512;
+  private readonly lastTurnRef = new Map<number, string>();
+
+  private rememberTurn(conversationId: number, ref: string): void {
+    this.lastTurnRef.delete(conversationId);
+    this.lastTurnRef.set(conversationId, ref);
+    while (this.lastTurnRef.size > AgentBase.MAX_TRACKED_THREADS) {
+      const oldest = this.lastTurnRef.keys().next().value;
+      if (oldest === undefined) break;
+      this.lastTurnRef.delete(oldest);
+    }
+  }
+
   constructor(
     readonly definition: AgentDefinition,
     protected readonly deps: AgentDeps,
@@ -66,21 +82,20 @@ export abstract class AgentBase {
   get systemPrompt(): string { return this.definition.system_prompt; }
 
   /** Memory scope for this agent's turns: the human is the user, the conversation
-   *  is the session.
+   *  is the thread.
    *
-   *  The agent is deliberately NOT the project. `project_id` is a hard partition
-   *  in the store — curation never derives across it — so agent-as-project would
-   *  seal each agent into its own knowledge island and make cross-agent recall
-   *  impossible. The agent is provenance, and it is already carried losslessly in
-   *  `source` (`ritsu:<agent>:<role>`) plus the `agent` label.
+   *  The agent is deliberately NOT the project. It is provenance, not a scope,
+   *  and it is already carried losslessly in `source` (`ritsu:<agent>:<role>`)
+   *  plus the `agent` label. Filing turns under the agent would also make the
+   *  agent look like a boundary in the store, which it is not.
    *
-   *  `container_id` is namespaced because it leaves this process: the bare integer
+   *  `thread_id` is namespaced because it leaves this process: the bare integer
    *  is only unique within ritsu's own SQLite, and the store holds conversations
    *  from other writers too. */
   private memoryScope(conversationId: number): Scope {
     return {
       user_id: this.deps.userId ?? 'operator',
-      container_id: `ritsu:${conversationId}`,
+      thread_id: `ritsu:${conversationId}`,
     };
   }
 
@@ -272,10 +287,14 @@ export abstract class AgentBase {
     // A stable id per message so a re-mirror dedups instead of duplicating:
     // the store keys on (user_id, source, source_ref).
     const ref = (msgId: number) => `ritsu:${conversationId}:${msgId}`;
+    // The chain links each turn to the one before it, so order survives clock
+    // skew and ties. A restart starts a new chain root rather than guessing.
+    const prevRef = this.lastTurnRef.get(conversationId) ?? null;
     try {
       await this.deps.memoryService.record({
         type: 'conversation', content: user.text, source: `ritsu:${this.id}:user`,
         source_ref: ref(user.id), event_time: user.at, scope,
+        prev_source_ref: prevRef,
         payload: {
           ...common,
           caller_label: user.callerLabel ?? null,
@@ -285,6 +304,7 @@ export abstract class AgentBase {
       await this.deps.memoryService.record({
         type: 'conversation', content: assistant.text, source: `ritsu:${this.id}:assistant`,
         source_ref: ref(assistant.id), event_time: assistant.at, scope,
+        prev_source_ref: ref(user.id),
         payload: {
           ...common,
           // The configured model and the one that actually answered can differ
@@ -295,6 +315,7 @@ export abstract class AgentBase {
           latency_ms: assistant.latencyMs ?? null,
         },
       });
+      this.rememberTurn(conversationId, ref(assistant.id));
     } catch (err) {
       logger.warn('agent.record-turn-failed', { agent: this.id, err: (err as Error).message });
     }

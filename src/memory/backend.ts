@@ -22,19 +22,10 @@ export type MemType = 'conversation' | 'document' | 'state_object';
 
 export interface Scope {
   user_id: string;
-  /**
-   * A HARD PARTITION: curation never derives across it, so records in different
-   * projects can never be clustered or distilled together. Reserve it for
-   * genuinely separate bodies of work. A grouping that is really just a sorter —
-   * an agent name, a chat folder — belongs in `payload`.
-   */
+  /** Where the chat is filed. A filter, not a wall — maps to flashback's topic. */
   project_id?: string | null;
-  /**
-   * The stream this arrived on — a chat thread, a watched folder, an import
-   * batch. Episodes form per container. Namespace it: it has to stay unique
-   * across every writer, not just this one.
-   */
-  container_id?: string | null;
+  /** The conversation this arrived on. Episodes form per thread. Namespace it. */
+  thread_id?: string | null;
   mode?: string | null;
 }
 
@@ -47,9 +38,11 @@ export interface RawRecordInput {
   source: string;
   source_ref?: string | null;
   scope: Scope;
-  importance?: number | null;
   /** id of the record this one supersedes (forward pointer; old row untouched). */
   supersedes?: string | null;
+  /** source_ref of the turn this one followed — the store resolves it to an id.
+   *  An unresolvable one is a gap, not an error: the record is kept unchained. */
+  prev_source_ref?: string | null;
   acl?: unknown;
   /** epoch seconds expiry; omit to keep forever. */
   ttl?: number | null;
@@ -70,10 +63,12 @@ export interface RawRecord {
   source_ref: string | null;
   user_id: string;
   project_id: string | null;
-  container_id: string | null;
+  thread_id: string | null;
   mode: string | null;
-  importance: number | null;
   supersedes: string | null;
+  /** What the writer claimed the previous turn was. Null once nothing preceded
+   *  it; unresolved claims are kept so a gap in the chain stays visible. */
+  prev_source_ref: string | null;
   acl: unknown;
   ttl: number | null;
   payload: unknown;

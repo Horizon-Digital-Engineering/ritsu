@@ -19,12 +19,13 @@ export class FakeMemoryBackend implements MemoryBackend {
     const now = nowSec();
     this.rows.push({
       id, type: rec.type, content: rec.content,
-      content_hash: createHash('md5').update(rec.content).digest('hex'),
+      content_hash: createHash('sha256').update(rec.content).digest('hex'),
       event_time: rec.event_time ?? now, ingest_time: now, source: rec.source,
       source_ref: rec.source_ref ?? null, user_id: rec.scope.user_id,
-      project_id: rec.scope.project_id ?? null, container_id: rec.scope.container_id ?? null,
-      mode: rec.scope.mode ?? null, importance: rec.importance ?? null,
+      project_id: rec.scope.project_id ?? null, thread_id: rec.scope.thread_id ?? null,
+      mode: rec.scope.mode ?? null,
       supersedes: rec.supersedes ?? null,
+      prev_source_ref: rec.prev_source_ref ?? null,
       // JSON round-trip so acl/payload match sqlite's serialize-then-parse
       // semantics (drops undefined keys, NaN->null) and aren't stored by reference.
       acl: rec.acl != null ? JSON.parse(JSON.stringify(rec.acl)) : null,
@@ -40,7 +41,7 @@ export class FakeMemoryBackend implements MemoryBackend {
     return this.rows.filter(r =>
       r.user_id === scope.user_id &&
       (scope.project_id == null || r.project_id === scope.project_id) &&
-      (scope.container_id == null || r.container_id === scope.container_id) &&
+      (scope.thread_id == null || r.thread_id === scope.thread_id) &&
       (scope.mode == null || r.mode === scope.mode) &&
       !superseded.has(r.id) &&
       (r.ttl == null || r.ttl > now));

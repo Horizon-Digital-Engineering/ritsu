@@ -56,6 +56,7 @@ export class MemoryService {
   private readonly sqlite: MemoryBackend;
   private readonly flashback?: MemoryBackend;
   private readonly ffTimeoutMs: number;
+  private readonly writeChains = new Map<string, Promise<unknown>>();
 
   constructor(deps: MemoryServiceDeps) {
     this.mode = deps.mode;
@@ -91,7 +92,8 @@ export class MemoryService {
     }
     if (this.mode === 'dual') {
       const local = await this.sqlite.record(rec);
-      this.fireAndForget('record', () => this.flashback!.record(rec));
+      const key = `${rec.scope.user_id}:${rec.scope.thread_id ?? ''}`;
+      this.fireAndForgetOrdered('record', key, () => this.flashback!.record(rec));
       return local;
     }
     // flashback authoritative: shadow sqlite (awaited so the backstop is real),
@@ -143,10 +145,31 @@ export class MemoryService {
 
   /** Wrap a flashback write so a slow/failing remote never surfaces to a turn:
    *  bounded by a timeout, errors caught + logged as a single line. */
-  private fireAndForget(op: string, fn: () => Promise<unknown>): void {
-    withTimeout(Promise.resolve().then(fn), this.ffTimeoutMs).catch(err => {
-      logger.warn('memory.flashback-fire-and-forget-failed', { op, err: msg(err) });
+
+  /** Turns in one thread must reach the store in order: the chain links each
+   *  record to the previous one, so an out-of-order write cannot resolve its
+   *  parent. Different threads still run concurrently.
+   *
+   *  Ordering waits on the REQUEST settling, not on our timeout — a timeout
+   *  only stops us waiting, it does not stop the write, so releasing the chain
+   *  there would put two writes for one thread in flight at once. The request
+   *  is bounded by its own AbortSignal, so it always settles. */
+  private fireAndForgetOrdered(op: string, key: string, fn: () => Promise<unknown>): void {
+    const run = (): Promise<void> => {
+      const underlying = Promise.resolve().then(fn);
+      withTimeout(underlying, this.ffTimeoutMs).catch(err => {
+        logger.warn('memory.flashback-fire-and-forget-failed', { op, err: msg(err) });
+      });
+      return underlying.then(
+        () => undefined,
+        () => undefined,
+      );
+    };
+    const prev = this.writeChains.get(key) ?? Promise.resolve();
+    const next = prev.then(run, run).finally(() => {
+      if (this.writeChains.get(key) === next) this.writeChains.delete(key);
     });
+    this.writeChains.set(key, next);
   }
 }
 

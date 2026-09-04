@@ -34,11 +34,11 @@ function toIngestBody(rec: RawRecordInput): Record<string, unknown> {
   const b: Record<string, unknown> = { type: rec.type, content: rec.content, source: rec.source };
   if (rec.event_time != null) b.event_time = toIso(rec.event_time);
   if (rec.source_ref != null) b.source_ref = rec.source_ref;
-  if (rec.scope.project_id != null) b.project_id = rec.scope.project_id;
-  if (rec.scope.container_id != null) b.container_id = rec.scope.container_id;
+  if (rec.scope.project_id != null) b.topic_id = rec.scope.project_id;
+  if (rec.scope.thread_id != null) b.thread_id = rec.scope.thread_id;
   if (rec.scope.mode != null) b.mode = rec.scope.mode;
-  if (rec.importance != null) b.importance = rec.importance;
   if (rec.supersedes != null) b.supersedes = rec.supersedes;
+  if (rec.prev_source_ref != null) b.prev_source_ref = rec.prev_source_ref;
   if (rec.payload != null) b.payload = rec.payload;
   // `ttl` and `acl` are deliberately NOT forwarded. Flashback's raw layer is
   // append-only, so a row can't expire — an expiry there would only hide truth
@@ -60,11 +60,11 @@ function fromRow(r: WireRow): RawRecord {
     source: String(r.source),
     source_ref: str(r.source_ref),
     user_id: String(r.user_id),
-    project_id: str(r.project_id),
-    container_id: str(r.container_id),
+    project_id: str(r.topic_id),
+    thread_id: str(r.thread_id),
     mode: str(r.mode),
-    importance: typeof r.importance === 'number' ? r.importance : null,
     supersedes: str(r.supersedes),
+    prev_source_ref: str(r.prev_source_ref),
     acl: r.acl ?? null,
     ttl: typeof r.ttl === 'string' ? fromIso(r.ttl) : null,
     payload: r.payload ?? null,
@@ -73,8 +73,8 @@ function fromRow(r: WireRow): RawRecord {
 
 function scopeBody(scope: Scope): Record<string, unknown> {
   const b: Record<string, unknown> = {};
-  if (scope.project_id != null) b.project_id = scope.project_id;
-  if (scope.container_id != null) b.container_id = scope.container_id;
+  if (scope.project_id != null) b.topic_id = scope.project_id;
+  if (scope.thread_id != null) b.thread_id = scope.thread_id;
   if (scope.mode != null) b.mode = scope.mode;
   return b;
 }
@@ -106,7 +106,16 @@ export class FlashbackMemoryBackend implements MemoryBackend {
   }
 
   async getContext(scope: Scope, query: string, opts: { budget?: number; limit?: number } = {}): Promise<AssembledContext> {
-    const body = { ...scopeBody(scope), query, ...(opts.limit != null ? { limit: opts.limit } : {}) };
+    // Memory means OTHER conversations. The live thread is already on screen, so
+    // it is EXCLUDED here rather than filtered for — passing it as a positive
+    // scope would return only what the caller just said back to itself.
+    const { thread_id: _live, ...scoped } = scopeBody(scope);
+    const body = {
+      ...scoped,
+      query,
+      ...(scope.thread_id != null ? { exclude_thread_id: scope.thread_id } : {}),
+      ...(opts.limit != null ? { limit: opts.limit } : {}),
+    };
     const res = await this.post<{ records?: WireRow[] }>('/records/context', body);
     return { records: (res.records ?? []).map(fromRow) };
   }

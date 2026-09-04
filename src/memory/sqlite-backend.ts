@@ -31,10 +31,10 @@ CREATE TABLE IF NOT EXISTS raw_records (
   source_ref    TEXT,
   user_id       TEXT NOT NULL,
   project_id    TEXT,
-  container_id    TEXT,
+  thread_id     TEXT,
   mode          TEXT,
-  importance    REAL,
   supersedes    TEXT,
+  prev_source_ref TEXT,
   acl           TEXT,
   ttl           INTEGER,
   payload       TEXT
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS raw_records (
 CREATE INDEX IF NOT EXISTS raw_records_scope_type ON raw_records (user_id, project_id, type);
 CREATE INDEX IF NOT EXISTS raw_records_event_time ON raw_records (event_time);
 CREATE INDEX IF NOT EXISTS raw_records_ingest_time ON raw_records (ingest_time);
-CREATE INDEX IF NOT EXISTS raw_records_container ON raw_records (container_id);
+CREATE INDEX IF NOT EXISTS raw_records_thread ON raw_records (thread_id);
 CREATE INDEX IF NOT EXISTS raw_records_mode ON raw_records (mode);
 CREATE INDEX IF NOT EXISTS raw_records_hash ON raw_records (content_hash);
 CREATE INDEX IF NOT EXISTS raw_records_supersedes ON raw_records (supersedes);
@@ -52,7 +52,8 @@ CREATE INDEX IF NOT EXISTS raw_records_supersedes ON raw_records (supersedes);
 interface RawRow {
   id: string; type: string; content: string; content_hash: string;
   event_time: number; ingest_time: number; source: string; source_ref: string | null;
-  user_id: string; project_id: string | null; container_id: string | null; mode: string | null;
+  user_id: string; project_id: string | null; thread_id: string | null; mode: string | null;
+  prev_source_ref: string | null;
   importance: number | null; supersedes: string | null; acl: string | null;
   ttl: number | null; payload: string | null;
 }
@@ -62,7 +63,8 @@ function rowToRecord(r: RawRow): RawRecord {
     id: r.id, type: r.type as MemType, content: r.content, content_hash: r.content_hash,
     event_time: r.event_time, ingest_time: r.ingest_time, source: r.source,
     source_ref: r.source_ref, user_id: r.user_id, project_id: r.project_id,
-    container_id: r.container_id, mode: r.mode, importance: r.importance, supersedes: r.supersedes,
+    thread_id: r.thread_id, mode: r.mode, supersedes: r.supersedes,
+    prev_source_ref: r.prev_source_ref,
     acl: r.acl != null ? JSON.parse(r.acl) : null,
     ttl: r.ttl, payload: r.payload != null ? JSON.parse(r.payload) : null,
   };
@@ -72,7 +74,7 @@ function scopeClause(scope: Scope): { sql: string; args: (string)[] } {
   const clauses = ['user_id = ?'];
   const args: string[] = [scope.user_id];
   if (scope.project_id != null) { clauses.push('project_id = ?'); args.push(scope.project_id); }
-  if (scope.container_id != null) { clauses.push('container_id = ?'); args.push(scope.container_id); }
+  if (scope.thread_id != null) { clauses.push('thread_id = ?'); args.push(scope.thread_id); }
   if (scope.mode != null) { clauses.push('mode = ?'); args.push(scope.mode); }
   return { sql: clauses.join(' AND '), args };
 }
@@ -87,37 +89,52 @@ export const LITE_CANDIDATE_CAP = 500;
  *  column rename in SCHEMA never reaches a live mirror — the indexes below it
  *  then fail on the missing column and the process dies at construction.
  *  Rename in place first. Delete once no database predates the rename. */
-function renameSessionIdColumn(db: Db): void {
+function renameLegacyColumns(db: Db): void {
   const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
     .map(c => c.name);
   if (cols.length === 0) return;                                   // fresh install
-  if (cols.includes('container_id') || !cols.includes('session_id')) return;
-  db.exec('ALTER TABLE raw_records RENAME COLUMN session_id TO container_id');
-  logger.info('memory.sqlite.renamed-session-id');
+  if (cols.includes('thread_id')) return;
+  if (cols.includes('session_id')) {
+    db.exec('ALTER TABLE raw_records RENAME COLUMN session_id TO thread_id');
+    logger.info('memory.sqlite.renamed-session-id');
+  } else if (cols.includes('container_id')) {
+    db.exec('ALTER TABLE raw_records RENAME COLUMN container_id TO thread_id');
+    logger.info('memory.sqlite.renamed-container-id');
+  }
+}
+
+function addPrevSourceRefColumn(db: Db): void {
+  const cols = (db.prepare('PRAGMA table_info(raw_records)').all() as Array<{ name: string }>)
+    .map(c => c.name);
+  if (cols.length === 0 || cols.includes('prev_source_ref')) return;
+  db.exec('ALTER TABLE raw_records ADD COLUMN prev_source_ref TEXT');
+  logger.info('memory.sqlite.added-prev-source-ref');
 }
 
 export class SqliteMemoryBackend implements MemoryBackend {
   constructor(private readonly db: Db) {
-    renameSessionIdColumn(this.db);
+    renameLegacyColumns(this.db);
+    addPrevSourceRefColumn(this.db);
     this.db.exec(SCHEMA);
   }
 
   async record(rec: RawRecordInput): Promise<{ id: string }> {
     const id = randomUUID();
     const now = nowSec();
-    // md5 to match flashback's generated content_hash column (integrity/dedup,
-    // not security) so the hash agrees across backends.
-    const content_hash = createHash('md5').update(rec.content).digest('hex');
+    // sha256 to match flashback's content_hash so the hash agrees across backends.
+    const content_hash = createHash('sha256').update(rec.content).digest('hex');
     this.db.prepare(
       `INSERT INTO raw_records
         (id, type, content, content_hash, event_time, ingest_time, source, source_ref,
-         user_id, project_id, container_id, mode, importance, supersedes, acl, ttl, payload)
+         user_id, project_id, thread_id, mode, supersedes, prev_source_ref,
+         acl, ttl, payload)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       id, rec.type, rec.content, content_hash, rec.event_time ?? now, now, rec.source,
       rec.source_ref ?? null, rec.scope.user_id, rec.scope.project_id ?? null,
-      rec.scope.container_id ?? null, rec.scope.mode ?? null, rec.importance ?? null,
-      rec.supersedes ?? null, rec.acl != null ? JSON.stringify(rec.acl) : null,
+      rec.scope.thread_id ?? null, rec.scope.mode ?? null,
+      rec.supersedes ?? null, rec.prev_source_ref ?? null,
+      rec.acl != null ? JSON.stringify(rec.acl) : null,
       rec.ttl ?? null, rec.payload != null ? JSON.stringify(rec.payload) : null,
     );
     return { id };
