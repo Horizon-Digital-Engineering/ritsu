@@ -14,6 +14,13 @@ to an operator decision instead of a flat hard-deny.
 
 ### Added
 
+- **Claude session token in the admin UI.** The `claude-direct` credential
+  (`claude setup-token`) is stored in the SecretStore and managed on the API
+  Keys page instead of a root-owned env file. Saving reloads every agent, so a
+  rotated token applies without restarting the service; the value is never
+  returned by the API, only a short hint. An environment-provided token still
+  works and is reported as such.
+
 - **Two-tier runtime model.** Agents declare `runtime` (`direct` = vendor
   runtime on a subscription, `claude` today; `api` = ritsu's own tool loop on
   a metered key) + `provider`. Existing databases migrate automatically.

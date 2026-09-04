@@ -31,9 +31,21 @@ import { logger } from '../util/log.js';
  * PreToolUse hook — canUseTool never sees them on the Max-plan subprocess path;
  * in-process MCP tools gate inside their own handlers.
  */
+/** SecretStore namespace + keys for the Claude subscription session. */
+export const CLAUDE_NS = 'claude';
+export const CLAUDE_SECRET_KEYS = ['oauth_token'] as const;
+
 export interface ClaudeDirectOpts {
   /** The agent this dispatcher serves. Used to scope plugin tool calls. */
   agentId?: string;
+  /**
+   * Long-lived subscription token (`claude setup-token`) handed to the spawned
+   * CLI as CLAUDE_CODE_OAUTH_TOKEN. Set from the operator-managed SecretStore,
+   * so the credential lives with every other secret instead of in a root-owned
+   * env file. Omitted = the subprocess authenticates however its own
+   * environment says to.
+   */
+  oauthToken?: string;
   /** Working directory the agent operates in (taken from its workspaces[0].path). */
   cwd?: string;
   /** Allowlist of SDK tool names. Empty/undefined = no tools. */
@@ -168,6 +180,11 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
         ...(allowedTools.length > 0 ? { allowedTools } : {}),
         ...(canUseTool ? { canUseTool } : {}),
+        // env REPLACES the child's environment rather than merging, so spread
+        // process.env or the subprocess loses PATH/HOME and never starts.
+        ...(this.opts.oauthToken
+          ? { env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: this.opts.oauthToken } }
+          : {}),
       },
     })) {
       const text = extractAssistantText(event);

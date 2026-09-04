@@ -103,4 +103,41 @@ describe('GET /admin/api/memory', () => {
     assert.equal(d.effective_next_boot.mode, 'flashback');
     assert.equal(d.stored.mode, 'flashback');
   });
+
+  it('the claude-token endpoint stores a token and never returns it', async () => {
+    // Over the endpoint's 20-character minimum, and assembled from parts so
+    // it reads as a fixture rather than a live credential.
+    const token = ['alpha', 'bravo', 'charlie', 'delta'].join('-');
+    const post = await fetch(`${base}/admin/api/claude-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    assert.equal(post.status, 200);
+
+    const res = await fetch(`${base}/admin/api/claude-token`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const body = await res.text();
+    assert.equal(res.status, 200);
+    // The hint may show the ends; the whole value must never appear.
+    assert.ok(!body.includes(token), 'response leaked the token');
+    assert.match(body, /"token_set":true/);
+  });
+
+  it('the claude-token endpoint requires auth', async () => {
+    const res = await fetch(`${base}/admin/api/claude-token`);
+    assert.equal(res.status, 401);
+  });
+
+  it('clearing removes the stored token', async () => {
+    const del = await fetch(`${base}/admin/api/claude-token`, {
+      method: 'DELETE', headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(del.status, 204);
+    const res = await fetch(`${base}/admin/api/claude-token`, {
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert.match(await res.text(), /"token_set":false/);
+  });
 });

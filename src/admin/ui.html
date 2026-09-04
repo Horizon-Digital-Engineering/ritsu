@@ -584,6 +584,21 @@
     <!-- ============ API KEYS ============ -->
     <section id="pane-api-keys" class="pane">
       <div class="panel">
+        <h2>Claude subscription session</h2>
+        <p>The credential <code>claude-direct</code> agents run on — your plan, not metered API billing. Generate it on any machine with <code>claude setup-token</code> and paste it here; it is account-scoped, not tied to the host. Stored encrypted like every other secret, and saving reloads every agent, so a rotated token takes effect without restarting the service. Tokens last about a year — when this one expires, every claude-direct agent stops at once.</p>
+        <div id="claude-token-state" class="mb-3">loading…</div>
+        <form class="grid" id="claude-token-form">
+          <label for="cs-token">token</label>
+          <input id="cs-token" type="password" autocomplete="off" placeholder="sk-ant-oat01-… (paste once; encrypted at rest)" />
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="claude-token-save">Save</button>
+            <button type="button" class="danger" data-action="claude-token-clear">Clear</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
         <h2>API Keys</h2>
         <p>
           Third-party model-provider keys (Anthropic, OpenAI, OpenRouter, local LiteLLM). Encrypted-at-rest with AES-256-GCM via the master key. Plaintext is shown <strong>once</strong> at mint time and never readable again. Agents that need a paid model reference one of these by id; <em>Phase B</em> wires the actual ritsu-agent runtime that uses them — for now the rows just sit here ready.
