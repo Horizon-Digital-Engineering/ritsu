@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDatabase, type Db } from '../db.js';
 import { createAdminApp } from '../admin/server.js';
+import { ProjectStore } from '../project-store.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
 import { SqliteConversationStore } from '../conversation-store.js';
@@ -81,6 +82,7 @@ before(async () => {
     oauth: new OAuthStore(db),
     version: 'test',
     authMode: 'on',
+    projects: new ProjectStore(db),
     mcpUrl: 'http://127.0.0.1:1',
   });
 

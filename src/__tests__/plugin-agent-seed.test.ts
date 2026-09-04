@@ -18,6 +18,7 @@ import { SqliteChannelStore } from '../channels/channel-store.js';
 import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { createAdminApp } from '../admin/server.js';
+import { ProjectStore } from '../project-store.js';
 import { BackupManager } from '../backup.js';
 import { healthPlugin } from '../plugins/health/plugin.js';
 
@@ -62,6 +63,7 @@ describe('plugin agent preset (CORE-2)', () => {
       const app = createAdminApp({
         defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
         approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db), oauth,
+        projects: new ProjectStore(db),
         version: 'test', authMode: 'off', mcpUrl: 'http://127.0.0.1:7333',
       });
       await new Promise<void>(r => { server = app.listen(0, '127.0.0.1', () => r()); });

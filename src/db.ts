@@ -74,6 +74,30 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id);
 
+-- Workspace projects: named groups an operator files chats and workspace
+-- files under, inside one agent's workspace UI. Purely organizational —
+-- deleting a project unfiles its members, it never deletes them. Distinct
+-- from agent_workspaces (filesystem roots) and from the projects PLUGIN
+-- (plugin_projects_* tables), which are unrelated concepts.
+CREATE TABLE IF NOT EXISTS agent_projects (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id   TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_projects_agent ON agent_projects(agent_id);
+
+-- File → project tags. path is the canonical absolute path of a file inside
+-- one of the agent's workspace roots. Tags can dangle when a file is moved or
+-- deleted on disk; readers filter against the live listing rather than
+-- pretending the table is authoritative over the filesystem.
+CREATE TABLE IF NOT EXISTS agent_project_files (
+  project_id INTEGER NOT NULL REFERENCES agent_projects(id),
+  path       TEXT NOT NULL,
+  PRIMARY KEY (project_id, path)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id INTEGER NOT NULL REFERENCES conversations(id),
@@ -502,6 +526,8 @@ function migrate(db: Db): void {
   // Inter-agent conversations: caller_agent_id is null for human-initiated
   // threads, set to the calling agent's id for agent-to-agent threads.
   addColumnIfMissing(db, 'conversations', 'caller_agent_id', 'TEXT');
+  // Which workspace project a conversation is filed under (null = unfiled).
+  addColumnIfMissing(db, 'conversations', 'project_id', 'INTEGER');
   // Per-message caller attribution: identifies who/what produced a given user
   // turn within a conversation. Values: 'admin-ui' for the admin chat panel,
   // an MCP token's name (or OAuth client_id) for bearer-authed calls, or the

@@ -21,6 +21,7 @@ import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { BackupManager } from '../backup.js';
 import { createAdminApp } from '../admin/server.js';
+import { ProjectStore } from '../project-store.js';
 import { _resetKeyCacheForTests } from '../util/secret-crypto.js';
 
 describe('GET /admin/api/memory', () => {
@@ -54,7 +55,8 @@ describe('GET /admin/api/memory', () => {
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'),
       channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
-      oauth, version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
+      oauth, projects: new ProjectStore(db),
+      version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
       memoryBoot: { mode: 'sqlite', remote: null },
     });
     await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', () => resolve()); });

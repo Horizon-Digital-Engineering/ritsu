@@ -40,6 +40,10 @@ import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { RateLimiter } from '../util/rate-limit.js';
+import { ProjectStore } from '../project-store.js';
+import {
+  listFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile, canonicalIfContained,
+} from '../agent-files.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { TOOL_NAMES, TOOL_INFO } from '../mcp-server.js';
@@ -81,6 +85,7 @@ export interface AdminDeps {
   approvals: ApprovalStore;
   commsDenials: CommsDenialStore;
   backup: BackupManager;
+  projects: ProjectStore;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -400,7 +405,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects } = deps;
 
   /** Secrets are unwritable without a master key. Answering with the reason
    *  beats a 500 whose cause is only visible in the journal. */
@@ -572,6 +577,7 @@ export function createAdminApp(deps: AdminDeps) {
     // (Express mounts paths relative to the mount point: GET /admin
     // arrives here as req.path '/'. With trailing slash → '/index.html'.)
     if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
+      || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
       || req.path.startsWith('/plugins/')) {
       next();
       return;
@@ -618,7 +624,7 @@ export function createAdminApp(deps: AdminDeps) {
   const jsonDefault = express.json({ limit: '256kb' });
   const jsonAsk = express.json({ limit: '32mb' });
   app.use((req, res, next) =>
-    req.method === 'POST' && req.path.endsWith('/ask')
+    req.method === 'POST' && (req.path.endsWith('/ask') || req.path.endsWith('/files'))
       ? jsonAsk(req, res, next)
       : jsonDefault(req, res, next),
   );
@@ -720,6 +726,22 @@ export function createAdminApp(deps: AdminDeps) {
     return readFileSync(p, 'utf8');
   })();
 
+  const wsHtml = (() => {
+    const p = join(__dirname, 'workspace.html');
+    if (!existsSync(p)) throw new Error(`admin/workspace.html missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const wsJs = (() => {
+    const p = join(__dirname, 'workspace.js');
+    if (!existsSync(p)) throw new Error(`admin/workspace.js missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const wsCss = (() => {
+    const p = join(__dirname, 'workspace.css');
+    if (!existsSync(p)) throw new Error(`admin/workspace.css missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+
   function setNoCache(res: Response): void {
     // Mobile Safari is notoriously eager to serve stale assets across
     // ritsu releases; these headers force a fresh fetch on every visit.
@@ -744,6 +766,22 @@ export function createAdminApp(deps: AdminDeps) {
     res.setHeader('Content-Type', 'text/css; charset=utf-8');
     setNoCache(res);
     res.send(uiCss);
+  });
+
+  // The agent-workspace page — the chat-first main surface. The classic admin
+  // panel stays at /admin; the root of the admin port lands here.
+  app.get('/', (_req: Request, res: Response) => { res.redirect('/admin/workspace'); });
+  app.get('/admin/workspace', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('html').send(wsHtml);
+  });
+  app.get('/admin/workspace.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(wsJs);
+  });
+  app.get('/admin/workspace.css', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('text/css').send(wsCss);
   });
 
   // ---- log level ---------------------------------------------------------
@@ -1253,6 +1291,156 @@ export function createAdminApp(deps: AdminDeps) {
     const agent = await defStore.read(param(req.params.agent));
     if (agent) host.addOrReplace(agent);
     res.status(ok ? 204 : 404).end();
+  });
+
+  // ---- workspace UI: projects, files, default chat -----------------------
+  // The agent-workspace page (chat-first landing). Projects are organizational
+  // only; files are the agent's real workspace directories, served through the
+  // same containment guards the agent FS tools use.
+
+  const ProjectNameBody = z.object({ name: z.string().trim().min(1).max(120) }).strict();
+  const ConvProjectBody = z.object({ project_id: z.number().int().positive().nullable() }).strict();
+  const FileUploadBody = z.object({
+    path: z.string().min(1).max(1024),
+    data: z.string().max(34_000_000),   // base64; decoded cap enforced below
+    overwrite: z.boolean().optional(),
+  }).strict();
+  const FileTagBody = z.object({
+    path: z.string().min(1).max(1024),
+    project_id: z.number().int().positive().nullable(),
+  }).strict();
+
+  app.get('/admin/api/agents/:id/projects', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.json({ projects: projects.listFor(id) });
+  });
+
+  app.post('/admin/api/agents/:id/projects', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectNameBody);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.status(201).json(projects.create(id, body.name));
+  });
+
+  app.patch('/admin/api/projects/:pid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectNameBody);
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(projects.rename(pid, body.name) ? 200 : 404).json({ ok: true });
+  });
+
+  app.delete('/admin/api/projects/:pid', (req: Request, res: Response) => {
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(projects.delete(pid) ? 204 : 404).end();
+  });
+
+  // File a conversation under a project. Cross-agent filing is refused: the
+  // project and the conversation must belong to the same agent, or a chat
+  // would surface inside another agent's workspace.
+  app.patch('/admin/api/conversations/:cid/project', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ConvProjectBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const owner = conversations.agentIdOf(cid);
+    if (!owner) { res.status(404).json({ error: 'no such conversation' }); return; }
+    if (body.project_id != null) {
+      const project = projects.read(body.project_id);
+      if (!project) { res.status(404).json({ error: 'no such project' }); return; }
+      if (project.agent_id !== owner) {
+        res.status(400).json({ error: 'project belongs to a different agent' });
+        return;
+      }
+    }
+    conversations.setProject(cid, body.project_id);
+    res.json({ ok: true });
+  });
+
+  // The default chat: the stable human thread telegram and bare asks already
+  // share, plus which channel (if any) feeds it — so the UI can badge it.
+  app.get('/admin/api/agents/:id/default-chat', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    const bound = deps.channels.list().find(c => c.operator_agent_id === id && c.enabled);
+    res.json({
+      conversation_id: conversations.findOrStartHumanThread(id),
+      channel: bound ? { id: bound.id, kind: bound.kind, name: bound.name } : null,
+    });
+  });
+
+  app.get('/admin/api/agents/:id/files', (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    const listing = listFiles(workspaces.listFor(id));
+    const tags = projects.fileTagsFor(id);
+    res.json({
+      truncated: listing.truncated,
+      files: listing.files.map(f => ({ ...f, project_id: tags.get(f.path) ?? null })),
+    });
+  });
+
+  app.get('/admin/api/agents/:id/file', async (req: Request, res: Response) => {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    const r = await readWorkspaceFile(path, workspaces.listFor(param(req.params.id)));
+    if (!r.ok) { res.status(404).json({ error: r.reason }); return; }
+    const base = r.value.canonical.split('/').pop() ?? 'file';
+    const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_') || 'file';
+    // Always an opaque download: never let the browser interpret workspace
+    // content (an uploaded .html would otherwise render under this origin).
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.send(r.value.data);
+  });
+
+  app.post('/admin/api/agents/:id/files', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FileUploadBody);
+    if (!body) return;
+    const data = Buffer.from(body.data, 'base64');
+    const r = await writeWorkspaceFile(
+      body.path, data, workspaces.listFor(param(req.params.id)), body.overwrite === true,
+    );
+    if (!r.ok) { res.status(400).json({ error: r.reason }); return; }
+    res.status(201).json({ path: r.value.canonical, bytes: data.length });
+  });
+
+  app.delete('/admin/api/agents/:id/file', async (req: Request, res: Response) => {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    const r = await deleteWorkspaceFile(path, workspaces.listFor(param(req.params.id)));
+    if (!r.ok) { res.status(404).json({ error: r.reason }); return; }
+    projects.dropTag(r.value.canonical);   // a deleted file must not keep a tag
+    res.status(204).end();
+  });
+
+  app.post('/admin/api/agents/:id/files/tag', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FileTagBody);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (body.project_id != null) {
+      const project = projects.read(body.project_id);
+      if (!project) { res.status(404).json({ error: 'no such project' }); return; }
+      if (project.agent_id !== id) {
+        res.status(400).json({ error: 'project belongs to a different agent' });
+        return;
+      }
+    }
+    // Only a real, contained file can carry a tag — refuse paths outside the
+    // roots and paths that do not exist, so tags cannot be minted speculatively.
+    const canonical = await canonicalIfContained(body.path, workspaces.listFor(id));
+    if (!canonical) { res.status(404).json({ error: 'no such workspace file' }); return; }
+    projects.tagFile(id, canonical, body.project_id);
+    res.json({ ok: true, path: canonical });
+  });
+
+  // Explicit new chat. A bare ask (no conversation_id) deliberately lands in
+  // the default thread, so starting a FRESH conversation needs its own verb.
+  app.post('/admin/api/agents/:id/conversations', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.status(201).json({ conversation_id: conversations.start(id) });
   });
 
   // ---- one-shot test pane (uses a draft prompt; never persisted) --------

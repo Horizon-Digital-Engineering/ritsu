@@ -40,6 +40,8 @@ export interface ConversationSummary {
   message_count: number;
   /** Derived: first ~60 chars of the first user message. Empty if no messages yet. */
   title: string;
+  /** Workspace project this conversation is filed under; null = unfiled. */
+  project_id: number | null;
 }
 
 /** 'human' = caller_agent_id IS NULL; 'agent' = inter-agent threads; 'all' = both. */
@@ -80,6 +82,10 @@ export interface ConversationStore {
    * accidental new conversations.
    */
   findOrStartHumanThread(agent_id: string): number;
+  /** File a conversation under a workspace project (null unfiles it). Returns
+   *  false for an unknown conversation. Cross-agent validation is the
+   *  caller's job — this store doesn't know which agent owns a project. */
+  setProject(conversation_id: number, project_id: number | null): boolean;
 }
 
 export class SqliteConversationStore implements ConversationStore {
@@ -203,6 +209,13 @@ export class SqliteConversationStore implements ConversationStore {
     return Number(r.lastInsertRowid);
   }
 
+  setProject(conversation_id: number, project_id: number | null): boolean {
+    const r = this.db
+      .prepare('UPDATE conversations SET project_id = ? WHERE id = ?')
+      .run(project_id, conversation_id);
+    return r.changes > 0;
+  }
+
   findOrStartHumanThread(agent_id: string): number {
     const existing = this.db
       .prepare(
@@ -222,7 +235,7 @@ export class SqliteConversationStore implements ConversationStore {
     involves?: string,
   ): ConversationSummary[] {
     const baseSql = `
-      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at,
+      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id,
              (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
              COALESCE(
                (SELECT m.content FROM messages m
