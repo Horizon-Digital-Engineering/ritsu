@@ -39,6 +39,8 @@ import {
   encryptWithKey,
   decryptWithKey,
   masterKeyWritePath,
+  masterKeyStatus,
+  masterKeyCreatePath,
   _resetKeyCacheForTests,
   isEncrypted,
 } from '../../util/secret-crypto.js';
@@ -256,12 +258,38 @@ async function cmdRotate(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
+/** Create the first key. Separate from rotate, which re-encrypts existing rows
+ *  under a replacement — there is nothing to re-encrypt before one exists. */
+async function cmdInit(_ctx: CommandContext): Promise<number> {
+  const status = masterKeyStatus();
+  if (status.ok) {
+    console.error(`a master key is already active (${status.source}) — use 'rotate' to replace it`);
+    return 2;
+  }
+  const path = masterKeyCreatePath();
+  const key = generateMasterKey();
+  writeFileSync(path, key.toString('base64') + '\n', { mode: 0o600 });
+  chmodSync(path, 0o600);
+  console.log('');
+  console.log(`  Master key created at ${path}`);
+  console.log('');
+  console.log('  BACK IT UP NOW. It is deliberately excluded from database backups,');
+  console.log('  and without it every stored secret is unrecoverable.');
+  console.log('');
+  console.log('  Restart the service to pick it up:  sudo systemctl restart ritsu');
+  console.log('');
+  return 0;
+}
+
 export const masterKeyCommand: Command = {
   name: 'master-key',
   summary: 're-encrypt at-rest secrets under a fresh master key (and back up the old one)',
   needsRoot: true,
   help: () => [
     'ritsu master-key — manage the AES-256-GCM master key',
+    '',
+    '  ritsu master-key init             create the first key (secrets cannot be',
+    '                                    stored until one exists)',
     '',
     '  ritsu master-key rotate [--yes]   re-encrypt every secret-at-rest row under',
     '                                    a fresh key and atomically swap the on-disk',
@@ -277,6 +305,7 @@ export const masterKeyCommand: Command = {
     '  sudo systemctl start ritsu',
   ].join('\n'),
   run: async (ctx: CommandContext) => {
+    if (ctx.subcommand === 'init') return cmdInit(ctx);
     if (ctx.subcommand === 'rotate') return cmdRotate(ctx);
     console.error(`unknown subcommand: ${ctx.subcommand ?? '(none)'}`);
     console.error(`run 'ritsu master-key --help' for usage`);

@@ -38,7 +38,7 @@ describe('runHealthChecks (System → Health)', () => {
     const seen: Array<{ url: string; auth: string | null }> = [];
     const { checks } = await runHealthChecks({
       defStore: okDefStore, apiKeys, secrets: fakeSecrets({}),
-      fetchImpl: fakeFetch(seen, () => 200), claudeCredsPath: '/nonexistent',
+      fetchImpl: fakeFetch(seen, () => 200),
     });
 
     assert.ok(seen.some(s => s.url === 'https://api.anthropic.com/v1/models' && s.auth === 'sk-ant-x'));
@@ -58,7 +58,6 @@ describe('runHealthChecks (System → Health)', () => {
         if (u.includes('localhost:9')) throw new Error('connect ECONNREFUSED');
         return new Response('{}', { status: 401 });
       },
-      claudeCredsPath: '/nonexistent',
     });
     assert.equal(checks.find(c => c.id.startsWith('key-'))?.status, 'fail');
     assert.equal(checks.find(c => c.id.startsWith('key-'))?.detail, 'HTTP 401');
@@ -71,13 +70,14 @@ describe('runHealthChecks (System → Health)', () => {
     const { checks } = await runHealthChecks({
       defStore: okDefStore, apiKeys,
       secrets: fakeSecrets({ 'email:imap_host': 'mail.example.com' }),
-      fetchImpl: fakeFetch([], () => 200), claudeCredsPath: '/nonexistent',
+      fetchImpl: fakeFetch([], () => 200),
     });
     assert.equal(checks.find(c => c.id === 'twitter')?.status, 'skip');
     assert.equal(checks.find(c => c.id === 'flashback')?.status, 'skip');
     const email = checks.find(c => c.id === 'email')!;
     assert.equal(email.status, 'fail');
     assert.match(email.detail ?? '', /partially configured/);
+    // No stored token and none in the environment: direct agents can't dispatch.
     assert.equal(checks.find(c => c.id === 'claude-token')?.status, 'fail');
   });
 
@@ -86,7 +86,7 @@ describe('runHealthChecks (System → Health)', () => {
     await runHealthChecks({
       defStore: okDefStore, apiKeys,
       secrets: fakeSecrets({ 'litellm:url': 'http://localhost:4000' }),
-      fetchImpl: fakeFetch(seen, () => 200), claudeCredsPath: '/nonexistent',
+      fetchImpl: fakeFetch(seen, () => 200),
     });
     assert.ok(seen.some(s => s.url === 'http://localhost:4000/v1/models'));
   });

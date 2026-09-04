@@ -6,6 +6,7 @@
  * verification AND for `update-ritsu` to invoke automatically.
  */
 import { existsSync, statSync, readFileSync } from 'node:fs';
+import { masterKeyStatus } from '../../util/secret-crypto.js';
 import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { SERVICE_NAME } from '../systemd.js';
@@ -49,13 +50,27 @@ function checkDbWritable(): Check {
   return { name: 'db dir writable',                       status: 'ok',   detail: dbDir };
 }
 
-function checkClaudeSession(): Check {
-  const file = '/home/ritsu/.claude/.credentials.json';
-  if (!existsSync(file)) {
-    return { name: 'claude-direct session', status: 'warn',
-      detail: `${file} missing — claude-direct agents won't dispatch until 'sudo -u ritsu -H claude login'` };
+function checkMasterKey(): Check {
+  const st = masterKeyStatus();
+  return st.ok
+    ? { name: 'secret storage', status: 'ok', detail: st.source === 'env' ? 'key from the environment' : `key at ${st.source}` }
+    : { name: 'secret storage', status: 'warn', detail: st.detail ?? 'no master key — secrets cannot be stored' };
+}
+
+function checkSubscriptionToken(): Check {
+  // The supported credential is the stored token, or one in the environment.
+  // A ~/.claude session may exist and will work, but it is per-machine and
+  // expires, so it is not what this reports on.
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+    return { name: 'subscription token', status: 'ok', detail: 'from the environment' };
   }
-  return { name: 'claude-direct session', status: 'ok', detail: file };
+  const st = masterKeyStatus();
+  if (!st.ok) {
+    return { name: 'subscription token', status: 'warn',
+      detail: 'cannot read — no master key, so no secret can be stored' };
+  }
+  return { name: 'subscription token', status: 'warn',
+    detail: "check API Keys in the admin UI; generate one anywhere with 'claude setup-token'" };
 }
 
 function checkTailscale(): Check {
@@ -97,7 +112,8 @@ export const doctorCommand: Command = {
       checkListening(cfg.adminPort, 'admin'),
       checkAdminTokenFile(cfg.adminTokenFile),
       checkDbWritable(),
-      checkClaudeSession(),
+      checkMasterKey(),
+    checkSubscriptionToken(),
       checkSandboxPaths(),
       checkTailscale(),
     ];

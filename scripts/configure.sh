@@ -220,5 +220,5 @@ if [[ ! -f "/home/${SERVICE_USER}/.claude/.credentials.json" ]]; then
   warn "Claude CLI session not present at /home/${SERVICE_USER}/.claude/.credentials.json"
   warn "claude-direct dispatcher won't work until you run:"
   warn "  which claude || sudo npm install -g @anthropic-ai/claude-code"
-  warn "  sudo -u ${SERVICE_USER} -H claude login"
+  warn "  claude setup-token   # on any machine, then save it under API Keys in the admin UI"
 fi

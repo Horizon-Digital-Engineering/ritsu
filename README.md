@@ -60,7 +60,7 @@ What's baked in:
 
 ```bash
 npm install
-claude login                # one-time, reads ~/.claude/.credentials.json
+claude setup-token          # generate a subscription token; save it under API Keys
 cp .env.example .env        # sets RITSU_ADMIN_TOKEN_FILE=./data/.admin-token for dev
 mkdir -p data               # bootstrap path; the server refuses to start without it
 npm run dev                 # MCP on :7333, admin on :7334
@@ -101,7 +101,7 @@ docker compose up --build              # ritsu only
 docker compose --profile litellm up    # adds LiteLLM sidecar on :4000
 ```
 
-Bind-mounts the host's `~/.claude/` so the Max-plan dispatcher works without an API key. State persists in the `ritsu-data` named volume. Both ports bound to `127.0.0.1` by default.
+Bind-mounts the host's `~/.claude/` so a local session is available if you have one; the supported path is a subscription token saved in the admin UI. State persists in the `ritsu-data` named volume. Both ports bound to `127.0.0.1` by default.
 
 ---
 
