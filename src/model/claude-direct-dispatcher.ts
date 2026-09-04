@@ -182,8 +182,14 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
         ...(canUseTool ? { canUseTool } : {}),
         // env REPLACES the child's environment rather than merging, so spread
         // process.env or the subprocess loses PATH/HOME and never starts.
+        //
+        // ANTHROPIC_API_KEY is dropped alongside: it takes precedence over the
+        // subscription token, so leaving it in place would silently bill these
+        // turns per token instead of drawing on the plan the operator
+        // configured. Metered Anthropic is the api runtime's job, with a key
+        // from the API Keys page — the two paths stay separate on purpose.
         ...(this.opts.oauthToken
-          ? { env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: this.opts.oauthToken } }
+          ? { env: subscriptionEnv(this.opts.oauthToken) }
           : {}),
       },
     })) {
@@ -207,6 +213,17 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/** Child environment for a subscription-authenticated run: everything the
+ *  process needs, the token, and no API key to override it. */
+export function subscriptionEnv(
+  token: string,
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...base, CLAUDE_CODE_OAUTH_TOKEN: token };
+  delete env.ANTHROPIC_API_KEY;
+  return env;
+}
 
 /** An Anthropic base64 image content block, the shape the SDK forwards to the
  *  Messages API verbatim. */
