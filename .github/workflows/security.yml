@@ -36,7 +36,7 @@ jobs:
         with:
           fetch-depth: 0  # trufflehog needs full history for diff scanning
       - name: trufflehog
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318 # v3.97.0
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
         with:
           extra_args: --only-verified
 
@@ -157,7 +157,7 @@ jobs:
           path: results.sarif
           retention-days: 5
       - name: Upload SARIF to code-scanning
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v3
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v3
         with:
           sarif_file: results.sarif
 
