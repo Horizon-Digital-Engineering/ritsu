@@ -623,7 +623,7 @@
             <option value="custom">custom</option>
           </select>
 
-          <p class="txt-muted" style="grid-column:1/-1">A subscription token (<code>sk-ant-oat01-…</code>) does not belong here — it only authenticates the direct runtime, and the metered API rejects it. Paste those in the panel above.</p>
+          <p class="txt-muted form-note">A subscription token (<code>sk-ant-oat01-…</code>) does not belong here — it only authenticates the direct runtime, and the metered API rejects it. Paste those in the panel above.</p>
 
           <label for="ak-plaintext">plaintext key</label>
           <input id="ak-plaintext" type="password" autocomplete="off" placeholder="paste once; we encrypt + discard" />
@@ -738,7 +738,7 @@
       <div class="panel">
         <h2>Health</h2>
         <p>Live checks against everything ritsu is wired to: core runtime, one probe per stored provider key (their model-list endpoints — free), and each configured connector.</p>
-        <div class="row" style="margin-bottom:10px">
+        <div class="row mb-3">
           <button data-action="health-refresh" class="primary">Re-check</button>
           <span id="health-meta" class="txt-muted"></span>
         </div>
@@ -826,12 +826,12 @@
       <div class="panel">
         <h2>Backups</h2>
         <p>The whole system is one SQLite database. A snapshot is taken automatically on every restart and daily; you can also snapshot on demand, download a copy off the box, or export your data as portable JSON. <strong>Your data is never hostage.</strong> One thing is not in here: the master key that decrypts stored secrets. It lives outside the database on purpose, so a snapshot cannot carry both. Back it up separately — restoring this database onto a host without that key leaves every stored credential unreadable.</p>
-        <div class="row" style="margin-bottom:10px">
+        <div class="row mb-3">
           <button data-action="backup-now" class="primary">Back up now</button>
           <button data-action="backup-export">Export data (JSON)</button>
         </div>
         <div id="backups-list">loading…</div>
-        <p class="txt-muted" style="margin-top:10px">Restore is a break-glass operation on the box: <code>sudo ritsu service restart</code> after <code>sudo ritsu backup restore &lt;file&gt;</code> (stop the service first).</p>
+        <p class="txt-muted mt-3">Restore is a break-glass operation on the box: <code>sudo ritsu service restart</code> after <code>sudo ritsu backup restore &lt;file&gt;</code> (stop the service first).</p>
       </div>
     </section>
   </main>

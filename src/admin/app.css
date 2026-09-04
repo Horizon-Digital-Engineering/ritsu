@@ -893,3 +893,7 @@ body.panel-open { overflow: hidden; touch-action: none; }
   border: 1px solid #4a2c2c; background: #2a1a1a; color: var(--err);
   font-size: 13px; line-height: 1.5;
 }
+
+/* Note spanning both columns of a .grid form. Inline styles are CSP-blocked,
+   so anything positional has to live here. */
+.form-note { grid-column: 1 / -1; }
