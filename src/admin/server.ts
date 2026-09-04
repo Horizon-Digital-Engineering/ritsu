@@ -22,6 +22,7 @@ import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
 import { runHealthChecks } from './health.js';
+import { CLAUDE_NS } from '../model/claude-direct-dispatcher.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
 import type { ChannelStore } from '../channels/channel-store.js';
 import type { JobStore, JobUpsert } from '../scheduler/store.js';
@@ -183,6 +184,12 @@ const ApprovalDecideBody = z.object({
   // Operator's optional note. On reject it's fed back to the model as the
   // tool-denial reason so it can adapt; on approve it's just an audit note.
   reason: z.string().trim().max(2000).optional(),
+});
+
+/** `claude setup-token` output. Long, opaque, prefixed — checked loosely so a
+ *  future prefix change doesn't lock the operator out of their own UI. */
+const ClaudeTokenBody = z.object({
+  token: z.string().trim().min(20).max(2048),
 });
 
 const SecretSetBody = z.object({
@@ -1478,6 +1485,34 @@ export function createAdminApp(deps: AdminDeps) {
   // ---- api keys (third-party model provider credentials) -----------------
   // Phase A: storage + UI. Phase B will wire these into the ritsu-agent
   // runtime so agents can run against Anthropic/OpenAI/OpenRouter/etc.
+
+  // ---- claude subscription session (claude-direct credential) ------------
+  // Stored in the SecretStore like every other credential, so it is managed
+  // here rather than in a root-owned env file. Saving rebuilds every agent, so
+  // a rotated token takes effect without restarting the service.
+  app.get('/admin/api/claude-token', (_req: Request, res: Response) => {
+    const stored = secrets.get(CLAUDE_NS, 'oauth_token')?.trim();
+    res.json({
+      token_set: !!stored,
+      // Never the value: only enough to tell one token from another.
+      token_hint: stored ? `${stored.slice(0, 12)}…${stored.slice(-4)}` : null,
+      env_fallback: !!process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    });
+  });
+
+  app.post('/admin/api/claude-token', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, ClaudeTokenBody);
+    if (!body) return;
+    secrets.set(CLAUDE_NS, 'oauth_token', body.token.trim());
+    await host.loadAll();
+    res.json({ ok: true, token_set: true });
+  });
+
+  app.delete('/admin/api/claude-token', async (_req: Request, res: Response) => {
+    secrets.delete(CLAUDE_NS, 'oauth_token');
+    await host.loadAll();
+    res.status(204).end();
+  });
 
   app.get('/admin/api/api-keys', (_req: Request, res: Response) => {
     res.json({ api_keys: deps.apiKeys.list() });
