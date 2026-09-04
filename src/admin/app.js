@@ -226,8 +226,9 @@ const NAV_GROUPS = [
     { id: 'oauth-clients', label: 'OAuth Clients' },
   ] },
   { id: 'system', label: 'System', tabs: [
-    { id: 'health',  label: 'Health' },
-    { id: 'memory',  label: 'Memory' },
+    { id: 'health',   label: 'Health' },
+    { id: 'memory',   label: 'Memory' },
+    { id: 'settings', label: 'Settings' },
     { id: 'logs',    label: 'Logs' },
     { id: 'audit',   label: 'Audit' },
     { id: 'plugins', label: 'Plugins' },
@@ -296,6 +297,7 @@ function switchTab(name) {
   else if (name === 'backups') loadBackupsTab();
   else if (name === 'health') loadHealthTab();
   else if (name === 'memory') loadMemoryTab();
+  else if (name === 'settings') loadSettingsTab();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -3094,6 +3096,47 @@ async function togglePlugin(id, currentlyEnabled) {
 }
 
 // ---- Backups --------------------------------------------------------------
+async function loadSettingsTab() {
+  try {
+    const d = await api('GET', '/admin/api/settings');
+    const sel = $('set-search-provider');
+    // "(none)" is a real choice: it turns WebSearch off rather than leaving a
+    // half-configured backend that fails at call time.
+    sel.innerHTML = ['<option value="">(none — WebSearch disabled)</option>']
+      .concat(d.search_providers.map(p => `<option value="${esc(p)}">${esc(p)}</option>`)).join('');
+    sel.value = d.settings['search.provider'] || '';
+    $('set-search-url').value = d.settings['search.url'] || '';
+    $('set-search-key').placeholder = d.search_key_set
+      ? '•••••• (set — blank keeps it)'
+      : 'hosted providers only; encrypted at rest';
+    for (const el of document.querySelectorAll('#runtime-form [data-setting]')) {
+      const key = el.dataset.setting;
+      el.value = d.settings[key] ?? '';
+      el.placeholder = `default ${d.defaults[key]}`;
+    }
+    $('settings-note').textContent = '';
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function saveSettings() {
+  const settings = {
+    'search.provider': $('set-search-provider').value,
+    'search.url': $('set-search-url').value,
+  };
+  for (const el of document.querySelectorAll('#runtime-form [data-setting]')) {
+    settings[el.dataset.setting] = el.value;
+  }
+  const key = $('set-search-key').value.trim();
+  try {
+    await api('POST', '/admin/api/settings', { settings, ...(key ? { search_api_key: key } : {}) });
+    $('set-search-key').value = '';   // never keep the secret in the DOM
+    // Rate limits and retention are read at boot; say so rather than letting
+    // the operator think a saved value took effect immediately.
+    $('settings-note').textContent = 'saved — search applies now; retention and rate limits on next restart';
+    toast('settings saved');
+    loadSettingsTab();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function loadMemoryTab() {
   try {
     const d = await api('GET', '/admin/api/memory');

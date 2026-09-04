@@ -9,6 +9,7 @@ import type { ApiKeyStore } from '../auth/api-key-store.js';
 import type { AgentDefinitionStore } from '../agent-definition-store.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { LITELLM_NS } from '../model/ritsu-agent/client.js';
+import { SEARCH_NS } from '../tools/ritsu-agent/search-config.js';
 import { FLASHBACK_NS } from '../memory/config.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
@@ -28,6 +29,8 @@ export interface HealthCheck {
 
 /** Narrow store views so tests can stub them. */
 export interface HealthDeps {
+  /** Operator settings, for checks whose config is not a secret. */
+  settings?: { get(key: string): string | null };
   defStore: Pick<AgentDefinitionStore, 'list'>;
   apiKeys: Pick<ApiKeyStore, 'list' | 'reveal'>;
   secrets: { get(namespace: string, name: string): string | null };
@@ -57,7 +60,7 @@ export async function runHealthChecks(deps: HealthDeps): Promise<{ checks: Healt
     ...deps.apiKeys.list().filter(k => !k.revoked_at).map(k => providerKeyCheck(k.id, k.name, k.provider, deps, probe)),
     litellmProxyCheck(deps.secrets, probe),
     flashbackCheck(deps.secrets, probe),
-    searxngCheck(probe),
+    searchCheck(deps.settings, deps.secrets, probe),
     ingestCheck(deps.secrets, probe),
     Promise.resolve(configuredCheck('email', 'Email (IMAP/SMTP)', deps.secrets, EMAIL_NS, EMAIL_SECRET_KEYS)),
     Promise.resolve(configuredCheck('twitter', 'X / Twitter', deps.secrets, TWITTER_NS, TWITTER_SECRET_KEYS)),
@@ -126,11 +129,21 @@ async function flashbackCheck(secrets: HealthDeps['secrets'], probe: ProbeFn): P
   return { ...base, ...(await probe(`${stripTrailingSlashes(url)}/health`, token ? { Authorization: `Bearer ${token}` } : {})) };
 }
 
-async function searxngCheck(probe: ProbeFn): Promise<HealthCheck> {
-  const base = { id: 'searxng', label: 'SearXNG (web search)', group: 'connectors' as const };
-  const url = process.env.RITSU_SEARXNG_URL?.trim();
-  if (!url) return { ...base, status: 'skip', detail: 'not configured' };
-  return { ...base, ...(await probe(stripTrailingSlashes(url))) };
+/** Only searxng is probeable: it is a URL we host. The hosted providers would
+ *  need a billable query to verify, so they report configured-or-not. */
+async function searchCheck(settings: HealthDeps['settings'], secrets: HealthDeps['secrets'], probe: ProbeFn): Promise<HealthCheck> {
+  const base = { id: 'search', label: 'Web search', group: 'connectors' as const };
+  const provider = settings?.get('search.provider')?.trim();
+  if (!provider) return { ...base, status: 'skip', detail: 'not configured' };
+  if (provider === 'searxng') {
+    const url = settings?.get('search.url')?.trim();
+    if (!url) return { ...base, status: 'fail', detail: 'searxng selected but no instance URL set' };
+    return { ...base, label: 'Web search (searxng)', ...(await probe(stripTrailingSlashes(url))) };
+  }
+  const key = secrets.get(SEARCH_NS, 'api_key')?.trim();
+  return key
+    ? { ...base, label: `Web search (${provider})`, status: 'ok', detail: 'configured (no live probe)' }
+    : { ...base, label: `Web search (${provider})`, status: 'fail', detail: 'no API key set' };
 }
 
 async function ingestCheck(secrets: HealthDeps['secrets'], probe: ProbeFn): Promise<HealthCheck> {

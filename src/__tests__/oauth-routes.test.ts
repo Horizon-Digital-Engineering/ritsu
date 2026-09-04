@@ -109,9 +109,7 @@ function pkcePair(): { verifier: string; challenge: string } {
 }
 
 before(async () => {
-  // Tests hit /oauth/register many times against the same loopback IP;
-  // raise the per-IP cap so the live rate-limit doesn't interfere.
-  process.env.RITSU_DCR_MAX_PER_IP = '10000';
+
   db = createInMemoryDb();
   db.exec(SCHEMA);
   oauth = new OAuthStore(db);
@@ -121,7 +119,10 @@ before(async () => {
 
   const app = express();
   app.use(express.json());
-  mountOAuthRoutes(app, { oauth, tokens, publicUrl: PUBLIC_URL });
+  // Tests hit /oauth/register many times from the same loopback IP; raise the
+  // per-IP caps through the settings seam so the live limiter doesn't interfere.
+  const settings = { getNumber: (_k: string, fallback: number) => Math.max(fallback, 10_000) };
+  mountOAuthRoutes(app, { oauth, tokens, publicUrl: PUBLIC_URL, settings });
 
   await new Promise<void>((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', () => {

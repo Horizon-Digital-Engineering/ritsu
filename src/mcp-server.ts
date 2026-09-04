@@ -76,6 +76,8 @@ export interface CreateMcpServerDeps {
    * Without it, OAuth flows are disabled but the legacy rt_* tokens still work.
    */
   publicUrl?: string;
+  /** Operator-tunable OAuth/DCR rate limits. Omitted = code defaults. */
+  settings?: { getNumber(key: string, fallback: number): number };
   version: string;
 }
 
@@ -142,7 +144,10 @@ export function createMcpServer(deps: CreateMcpServerDeps): Express {
   // admin port — see src/admin/server.ts.
 
   if (deps.publicUrl) {
-    mountOAuthRoutes(app, { oauth: deps.oauth, tokens: deps.tokens, publicUrl: deps.publicUrl });
+    mountOAuthRoutes(app, {
+      oauth: deps.oauth, tokens: deps.tokens, publicUrl: deps.publicUrl,
+      ...(deps.settings ? { settings: deps.settings } : {}),
+    });
     logger.info('oauth.mounted', { issuer: deps.publicUrl, resource: `${deps.publicUrl}${RESOURCE_PATH}` });
   } else {
     logger.warn('oauth.disabled', {

@@ -18,6 +18,7 @@ import { OAuthStore } from './auth/oauth-store.js';
 import { AgentHost } from './agent-host.js';
 import { loadMemoryConfig } from './memory/config.js';
 import { buildMemoryService } from './memory/factory.js';
+import { SettingsStore } from './settings-store.js';
 import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
 import { BackupManager } from './backup.js';
 import { createMcpServer } from './mcp-server.js';
@@ -57,7 +58,11 @@ async function main(): Promise<void> {
   // Periodic sweep: reap pending approvals whose turn was abandoned mid-await
   // (SDK tool-timeout, dropped socket) so the resolver map + the rows don't
   // grow unbounded between restarts. 24h matches "agents can hang a while".
-  const APPROVAL_TTL_S = Number(process.env.RITSU_APPROVAL_TTL_S ?? 86400) || 86400;
+  // Operator-tunable knobs (retention, sweep windows, rate limits, the search
+  // backend). Security switches deliberately stay in the env file — see
+  // settings-store.ts.
+  const settings = new SettingsStore(db);
+  const APPROVAL_TTL_S = settings.getNumber('approvals.ttl_seconds', 86400);
   const approvalSweep = setInterval(() => {
     try { approvals.sweepStale(APPROVAL_TTL_S); }
     catch (err) { logger.warn('approval.sweep-error', { err: (err as Error).message }); }
@@ -68,7 +73,7 @@ async function main(): Promise<void> {
   // Data safety: a consistent DB snapshot on boot (pre-deploy safety) + daily,
   // keeping the newest N. Best-effort — a backup failure never blocks startup.
   const backup = new BackupManager(db, cfg.dbPath, process.env.RITSU_BACKUP_DIR?.trim() || undefined);
-  const BACKUP_KEEP = Number(process.env.RITSU_BACKUP_KEEP ?? 14) || 14;
+  const BACKUP_KEEP = settings.getNumber('backups.keep', 14);
   const runBackup = (): void => {
     try { backup.createBackup(); backup.prune(BACKUP_KEEP); }
     catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
@@ -100,6 +105,7 @@ async function main(): Promise<void> {
   const memoryConfig = loadMemoryConfig(secrets);
   const memoryService = buildMemoryService(db, memoryConfig);
   host.setMemoryService(memoryService);
+  host.setSettings(settings);
   logger.info('memory.wired', { mode: memoryConfig.mode, remote: !!memoryConfig.flashback });
 
   // Proposal adapter: when flashback is configured, surface its proposed
@@ -160,6 +166,7 @@ async function main(): Promise<void> {
     bindHost: cfg.mcpHost,
     allowedHosts: [...cfg.allowedHosts],
     publicUrl: cfg.publicUrl,
+    settings,
     version: VERSION,
   });
 
@@ -184,6 +191,7 @@ async function main(): Promise<void> {
     authMode: cfg.authMode,
     mcpUrl: `http://${cfg.mcpHost === '0.0.0.0' ? '127.0.0.1' : cfg.mcpHost}:${cfg.mcpPort}`,
     memoryBoot: { mode: memoryConfig.mode, remote: memoryConfig.flashback?.endpoint ?? null },
+    settings,
   });
 
   const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, () => {

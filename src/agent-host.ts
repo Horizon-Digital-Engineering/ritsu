@@ -17,6 +17,9 @@ import type { JobStore } from './scheduler/store.js';
 import { pluginMcpProvider, pluginGatedToolNames } from './plugins/mcp-provider.js';
 import type { PluginToolSet } from './tools/ritsu-agent/plugin.js';
 import type { MemoryService } from './memory/service.js';
+import type { SettingsStore } from './settings-store.js';
+import { isSearchProvider, type SearchConfig } from './tools/ritsu-agent/search.js';
+import { SEARCH_NS } from './tools/ritsu-agent/search-config.js';
 import { logger } from './util/log.js';
 
 /**
@@ -47,12 +50,32 @@ export class AgentHost {
   private pluginHost?: PluginHost;
   private jobStore?: JobStore;
   private memoryService?: MemoryService;
+  private settings?: SettingsStore;
+
+  /** Wired after construction: the store exists only once the DB is open. */
+  setSettings(s: SettingsStore): void { this.settings = s; }
 
   /** Injected after construction (pluginHost is built alongside AgentHost in
    *  index.ts). When unset, agents simply get no plugin tools. */
   setPluginHost(h: PluginHost): void { this.pluginHost = h; }
   /** Wired after construction: the store exists only once the DB is open. */
   setJobStore(j: JobStore): void { this.jobStore = j; }
+
+  /** The operator's configured search backend, read fresh per agent build so
+   *  saving a new provider applies on reload rather than at restart. Provider
+   *  and endpoint are settings; the API key is a secret. */
+  private searchConfig(): SearchConfig | undefined {
+    if (!this.settings) return undefined;
+    const raw = this.settings.get('search.provider');
+    if (!raw || !isSearchProvider(raw)) return undefined;
+    const url = this.settings.get('search.url')?.trim();
+    const apiKey = this.secrets.get(SEARCH_NS, 'api_key')?.trim();
+    return {
+      provider: raw,
+      ...(url ? { url } : {}),
+      ...(apiKey ? { apiKey } : {}),
+    };
+  }
 
   /** Flow-level memory over the MemoryBackend seam. Injected after
    *  construction (built alongside AgentHost in index.ts). When unset, agents
@@ -189,11 +212,14 @@ export class AgentHost {
       // ritsu-agent. Memory + agent-comms stay always-on.
       workspaces,
       toolsAllowlist: def.tools_allowlist,
-      // Per-agent network tool config: provider_options.searxng_url overrides
-      // the RITSU_SEARXNG_URL env default for THIS agent only.
-      network: typeof (def.provider_options)?.searxng_url === 'string'
-        ? { searxng_url: (def.provider_options as Record<string, string>).searxng_url }
-        : undefined,
+      // Network tools: the operator's search backend, with a per-agent
+      // searxng URL override from provider_options for THIS agent only.
+      network: {
+        ...(this.searchConfig() ? { search: this.searchConfig()! } : {}),
+        ...(typeof (def.provider_options)?.searxng_url === 'string'
+          ? { searxng_url: (def.provider_options as Record<string, string>).searxng_url }
+          : {}),
+      },
       // Per-agent capabilities flow through to ritsu-agent so the native
       // admin / monitor tool surfaces appear when the flag is set.
       capabilities: def.capabilities,

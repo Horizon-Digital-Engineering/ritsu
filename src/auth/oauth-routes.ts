@@ -27,6 +27,8 @@ import { html, sendHtml, type SafeHtml } from '../util/safe-html.js';
  */
 
 export interface OAuthRouteDeps {
+  /** Operator-tunable rate limits. Omitted in tests; code defaults apply. */
+  settings?: { getNumber(key: string, fallback: number): number };
   oauth: OAuthStore;
   tokens: TokenStore;
   /** Canonical public origin, e.g. `https://your-host.your-tailnet.ts.net:9443` */
@@ -125,7 +127,7 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
   // Override for tests + ops who need higher caps. Defaults to 5/hour,
   // which is enough for any real human setup but expensive enough to
   // dissuade flood-registration.
-  const DCR_MAX_PER_IP = Number(process.env.RITSU_DCR_MAX_PER_IP ?? 5);
+  const DCR_MAX_PER_IP = deps.settings?.getNumber('oauth.dcr_max_per_ip_hour', 5) ?? 5;
   const dcrBuckets = new Map<string, { count: number; resetAt: number }>();
   app.use('/oauth/register', (req, res, next) => {
     const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
@@ -202,7 +204,7 @@ export function mountOAuthRoutes(app: Express, deps: OAuthRouteDeps): void {
   // making credential-stuffing the admin_token expensive.
 
   const OAUTH_WINDOW_MS = 60 * 1000;
-  const OAUTH_MAX_PER_IP = Number(process.env.RITSU_OAUTH_MAX_PER_MIN ?? 60);
+  const OAUTH_MAX_PER_IP = deps.settings?.getNumber('oauth.max_per_ip_minute', 60) ?? 60;
   const oauthBuckets = new Map<string, { count: number; resetAt: number }>();
   const oauthRateLimit = (req: Request, res: Response, next: () => void): void => {
     const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
