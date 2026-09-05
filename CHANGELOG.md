@@ -6,6 +6,8 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-05
+
 ### Added
 
 - **Agent workspaces — a chat-first main page.** The admin port's root now
