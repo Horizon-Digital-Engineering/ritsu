@@ -705,13 +705,13 @@ function md(raw) {
   text = text.replace(/\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)/g, (whole, blk, inl, idx) => {
     if (fences.some(([a, b]) => idx >= a && idx < b)) return whole;
     maths.push({ tex: blk !== undefined ? blk : inl, display: blk !== undefined });
-    return `\u0000M${maths.length - 1}\u0000`;
+    return `\uE000M${maths.length - 1}\uE000`;
   });
 
   const blocks = [];
   text = text.replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
     blocks.push({ lang, code });
-    return `\u0000B${blocks.length - 1}\u0000`;
+    return `\uE000B${blocks.length - 1}\uE000`;
   });
   text = esc(text);
   text = text.replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
@@ -735,15 +735,15 @@ function md(raw) {
   text = text.replace(/(?:^|\n)((?:\d+\. .+(?:\n|$))+)/g, (m, body) =>
     '\n<ol>' + body.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('') + '</ol>\n');
   text = text.replace(/^(?:---+|\*\*\*+)$/gm, '<hr>');
-  text = text.replace(/\n{2,}/g, '\u0000P\u0000').replace(/\n/g, '<br>');
+  text = text.replace(/\n{2,}/g, '\uE000P\uE000').replace(/\n/g, '<br>');
   text = text
-    .replace(/\u0000P\u0000/g, '<div class="md-gap"></div>')
+    .replace(/\uE000P\uE000/g, '<div class="md-gap"></div>')
     .replace(/(<\/(?:h2|h3|h4|h5|ul|ol|blockquote)>|<hr>)<br>/g, '$1')
     .replace(/<br>(<(?:h2|h3|h4|h5|ul|ol|blockquote|hr)[ >])/g, '$1');
-  text = text.replace(/\u0000B(\d+)\u0000(?:<br>)?/g, (_, i) => codeBlockHtml(blocks[+i]));
+  text = text.replace(/\uE000B(\d+)\uE000(?:<br>)?/g, (_, i) => codeBlockHtml(blocks[+i]));
   // Display math is its own block, so it swallows the <br> the line break pass
   // left behind; inline math keeps it.
-  text = text.replace(/\u0000M(\d+)\u0000(<br>)?/g, (_, i, br) => {
+  text = text.replace(/\uE000M(\d+)\uE000(<br>)?/g, (_, i, br) => {
     const m = maths[+i];
     return mathHtml(m) + (m.display ? '' : (br || ''));
   });
@@ -1777,12 +1777,26 @@ function applyDecls(el, decls) {
  * attribute form is unambiguous here.
  */
 function mountSvg(out, svgText) {
-  out.innerHTML = svgText.replace(/\sstyle="([^"]*)"/g, (_, d) => ` data-mmd-style="${d}"`);
-  for (const el of out.querySelectorAll('[data-mmd-style]')) {
-    const d = el.getAttribute('data-mmd-style');
-    el.removeAttribute('data-mmd-style');
-    applyDecls(el, d);
+  // Parse into an inert template first, then transform via DOM — regex over
+  // markup is exactly the sanitization pattern that gets bypassed. An inert
+  // template runs nothing; CSP style-src doesn't police it either, so the
+  // style attributes are readable there, replayed through CSSOM on the live
+  // nodes, and mermaid's <style> blocks are adopted and removed the same way.
+  const tpl = document.createElement('template');
+  tpl.innerHTML = svgText;
+  for (const styleEl of tpl.content.querySelectorAll('style')) {
+    adoptMermaidCss(styleEl.textContent || '');
+    styleEl.remove();
   }
+  const styled = [...tpl.content.querySelectorAll('[style]')];
+  const decls = styled.map(el => {
+    const d = el.getAttribute('style');
+    el.removeAttribute('style');
+    return d;
+  });
+  out.replaceChildren(tpl.content);
+  // The moved nodes are the SAME node objects — styled[] references stay valid.
+  styled.forEach((el, i) => applyDecls(el, decls[i]));
 }
 
 let mermaidInit = false;
@@ -1802,7 +1816,7 @@ function renderMermaid(root) {
       if (!out) continue;
       try {
         const { svg } = await mermaid.render(`mmd-${++mermaidSeq}`, box.dataset.mermaid || '');
-        mountSvg(out, svg.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => { adoptMermaidCss(css); return ''; }));
+        mountSvg(out, svg);
       } catch (e) {
         // The source code block is still there — add one muted line saying why
         // it isn't a diagram.

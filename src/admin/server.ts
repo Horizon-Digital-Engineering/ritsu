@@ -76,11 +76,18 @@ function param(v: string | string[] | undefined): string {
  *  — the result is fenced context, not rendered content. */
 function htmlToText(html: string): string {
   return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    // Element CONTENT removal keys on the opening tag boundary and tolerates
+    // attributes/whitespace in the closer; the general tag strip below then
+    // eats any straggler markup, so a malformed closer can't smuggle content.
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
+    // characters "&lt;" rather than a freshly minted "<".
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim();
 }

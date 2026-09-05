@@ -41,7 +41,7 @@ export class SkillStore {
       arr.push(b.agent_id);
       byId.set(b.skill_id, arr);
     }
-    return rows.map(r => ({ ...r, agents: (byId.get(r.id) ?? []).sort() }));
+    return rows.map(r => ({ ...r, agents: (byId.get(r.id) ?? []).sort((a, b) => a.localeCompare(b)) }));
   }
 
   read(id: number): Skill | null {

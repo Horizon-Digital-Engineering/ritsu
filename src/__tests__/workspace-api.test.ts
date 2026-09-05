@@ -185,7 +185,7 @@ const stubFactory: DispatcherFactory = (def) => ({
   kind: 'claude-direct',
   defaultModel: def.model,
   async chat(req): Promise<ChatResponse> {
-    dispatched.push({ agent: def.id, messages: req.messages as Array<{ role: string; content: unknown }> });
+    dispatched.push({ agent: def.id, messages: req.messages });
     return { content: `reply #${dispatched.length}`, model: def.model, raw: null };
   },
 });
@@ -524,12 +524,14 @@ describe('workspace API routes', () => {
 
   it('prompt scope is editable after creation, and unbind is idempotent', async () => {
     const pr = (await req('POST', '/admin/api/prompts', { name: 'scoped', content: 'x', agent_id: 'alice' })).json;
-    assert.equal((await req('PATCH', `/admin/api/prompts/${pr.id}`, { agent_id: null })).status, 200);
+    const prId = pr.id as number;
+    assert.equal((await req('PATCH', `/admin/api/prompts/${prId}`, { agent_id: null })).status, 200);
     const bobs = ((await req('GET', '/admin/api/agents/bob/prompts')).json.prompts as Array<{ name: string }>);
     assert.ok(bobs.some(x => x.name === 'scoped'), 'now global, so bob sees it');
 
     const sk = (await req('POST', '/admin/api/skills', { name: 'idem', description: '', content: 'x' })).json;
-    assert.equal((await req('DELETE', `/admin/api/agents/alice/skills/${sk.id}`)).status, 200,
+    const skId = sk.id as number;
+    assert.equal((await req('DELETE', `/admin/api/agents/alice/skills/${skId}`)).status, 200,
       'unbinding a never-bound skill is the requested state, not an error');
   });
 
