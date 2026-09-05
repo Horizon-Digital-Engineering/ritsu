@@ -79,8 +79,8 @@ function htmlToText(html: string): string {
     // Element CONTENT removal keys on the opening tag boundary and tolerates
     // attributes/whitespace in the closer; the general tag strip below then
     // eats any straggler markup, so a malformed closer can't smuggle content.
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
     .replace(/<[^>]*>/g, ' ')
     // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
     // characters "&lt;" rather than a freshly minted "<".
