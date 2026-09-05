@@ -581,3 +581,206 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   font: inherit; color: inherit; padding: inherit;
 }
 .side-group-toggle:hover { color: var(--fg); }
+
+/* ---- message tree: sibling arrows + hover actions ------------------- */
+/* The action strip sits under the bubble rather than inside it: an absolute
+   overlay would cover the last line of a short message. */
+.msg-tools {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  margin-top: 4px; opacity: 0; transition: opacity 0.12s;
+}
+.msg:hover .msg-tools, .msg:focus-within .msg-tools { opacity: 1; }
+.msg-tool {
+  font-size: 0.7rem; color: var(--muted); background: none; border: 0;
+  cursor: pointer; padding: 2px 6px; border-radius: 4px;
+}
+.msg-tool:hover { color: var(--fg); background: var(--bg-3, rgba(127, 127, 127, 0.15)); }
+/* Siblings are always readable — the branch counter is state, not an action. */
+.sib-nav { display: inline-flex; align-items: center; gap: 1px; opacity: 1; }
+.sib-count { font-size: 0.68rem; color: var(--muted); font-family: var(--mono); padding: 0 2px; }
+.sib-btn {
+  font-size: 0.72rem; line-height: 1; color: var(--muted); background: none;
+  border: 0; cursor: pointer; padding: 2px 4px; border-radius: 3px;
+}
+.sib-btn:hover { color: var(--accent); }
+.sib-btn:disabled { opacity: 0.3; cursor: default; }
+.sib-btn:disabled:hover { color: var(--muted); }
+
+/* Collapsed chain-of-thought, lifted above the answer it belongs to. */
+.reasoning {
+  margin: 0 0 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); font-size: 0.82rem;
+}
+.reasoning > summary {
+  cursor: pointer; padding: 5px 9px; color: var(--muted);
+  font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.reasoning > summary:hover { color: var(--fg); }
+.reasoning-body {
+  padding: 2px 10px 9px; color: var(--muted);
+  white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+}
+
+/* ---- mermaid + katex ------------------------------------------------ */
+.mermaid-box { margin: 0.5em 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.mermaid-out { padding: 10px 12px; overflow-x: auto; }
+.mermaid-out pre { border: 0; padding: 0; background: transparent; }
+.mermaid-out svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+.mermaid-err { font-size: 0.75rem; color: var(--muted); padding: 0 12px 8px; }
+.math-block { display: block; overflow-x: auto; padding: 4px 0; text-align: center; }
+.math-inline { display: inline-block; }
+/* KaTeX renders into these; the escaped TeX source is the pre-render (and
+   render-failure) content, so nothing is ever lost. */
+.math-block, .math-inline { font-family: var(--mono); }
+.katex { font-family: KaTeX_Main, var(--sans); }
+
+/* ---- artifact panel -------------------------------------------------- */
+.main.with-artifact { grid-template-columns: minmax(0, 1fr) minmax(300px, 44%); }
+.artifact-panel {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  background: var(--panel); border-left: 1px solid var(--line);
+}
+.artifact-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line); flex: 0 0 auto;
+}
+.artifact-head select { flex: 1; min-width: 0; font-size: 0.8rem; padding: 4px 7px; }
+.artifact-head button { flex: 0 0 auto; font-size: 0.76rem; }
+.artifact-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.msg-tool.artifact-open { color: var(--accent); }
+
+/* ---- composer palette ------------------------------------------------ */
+.composer { position: relative; }
+.palette {
+  display: none;
+  position: absolute; left: 20px; right: 20px; bottom: calc(100% - 4px);
+  z-index: 70; max-height: 46vh; overflow-y: auto; padding: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+}
+.palette.open { display: block; }
+.palette-row {
+  display: flex; align-items: baseline; gap: 9px; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  padding: 6px 9px; font-size: 0.85rem;
+}
+.palette-row:hover, .palette-row.active { background: var(--panel); border-color: var(--accent); color: var(--fg); }
+.palette-name { font-family: var(--mono); flex: 0 0 auto; }
+.palette-desc {
+  color: var(--muted); font-size: 0.76rem; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.palette-foot { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.palette-empty { color: var(--muted); font-size: 0.8rem; padding: 7px 9px; }
+
+.edit-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-radius: 6px; font-size: 0.78rem;
+  background: rgba(110, 168, 255, 0.12); border: 1px solid var(--accent); color: var(--accent);
+}
+.edit-banner-text { flex: 1; min-width: 0; }
+.edit-banner-x { background: none; border: 0; color: inherit; cursor: pointer; padding: 0 4px; }
+
+/* The attach menu hangs UPWARD — .row-menu's default drops it off-screen
+   from a composer that already sits at the bottom of the shell. */
+.attach-menu { top: auto; bottom: calc(100% + 4px); left: 0; right: auto; min-width: 160px; }
+
+/* ---- context chips --------------------------------------------------- */
+.ctx-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  height: 26px; padding: 0 6px 0 9px; border-radius: 13px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 0.76rem; color: var(--fg);
+}
+.ctx-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-chip button {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  padding: 0 2px; font-size: 0.8rem; line-height: 1;
+}
+.ctx-chip button:hover { color: var(--err); }
+
+/* ---- unread dot + hover preview -------------------------------------- */
+.unread-dot {
+  flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); margin-left: 4px;
+}
+.side-item.unread .side-item-title { font-weight: 650; color: var(--fg); }
+.hover-preview {
+  position: fixed; z-index: 80; max-width: 340px; width: max-content;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  font-size: 0.78rem; pointer-events: none;
+}
+.hp-row { display: flex; gap: 7px; margin-bottom: 5px; }
+.hp-row:last-child { margin-bottom: 0; }
+.hp-role { flex: 0 0 auto; color: var(--muted); font-family: var(--mono); font-size: 0.7rem; padding-top: 1px; }
+.hp-text { min-width: 0; color: var(--fg); word-break: break-word; }
+.hp-empty { color: var(--muted); }
+
+/* ---- project instructions + inherit badge ---------------------------- */
+.inherit-badge {
+  display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--muted); font-size: 0.7rem; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inherit-badge:hover { color: var(--accent); border-color: var(--accent); }
+.prompt-editor { display: flex; flex-direction: column; gap: 8px; max-width: 780px; }
+.prompt-editor textarea { min-height: 130px; resize: vertical; font-family: var(--mono); font-size: 0.82rem; }
+.prompt-editor-row { display: flex; align-items: center; gap: 10px; }
+.hint { color: var(--muted); font-size: 0.76rem; }
+
+/* ---- skills ---------------------------------------------------------- */
+.skill-name { font-weight: 600; }
+.skill-row-open {
+  background: none; border: 0; padding: 0; color: inherit; font: inherit;
+  cursor: pointer; text-align: left;
+}
+.skill-row-open:hover { color: var(--accent); }
+.bind-cell { white-space: nowrap; }
+.bind-cell input { width: auto; margin-right: 6px; vertical-align: -1px; }
+.bind-cell label { font-size: 0.76rem; color: var(--muted); cursor: pointer; }
+
+/* ---- generic modal --------------------------------------------------- */
+.modal-back {
+  position: fixed; inset: 0; z-index: 1150;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px 18px; width: 560px; max-width: 94vw;
+  max-height: 88vh; display: flex; flex-direction: column; gap: 11px;
+}
+.modal-card.wide { width: 760px; }
+.modal-title { margin: 0; font-size: 0.98rem; font-weight: 600; }
+.modal-body { overflow-y: auto; display: flex; flex-direction: column; gap: 11px; min-height: 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.modal-actions .flex1 { flex: 1; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label { color: var(--muted); font-size: 0.74rem; }
+.field-row { display: flex; align-items: center; gap: 7px; }
+.field-row input[type="checkbox"] { width: auto; }
+.field-row label { font-size: 0.82rem; }
+.field textarea { resize: vertical; }
+.field textarea.tall { min-height: 300px; font-family: var(--mono); font-size: 0.82rem; }
+.prompt-list { display: flex; flex-direction: column; gap: 5px; }
+.prompt-list-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+}
+.prompt-list-name { flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.82rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-scope { flex: 0 0 auto; font-size: 0.68rem; color: var(--muted); }
+.prompt-list-row button { padding: 2px 8px; font-size: 0.76rem; }
+
+@media (max-width: 800px) {
+  /* The artifact frame takes the whole screen on a phone — a 44% column
+     would be unreadable. */
+  .main.with-artifact { grid-template-columns: minmax(0, 1fr); }
+  .artifact-panel { position: fixed; inset: 0; z-index: 900; border-left: 0; }
+  .palette { left: 14px; right: 14px; }
+  .hover-preview { display: none !important; }
+  .msg-tools { opacity: 1; }
+}

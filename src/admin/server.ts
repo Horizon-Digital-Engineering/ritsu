@@ -1672,7 +1672,9 @@ export function createAdminApp(deps: AdminDeps) {
   app.delete('/admin/api/agents/:id/skills/:sid', (req: Request, res: Response) => {
     const sid = Number(param(req.params.sid));
     if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
-    res.status(skills.unbind(param(req.params.id), sid) ? 200 : 404).json({ ok: true });
+    // Idempotent: an absent bind IS the requested state, not an error.
+    skills.unbind(param(req.params.id), sid);
+    res.json({ ok: true });
   });
 
   app.get('/admin/api/agents/:id/prompts', (req: Request, res: Response) => {
@@ -1683,8 +1685,14 @@ export function createAdminApp(deps: AdminDeps) {
     if (!body) return;
     res.status(201).json(prompts.create(body.agent_id, body.name, body.content));
   });
+  const PromptPatch = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    content: z.string().min(1).max(50_000).optional(),
+    agent_id: z.string().trim().min(1).max(120).nullable().optional(),
+  }).strict();
+
   app.patch('/admin/api/prompts/:pid', (req: Request, res: Response) => {
-    const body = parseBody(req, res, SkillPatch);   // same {name?, content?} shape
+    const body = parseBody(req, res, PromptPatch);
     if (!body) return;
     const pid = Number(param(req.params.pid));
     if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }

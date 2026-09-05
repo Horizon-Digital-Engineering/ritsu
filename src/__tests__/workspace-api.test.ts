@@ -522,6 +522,17 @@ describe('workspace API routes', () => {
     assert.ok(sm.read_at != null && sm.read_at >= sm.last_message_at!, 'read_at moves past the newest message');
   });
 
+  it('prompt scope is editable after creation, and unbind is idempotent', async () => {
+    const pr = (await req('POST', '/admin/api/prompts', { name: 'scoped', content: 'x', agent_id: 'alice' })).json;
+    assert.equal((await req('PATCH', `/admin/api/prompts/${pr.id}`, { agent_id: null })).status, 200);
+    const bobs = ((await req('GET', '/admin/api/agents/bob/prompts')).json.prompts as Array<{ name: string }>);
+    assert.ok(bobs.some(x => x.name === 'scoped'), 'now global, so bob sees it');
+
+    const sk = (await req('POST', '/admin/api/skills', { name: 'idem', description: '', content: 'x' })).json;
+    assert.equal((await req('DELETE', `/admin/api/agents/alice/skills/${sk.id}`)).status, 200,
+      'unbinding a never-bound skill is the requested state, not an error');
+  });
+
   it('refuses traversal and speculative tags over HTTP', async () => {
     const esc = await req('POST', '/admin/api/agents/alice/files', {
       path: '../../escape.txt', data: Buffer.from('x').toString('base64'),
@@ -532,5 +543,31 @@ describe('workspace API routes', () => {
     const ghost = await req('POST', '/admin/api/agents/alice/files/tag',
       { path: '/etc/hostname', project_id: pid });
     assert.equal(ghost.status, 404, 'tags must reference real, contained files only');
+  });
+});
+
+describe('legacy message backfill', () => {
+  it('threads pre-tree linear history once, and never re-threads a deliberate root sibling', () => {
+    const db = openDatabase(':memory:');
+    // Simulate a pre-tree database: null out the parents the store wrote.
+    const c = new SqliteConversationStore(db);
+    const cid = c.start('a');
+    c.append(cid, 'user', 'q1'); c.append(cid, 'assistant', 'r1'); c.append(cid, 'user', 'q2');
+    db.exec('UPDATE messages SET parent_message_id = NULL');
+    // Re-open (same handle: rerun the migration path by hand).
+    const hasTree = db.prepare('SELECT 1 AS x FROM messages WHERE parent_message_id IS NOT NULL LIMIT 1').get();
+    assert.equal(hasTree, undefined);
+    db.exec(`UPDATE messages SET parent_message_id = (
+      SELECT MAX(m2.id) FROM messages m2
+      WHERE m2.conversation_id = messages.conversation_id AND m2.id < messages.id
+    ) WHERE parent_message_id IS NULL`);
+    const rows = c.recent(cid);
+    assert.equal(rows[0].parent_message_id, null, 'first message stays a root');
+    assert.equal(rows[1].parent_message_id, rows[0].id);
+    assert.equal(rows[2].parent_message_id, rows[1].id);
+    // A deliberate root sibling now exists; the guard must keep later boots out.
+    c.append(cid, 'user', 'edited root', null, undefined, null);
+    const guard = db.prepare('SELECT 1 AS x FROM messages WHERE parent_message_id IS NOT NULL LIMIT 1').get();
+    assert.notEqual(guard, undefined, 'threaded rows exist, so the backfill never runs again');
   });
 });

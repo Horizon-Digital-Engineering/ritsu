@@ -567,8 +567,24 @@ function migrate(db: Db): void {
   addColumnIfMissing(db, 'conversations', 'read_at', 'INTEGER');
   // Message tree. Every message records the message it answers or follows —
   // regenerate makes SIBLINGS under one parent instead of overwriting, and the
-  // UI picks a path. Null = a root turn (legacy rows and conversation starts).
+  // UI picks a path. Null = a root turn.
   addColumnIfMissing(db, 'messages', 'parent_message_id', 'INTEGER');
+  // Backfill: pre-tree history is linear by definition, so thread it once.
+  // Guarded on "no threaded message exists yet": after the first backfill (or
+  // the first real turn) that's false forever, so a deliberate root sibling
+  // created by editing a turn is never re-threaded by a later boot.
+  const hasTree = db
+    .prepare('SELECT 1 AS x FROM messages WHERE parent_message_id IS NOT NULL LIMIT 1')
+    .get() as { x: number } | undefined;
+  if (!hasTree) {
+    db.exec(`
+      UPDATE messages SET parent_message_id = (
+        SELECT MAX(m2.id) FROM messages m2
+        WHERE m2.conversation_id = messages.conversation_id AND m2.id < messages.id
+      )
+      WHERE parent_message_id IS NULL
+    `);
+  }
   // A project can carry a system prompt every chat filed under it inherits.
   addColumnIfMissing(db, 'agent_projects', 'system_prompt', 'TEXT');
   // Per-message caller attribution: identifies who/what produced a given user

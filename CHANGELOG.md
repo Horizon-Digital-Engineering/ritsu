@@ -27,6 +27,22 @@ versioning per [semver](https://semver.org/).
   - New API: project CRUD, conversation filing, file browse/upload/delete,
     file→project tags (real, contained files only), explicit new-conversation
     creation, and default-chat resolution.
+  - **Message tree.** Every message records its parent; editing a turn
+    branches instead of overwriting, regenerate produces sibling answers
+    navigated in place, and a turn's context follows its own path — the
+    other branch never leaks in. Fork still copies into a fresh chat.
+  - **Skills.** Shared markdown instruction sets bound per agent with a lazy
+    manifest — one line each in context, the body loaded on demand via
+    view_skill on either runtime.
+  - **Project instructions.** A project can carry a system prompt every chat
+    filed under it inherits — a sub-persona without minting a new agent.
+  - **Prompt library**, own-history tools (search_chats/view_chat: fenced,
+    own chats only, held for approval on injection-exposed agents),
+    URL-as-context and chat-as-context (both fenced), unread markers,
+    chat search/pin/archive/fork/export, markdown replies with code copy,
+    and optional auto-titling via the configured task endpoint.
+  - **Rendering.** Mermaid diagrams and KaTeX math, self-hosted (vendored
+    with their MIT licenses — the admin CSP allows no CDNs).
 
 Denial visibility + opt-in escalation approval, plus a runtime-hardening pass.
 Blocked inter-agent calls used to be invisible to the operator — a real,

@@ -6,6 +6,12 @@
 <meta name="color-scheme" content="dark">
 <title>ritsu</title>
 <link rel="stylesheet" href="/admin/workspace.css">
+<!-- Vendored, self-hosted: the admin CSP allows no CDN. Both expose a plain
+     global (globalThis.mermaid / window.katex); defer keeps 3.5MB of mermaid
+     off the critical path and the render passes wait for the global. -->
+<link rel="stylesheet" href="/admin/vendor/katex.min.css">
+<script src="/admin/vendor/katex.min.js" defer></script>
+<script src="/admin/vendor/mermaid.min.js" defer></script>
 </head>
 <body>
   <!-- Every handler is wired by the delegated listeners in workspace.js via
@@ -60,6 +66,10 @@
           <span class="side-item-lead" aria-hidden="true">📁</span>
           <span class="side-item-title">Files</span>
         </button>
+        <button type="button" id="skills-nav" class="side-item files-nav" data-action="open-skills">
+          <span class="side-item-lead" aria-hidden="true">⚙</span>
+          <span class="side-item-title">Skills</span>
+        </button>
       </div>
     </aside>
 
@@ -70,6 +80,7 @@
           <div class="view-title-wrap">
             <h1 id="chat-title" class="view-title">…</h1>
             <div id="chat-sub" class="view-sub"></div>
+            <button type="button" id="chat-inherit" class="inherit-badge hidden" data-action="open-inherited-project"></button>
           </div>
           <label id="chat-file-wrap" class="file-under hidden">
             <span class="file-under-label">File under</span>
@@ -91,14 +102,28 @@
         <div id="transcript" class="transcript" aria-live="polite"></div>
 
         <form id="ask-form" class="composer">
+          <!-- "/" or "@" at position 0 opens this; rows are built in JS and
+               chosen with the arrow keys, so it stays out of the tab order. -->
+          <div id="palette" class="palette" role="listbox" aria-label="Commands" aria-hidden="true"></div>
+          <div id="edit-banner" class="edit-banner hidden">
+            <span class="edit-banner-text">Editing a message — sending forks a new branch.</span>
+            <button type="button" class="edit-banner-x" data-action="cancel-edit" title="Cancel (Esc)">✕</button>
+          </div>
           <div id="attach-tray" class="attach-tray" aria-hidden="true"></div>
           <div id="attach-hint" class="attach-hint" aria-hidden="true"></div>
           <!-- Placeholder stays short: a textarea does not autosize to wrapped
                placeholder text, so a long one clips on a phone. -->
           <textarea id="ask-input" rows="1" aria-label="Message this agent" placeholder="Message…"
-                    title="Enter to send, Shift+Enter for a newline, paste an image to attach"></textarea>
+                    title="Enter to send, Shift+Enter for a newline, “/” for commands, paste an image to attach"></textarea>
           <div class="composer-row">
-            <button type="button" class="icon-btn" data-action="pick-attachment" title="Attach image" aria-label="Attach image">📎</button>
+            <div class="menu-wrap">
+              <button type="button" class="icon-btn" data-action="toggle-attach-menu" title="Attach" aria-label="Attach" aria-haspopup="menu">📎</button>
+              <div id="attach-menu" class="row-menu attach-menu">
+                <button type="button" data-action="pick-attachment">Attach image</button>
+                <button type="button" data-action="attach-webpage">Attach webpage</button>
+                <button type="button" data-action="reference-chat">Reference chat</button>
+              </div>
+            </div>
             <input type="file" id="ask-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden aria-label="Attach an image">
             <span class="flex1"></span>
             <button type="submit" id="ask-send" class="primary send-btn" title="Send" aria-label="Send">→</button>
@@ -111,10 +136,33 @@
 
       <!-- ============ FILES ============ -->
       <section id="view-files" class="view" aria-label="Files"></section>
+
+      <!-- ============ SKILLS ============ -->
+      <section id="view-skills" class="view" aria-label="Skills"></section>
+
+      <!-- ============ ARTIFACT ============ -->
+      <!-- sandbox is allow-scripts ONLY: no allow-same-origin, so the frame
+           gets an opaque origin and can never read this page, its storage, or
+           its admin token. srcdoc is set from JS with a deny-everything CSP
+           meta injected as the first head element. -->
+      <aside id="artifact-panel" class="artifact-panel hidden" aria-label="Artifact">
+        <div class="artifact-head">
+          <select id="artifact-versions" data-change="pick-artifact" aria-label="Artifact version"></select>
+          <button type="button" data-action="copy-artifact" title="Copy source">copy source</button>
+          <button type="button" class="icon-btn" data-action="close-artifact" aria-label="Close artifact">✕</button>
+        </div>
+        <iframe id="artifact-frame" class="artifact-frame" sandbox="allow-scripts"
+                referrerpolicy="no-referrer" title="Artifact preview"></iframe>
+      </aside>
     </main>
   </div>
 
   <input type="file" id="upload-file" multiple hidden aria-label="Upload files to this workspace">
+
+  <!-- Modals (prompt library, skill editor, variable forms) and the sidebar
+       hover preview are built as DOM nodes into these hosts. -->
+  <div id="modal-host"></div>
+  <div id="hover-preview" class="hover-preview hidden" aria-hidden="true"></div>
 
   <output id="toast" class="toast hidden"></output>
 

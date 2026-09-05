@@ -198,6 +198,7 @@ let searchSeq = 0;
 let showArchived = false;
 let sending = false;
 let attachments = [];       // pasted/dropped/picked but not yet sent
+let contextChips = [];      // { label, text } — server-fenced context to prepend
 const inFlight = new Set(); // conversation ids someone is mid-turn on
 
 // Sequence guards: a slow response for an agent/chat the operator has already
@@ -209,6 +210,7 @@ let txSeq = 0;
 const chatPath = (id, cid) => `/a/${encodeURIComponent(id)}${cid ? `/c/${cid}` : ''}`;
 const projectPath = (id, pid) => `/a/${encodeURIComponent(id)}/p/${pid}`;
 const filesPath = (id) => `/a/${encodeURIComponent(id)}/files`;
+const skillsPath = (id) => `/a/${encodeURIComponent(id)}/skills`;
 function go(path) { location.hash = path; }
 
 function parseHash() {
@@ -219,6 +221,7 @@ function parseHash() {
   if (parts[2] === 'c' && Number.isInteger(Number(parts[3]))) return { id, view: 'chat', cid: Number(parts[3]) };
   if (parts[2] === 'p' && Number.isInteger(Number(parts[3]))) return { id, view: 'project', pid: Number(parts[3]) };
   if (parts[2] === 'files') return { id, view: 'files' };
+  if (parts[2] === 'skills') return { id, view: 'skills' };
   return { id, view: 'chat', cid: null };
 }
 
@@ -237,7 +240,9 @@ async function onRoute() {
     filesLoaded = false;
     files = [];
     convoId = null;
+    previewCache.clear();
     clearAttachments();
+    clearContextChips();
     await loadAgentContext();
   }
   await applyView(r);
@@ -253,13 +258,15 @@ async function applyView(r) {
     else renderChatHead();
   } else if (r.view === 'project') {
     renderProjectView(r.pid);
+  } else if (r.view === 'skills') {
+    await showSkillsView();
   } else {
     await showFilesView();
   }
 }
 
 function showView(view) {
-  for (const v of ['chat', 'project', 'files']) {
+  for (const v of ['chat', 'project', 'files', 'skills']) {
     $(`view-${v}`).classList.toggle('active', v === view);
   }
 }
@@ -276,14 +283,16 @@ async function loadAgentContext() {
   const seq = ++ctxSeq;
   const enc = encodeURIComponent(agentId);
   setSidebarLoading();
-  const [def, dc, projs, convList, ws] = await Promise.all([
+  const [def, dc, projs, convList, ws, prompts] = await Promise.all([
     api('GET', `/admin/agents/${enc}`).catch(() => null),
     api('GET', `/admin/api/agents/${enc}/default-chat`).catch(() => null),
     api('GET', `/admin/api/agents/${enc}/projects`).catch(() => ({ projects: [] })),
     api('GET', `/admin/api/conversations?agent_id=${enc}&kind=human&limit=200`).catch(() => ({ conversations: [] })),
     api('GET', `/admin/agents/${enc}/workspaces`).catch(() => ({ workspaces: [] })),
+    api('GET', `/admin/api/agents/${enc}/prompts`).catch(() => ({ prompts: [] })),
   ]);
   if (seq !== ctxSeq) return;
+  savedPrompts = prompts?.prompts || [];
   agentDef = def;
   defaultChat = dc;
   projects = projs?.projects || [];
@@ -331,6 +340,7 @@ function renderSidebar() {
   renderChatList();
   const route = parseHash();
   $('files-nav').classList.toggle('active', route?.view === 'files');
+  $('skills-nav').classList.toggle('active', route?.view === 'skills');
 }
 
 function renderDefaultChat() {
@@ -447,15 +457,22 @@ function renderChatList() {
   target.innerHTML = html || '<div class="side-empty">No chats yet.</div>';
 }
 
+/** A message newer than the last read, in a chat nobody is looking at. */
+function isUnread(c) {
+  return !isChatOpen(c.id) && (c.last_message_at ?? 0) > (c.read_at ?? 0);
+}
+
 function chatRowHtml(c, opts = {}) {
   const active = isChatOpen(c.id) ? ' active' : '';
+  const unread = isUnread(c);
   const title = (c.pinned ? '📌 ' : '') + (c.title?.trim() ? c.title : '(new chat)');
   const snippet = opts.snippet
     ? `<span class="side-item-snippet">${esc(opts.snippet)}</span>` : '';
   return `<div class="side-row">
-    <button type="button" class="side-item${active}" data-action="open-chat" data-cid="${c.id}">
+    <button type="button" class="side-item${active}${unread ? ' unread' : ''}" data-action="open-chat" data-cid="${c.id}">
       <span class="side-item-title">${esc(title)}</span>${snippet}
-      <span class="side-item-age">${fmtAge(c.started_at)}</span>
+      ${unread ? '<span class="unread-dot" aria-label="unread"></span>' : ''}
+      <span class="side-item-age">${fmtAge(c.last_message_at || c.started_at)}</span>
     </button>
   </div>`;
 }
@@ -464,8 +481,14 @@ function isChatOpen(cid) {
   return $('view-chat').classList.contains('active') && convoId === cid;
 }
 
-/** The message list behind the current transcript render, for copy actions. */
+/** The messages on the RENDERED PATH, for copy/export/edit by index. */
 let lastRendered = [];
+/** Every message in the open chat — the tree the path is walked over. */
+let lastMessages = [];
+/** parentId (or 'root') → chosen child id, for the open chat. */
+let pathChoice = {};
+/** Set while editing a past user turn: the parent the new branch hangs from. */
+let editing = null;
 
 // ---- chat view -------------------------------------------------------------
 function convoTitle(cid) {
@@ -483,6 +506,18 @@ function renderChatHead() {
   if (c?.message_count != null) bits.push(`${c.message_count} msg${c.message_count === 1 ? '' : 's'}`);
   if (c?.started_at) bits.push(`started ${fmtAge(c.started_at)} ago`);
   $('chat-sub').textContent = bits.join(' · ');
+
+  // A chat filed under a project inherits that project's instructions, and
+  // that is invisible from the transcript alone — badge it.
+  const proj = c?.project_id != null ? projects.find(x => x.id === c.project_id) : null;
+  const badge = $('chat-inherit');
+  if (proj?.system_prompt) {
+    badge.textContent = `inherits ${proj.name} instructions`;
+    badge.dataset.pid = String(proj.id);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
 
   const isDefault = convoId === defaultChat?.conversation_id;
   $('chat-menu-wrap').classList.toggle('hidden', !convoId);
@@ -511,11 +546,17 @@ function renderChatHead() {
 async function openChat(cid) {
   convoId = cid;
   clearAttachments();
+  clearContextChips();
+  cancelEdit();
+  closeArtifact();
+  pathChoice = loadPathChoice(cid);
+  lastMessages = [];
   renderChatHead();
   const t = $('transcript');
   if (!cid) { t.innerHTML = '<div class="empty">No conversation yet — send something below.</div>'; return; }
   const seq = ++txSeq;
   t.innerHTML = '<div class="empty">loading…</div>';
+  markChatRead(cid);
   try {
     const { messages } = await api('GET', `/admin/api/conversations/${cid}`);
     if (seq !== txSeq) return;
@@ -525,6 +566,64 @@ async function openChat(cid) {
     if (seq !== txSeq) return;
     t.innerHTML = `<div class="empty txt-err">${esc(e.message)}</div>`;
   }
+}
+
+/** Clear the unread dot both locally (instant) and server-side. */
+function markChatRead(cid) {
+  const c = convos.find(x => x.id === cid);
+  if (c) { c.read_at = Math.floor(Date.now() / 1000); renderSidebar(); }
+  api('PATCH', `/admin/api/conversations/${cid}/read`).catch(() => { /* the dot returns on the next refresh */ });
+}
+
+// ---- edit / regenerate / continue -------------------------------------------
+function startEdit(idx) {
+  const m = lastRendered[idx];
+  if (!m || m.role !== 'user') return;
+  // Sending from here forks a sibling under the SAME parent, so the original
+  // turn (and everything under it) stays reachable through the ‹ › arrows.
+  editing = { parent_message_id: m.parent_message_id ?? null };
+  $('edit-banner').classList.remove('hidden');
+  const input = $('ask-input');
+  input.value = m.content;
+  autosize();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function cancelEdit() {
+  if (!editing) return;
+  editing = null;
+  $('edit-banner').classList.add('hidden');
+  $('ask-input').value = '';
+  autosize();
+}
+
+async function regenerateMsg(idx) {
+  const m = lastRendered[idx];
+  if (!m?.id || !convoId || sending) return;
+  sending = true;
+  $('ask-send').disabled = true;
+  ensurePendingBubble();
+  try {
+    await api('POST', `/admin/api/conversations/${convoId}/regenerate`, { assistant_message_id: m.id });
+    unpin(m.parent_message_id);   // the new sibling is newest — let it win
+    await reloadTranscript();
+    scheduleRefresh();
+  } catch (e) {
+    removePendingBubble();
+    toast(e.message, 'err');
+  } finally {
+    sending = false;
+    $('ask-send').disabled = false;
+  }
+}
+
+/** Send a literal message as a normal turn (the Continue button). */
+function sendLiteral(text) {
+  cancelEdit();
+  $('ask-input').value = text;
+  autosize();
+  sendAsk();
 }
 
 /** Authoritative re-render from server state — wipes optimistic bubbles and
@@ -549,9 +648,68 @@ async function reloadTranscript() {
  * positions or quoted, escaped attributes. Links are restricted to http(s).
  * Fenced code is lifted out first so nothing inside it is transformed.
  */
+const THINK_RE = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi;
+
+/** Byte ranges covered by a ``` fence. Math extraction runs before the fence
+ *  lift, so it consults these to leave TeX-shaped text inside code alone. */
+function fenceRanges(text) {
+  const out = [];
+  const re = /```[A-Za-z0-9_+.-]*\n?[\s\S]*?```/g;
+  let m;
+  while ((m = re.exec(text)) !== null) out.push([m.index, m.index + m[0].length]);
+  return out;
+}
+
+/** A fenced block. `mermaid` keeps its source as the visible body: that is
+ *  both the pre-render state and the render-failure state, so a diagram that
+ *  cannot be drawn still shows what the agent wrote. */
+function codeBlockHtml(b) {
+  const code = esc(b.code.replace(/\n$/, ''));
+  if ((b.lang || '').toLowerCase() === 'mermaid') {
+    return `<div class="mermaid-box" data-mermaid="${code}"><div class="codebar">`
+      + '<span class="codelang">mermaid</span>'
+      + '<button type="button" class="codecopy" data-action="copy-mermaid">copy</button></div>'
+      + `<div class="mermaid-out"><pre><code>${code}</code></pre></div></div>`;
+  }
+  return '<div class="codeblock"><div class="codebar">'
+    + `<span class="codelang">${esc(b.lang || 'text')}</span>`
+    + '<button type="button" class="codecopy" data-action="copy-code">copy</button></div>'
+    + `<pre><code>${code}</code></pre></div>`;
+}
+
+/** KaTeX renders into this after the transcript paints; the escaped TeX is
+ *  the element's body until then, and stays put if the render fails. */
+function mathHtml(m) {
+  const tex = esc(m.tex.trim());
+  return m.display
+    ? `<div class="math-block" data-tex="${tex}">${tex}</div>`
+    : `<span class="math-inline" data-tex="${tex}">${tex}</span>`;
+}
+
+function reasoningHtml(body) {
+  return '<details class="reasoning"><summary>Thought</summary>'
+    + `<div class="reasoning-body">${esc(body)}</div></details>`;
+}
+
 function md(raw) {
+  let text = String(raw ?? '');
+
+  // Chain-of-thought comes out first and renders collapsed above the answer.
+  const thoughts = [];
+  text = text.replace(THINK_RE, (_, body) => { thoughts.push(body.trim()); return ''; });
+
+  // Math before every other transform, so no emphasis/escape rule mangles the
+  // TeX — but a $$ inside a code fence is source, not math.
+  const maths = [];
+  const fences = fenceRanges(text);
+  text = text.replace(/\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)/g, (whole, blk, inl, idx) => {
+    if (fences.some(([a, b]) => idx >= a && idx < b)) return whole;
+    maths.push({ tex: blk !== undefined ? blk : inl, display: blk !== undefined });
+    return `\u0000M${maths.length - 1}\u0000`;
+  });
+
   const blocks = [];
-  let text = String(raw ?? '').replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+  text = text.replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
     blocks.push({ lang, code });
     return `\u0000B${blocks.length - 1}\u0000`;
   });
@@ -582,28 +740,132 @@ function md(raw) {
     .replace(/\u0000P\u0000/g, '<div class="md-gap"></div>')
     .replace(/(<\/(?:h2|h3|h4|h5|ul|ol|blockquote)>|<hr>)<br>/g, '$1')
     .replace(/<br>(<(?:h2|h3|h4|h5|ul|ol|blockquote|hr)[ >])/g, '$1');
-  text = text.replace(/\u0000B(\d+)\u0000(?:<br>)?/g, (_, i) => {
-    const b = blocks[+i];
-    return '<div class="codeblock"><div class="codebar">'
-      + `<span class="codelang">${esc(b.lang || 'text')}</span>`
-      + '<button type="button" class="codecopy" data-action="copy-code">copy</button></div>'
-      + `<pre><code>${esc(b.code.replace(/\n$/, ''))}</code></pre></div>`;
+  text = text.replace(/\u0000B(\d+)\u0000(?:<br>)?/g, (_, i) => codeBlockHtml(blocks[+i]));
+  // Display math is its own block, so it swallows the <br> the line break pass
+  // left behind; inline math keeps it.
+  text = text.replace(/\u0000M(\d+)\u0000(<br>)?/g, (_, i, br) => {
+    const m = maths[+i];
+    return mathHtml(m) + (m.display ? '' : (br || ''));
   });
-  return text;
+  return thoughts.map(reasoningHtml).join('') + text;
 }
 // MD-PURE-END
 
+// ---- message tree ----------------------------------------------------------
+// Messages form a tree (regenerate and edit make SIBLINGS, never overwrite).
+// Exactly one root-to-leaf path renders: at every fork the newest child wins
+// unless pathChoice pins another, so switching a fork hides its whole subtree —
+// the branch semantics operators already expect from a chat UI.
+
+const pathKey = (cid) => `ritsu.workspace.path.${cid}`;
+
+function loadPathChoice(cid) {
+  if (!cid) return {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(pathKey(cid)) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch { return {}; }
+}
+function savePathChoice(cid, choice) {
+  if (!cid) return;
+  try {
+    if (Object.keys(choice).length) localStorage.setItem(pathKey(cid), JSON.stringify(choice));
+    else localStorage.removeItem(pathKey(cid));
+  } catch { /* private mode / quota — the pin just doesn't survive a reload */ }
+}
+/** Drop the pin under one parent so a freshly-created sibling (the newest
+ *  child) wins the walk again. */
+function unpin(parentId) {
+  delete pathChoice[parentId == null ? 'root' : parentId];
+  savePathChoice(convoId, pathChoice);
+}
+
+/**
+ * @returns {{path: Array<{msg: object, siblings: object[], parentKey: string|number}>, flat: boolean}}
+ */
+function computePath(messages, choice) {
+  // Rows written before the tree existed carry a null parent across the board;
+  // walking them would render exactly one message, so they render flat.
+  if (!messages.some(m => m.parent_message_id != null)) {
+    return { path: messages.map(m => ({ msg: m, siblings: [m], parentKey: 'root' })), flat: true };
+  }
+  const ids = new Set(messages.map(m => m.id).filter(id => id != null));
+  const kids = new Map();
+  for (const m of messages) {
+    // A parent outside the fetched window can't be walked to — treat that
+    // message as a root so the visible tail still renders.
+    const p = m.parent_message_id != null && ids.has(m.parent_message_id) ? m.parent_message_id : 'root';
+    const list = kids.get(p) ?? [];
+    list.push(m);
+    kids.set(p, list);
+  }
+  for (const list of kids.values()) list.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+
+  const path = [];
+  const seen = new Set();
+  let key = 'root';
+  for (;;) {
+    const level = kids.get(key);
+    if (!level?.length) break;
+    const pick = level.find(m => m.id === choice[key]) ?? level[level.length - 1];
+    if (pick.id == null || seen.has(pick.id)) break;   // cycle guard
+    seen.add(pick.id);
+    path.push({ msg: pick, siblings: level, parentKey: key });
+    key = pick.id;
+  }
+  return { path, flat: false };
+}
+
+/** ‹ i/N › plus the per-message actions, in one strip under the bubble. */
+function msgToolsHtml(node, i, flat, isLastAssistant) {
+  const m = node.msg;
+  const bits = [];
+  if (!flat && node.siblings.length > 1) {
+    const at = node.siblings.findIndex(s => s.id === m.id);
+    const prev = node.siblings[at - 1];
+    const next = node.siblings[at + 1];
+    const k = esc(String(node.parentKey));
+    bits.push('<span class="sib-nav">'
+      + `<button type="button" class="sib-btn" data-action="pick-sibling" data-parent="${k}" data-child="${prev?.id ?? ''}"${prev ? '' : ' disabled'} aria-label="Previous version">‹</button>`
+      + `<span class="sib-count">${at + 1}/${node.siblings.length}</span>`
+      + `<button type="button" class="sib-btn" data-action="pick-sibling" data-parent="${k}" data-child="${next?.id ?? ''}"${next ? '' : ' disabled'} aria-label="Next version">›</button>`
+      + '</span>');
+  }
+  if (m.role === 'user' && m.id != null && m.content) {
+    bits.push(`<button type="button" class="msg-tool" data-action="edit-msg" data-idx="${i}">Edit</button>`);
+  }
+  if (isLastAssistant && m.id != null) {
+    bits.push(`<button type="button" class="msg-tool" data-action="regen-msg" data-idx="${i}">Regenerate</button>`
+      + '<button type="button" class="msg-tool" data-action="continue-msg">Continue</button>');
+  }
+  if (m.role === 'assistant' && artifactsIn(m.content).length) {
+    bits.push(`<button type="button" class="msg-tool artifact-open" data-action="open-artifact" data-idx="${i}">Open artifact</button>`);
+  }
+  return bits.length ? `<div class="msg-tools">${bits.join('')}</div>` : '';
+}
+
 function renderTranscript(messages) {
+  lastMessages = (messages || []).filter(m => m.role !== 'system');
+  renderPath();
+}
+
+/** Paint the chosen path. Cheap enough to re-run on every arrow click, so a
+ *  fork switch never refetches. */
+function renderPath() {
   const t = $('transcript');
-  const visible = (messages || []).filter(m => m.role !== 'system');
-  if (!visible.length) {
+  if (!lastMessages.length) {
+    lastRendered = [];
     t.innerHTML = '<div class="empty">No messages yet — send something below.</div>';
   } else {
     // Byline only when the caller is another agent; everything else (admin
     // token, MCP bearer, this browser) is just "you".
     const agentIds = new Set(agents.map(a => a.id));
-    lastRendered = visible;
-    t.innerHTML = visible.map((m, i) => {
+    const { path, flat } = computePath(lastMessages, pathChoice);
+    lastRendered = path.map(n => n.msg);
+    let lastAssistant = -1;
+    for (let i = 0; i < path.length; i++) if (path[i].msg.role === 'assistant') lastAssistant = i;
+    t.innerHTML = path.map((node, i) => {
+      const m = node.msg;
       const byline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label)
         ? `<div class="msg-byline">${esc(m.caller_label)}</div>` : '';
       const atts = m.attachments?.length
@@ -616,11 +878,14 @@ function renderTranscript(messages) {
       const copy = m.content
         ? `<button type="button" class="msg-copy" data-action="copy-msg" data-idx="${i}" aria-label="Copy message">copy</button>` : '';
       const when = m.created_at ? ` title="${esc(new Date(m.created_at * 1000).toLocaleString())}"` : '';
-      return `<div class="msg ${esc(m.role)}"${when}>${byline}${body}${atts}${copy}</div>`;
+      const tools = msgToolsHtml(node, i, flat, i === lastAssistant);
+      return `<div class="msg ${esc(m.role)}"${when}>${byline}${body}${atts}${tools}${copy}</div>`;
     }).join('');
   }
   if (convoId !== null && inFlight.has(convoId)) ensurePendingBubble();
   t.scrollTop = t.scrollHeight;
+  renderMath(t);
+  renderMermaid(t);
 }
 
 function appendMsg(role, content, attachmentUrls) {
@@ -674,19 +939,29 @@ async function sendAsk() {
   if (!msg && !attachments.length) return;
   sending = true;
   $('ask-send').disabled = true;
+  closePalette();
   input.value = '';
   autosize();
   // Snapshot + clear so the tray empties immediately and a double-tap can't
   // resend; restored into the tray if the send fails.
   const sent = attachments;
-  clearAttachments();
+  const chips = contextChips;
+  const editParent = editing ? editing.parent_message_id : undefined;
+  attachments = [];
+  contextChips = [];
+  renderAttachTray();
   const optimistic = appendMsg('user', msg, sent.map(a => a.url));
   try {
-    const body = { message: msg };
+    // Chip text arrives from the server already wrapped in the untrusted
+    // fence — it is prepended verbatim, never unwrapped or re-fenced.
+    const prefix = chips.map(c => c.text).filter(Boolean).join('\n\n');
+    const body = { message: prefix ? `${prefix}\n\n${msg}` : msg };
     if (convoId) body.conversation_id = convoId;
+    if (editParent !== undefined) body.parent_message_id = editParent;
     if (sent.length) body.attachments = sent.map(a => ({ media_type: a.media_type, data: a.data }));
     const resp = await api('POST', `/admin/agents/${encodeURIComponent(agentId)}/ask`, body);
     if (resp?.conversation_id) convoId = resp.conversation_id;
+    if (editParent !== undefined) { unpin(editParent); cancelEdit(); }
     await reloadTranscript();
     scheduleRefresh();
   } catch (e) {
@@ -696,7 +971,9 @@ async function sendAsk() {
     removePendingBubble();
     input.value = msg;
     autosize();
-    if (sent.length) { attachments = sent; renderAttachTray(); }
+    attachments = sent;
+    contextChips = chips;
+    renderAttachTray();
     const friendly = /load failed|networkerror|failed to fetch/i.test(e.message)
       ? 'connection dropped — press Send to retry'
       : `error: ${e.message}`;
@@ -813,7 +1090,7 @@ async function addAttachmentFiles(fileList) {
 
 function renderAttachTray() {
   const tray = $('attach-tray');
-  if (!attachments.length) {
+  if (!attachments.length && !contextChips.length) {
     tray.classList.remove('show');
     tray.setAttribute('aria-hidden', 'true');
     tray.innerHTML = '';
@@ -823,9 +1100,13 @@ function renderAttachTray() {
   tray.setAttribute('aria-hidden', 'false');
   tray.innerHTML = attachments.map((a, i) =>
     `<div class="attach-chip"><img src="${a.url}" alt="attachment ${i + 1}"><button type="button" data-action="remove-attachment" data-idx="${i}" title="remove" aria-label="Remove attachment">✕</button></div>`,
+  ).join('') + contextChips.map((c, i) =>
+    `<span class="ctx-chip" title="${esc(c.label)}"><span class="ctx-chip-label">${esc(c.label)}</span>`
+    + `<button type="button" data-action="remove-chip" data-idx="${i}" title="remove" aria-label="Remove context">✕</button></span>`,
   ).join('');
 }
 function clearAttachments() { attachments = []; renderAttachTray(); }
+function clearContextChips() { contextChips = []; renderAttachTray(); }
 
 /** Warn (don't block) when this agent's model is probably text-only. */
 function updateAttachHint() {
@@ -974,7 +1255,8 @@ function approvalCardHtml(a) {
   const banner = caps
     ? `<div class="approval-escalation-banner">⚠ capability escalation — approving lets <code>${esc(a.agent_id)}</code> act through an agent holding <strong>${esc(caps.join(', '))}</strong> it doesn't have. Only approve if you mean to.</div>`
     : '';
-  return `<div class="approval-card ${approvalStaleClass(a)}${caps ? ' escalation' : ''}" data-approval-id="${a.id}">
+  const keys = 'Ctrl/Cmd+Alt+Enter approves · Ctrl/Cmd+Alt+Backspace rejects';
+  return `<div class="approval-card ${approvalStaleClass(a)}${caps ? ' escalation' : ''}" data-approval-id="${a.id}" title="${keys}">
     ${banner}
     <div class="approval-main">
       <span class="approval-icon" aria-hidden="true">${approvalToolIcon(a.tool_name)}</span>
@@ -988,8 +1270,8 @@ function approvalCardHtml(a) {
       </div>
     </div>
     <div class="approval-actions">
-      <button type="button" class="primary" data-action="approve-approval">Approve</button>
-      <button type="button" class="danger" data-action="reject-approval">Reject</button>
+      <button type="button" class="primary" data-action="approve-approval" title="${keys}">Approve</button>
+      <button type="button" class="danger" data-action="reject-approval" title="${keys}">Reject</button>
     </div>
   </div>`;
 }
@@ -1095,9 +1377,22 @@ function renderProjectView(pid) {
       </div>
     </div>
     <div class="view-body">
+      <section class="block">
+        <h2 class="block-head">Project instructions</h2>
+        <div class="prompt-editor">
+          <textarea id="proj-prompt" rows="6" spellcheck="false"
+                    aria-label="Project instructions" placeholder="e.g. Answer as the compliance reviewer for this project…"></textarea>
+          <div class="prompt-editor-row">
+            <button type="button" class="primary" data-action="save-project-prompt" data-pid="${p.id}">Save</button>
+            <span class="hint">Every chat filed under this project inherits these instructions. Empty clears them.</span>
+          </div>
+        </div>
+      </section>
       <section class="block"><h2 class="block-head">Chats</h2>${chatsHtml}</section>
       <section class="block"><h2 class="block-head">Files</h2>${filesHtml}</section>
     </div>`;
+  // Set as a value, not markup — the text can contain anything.
+  $('proj-prompt').value = p.system_prompt || '';
 
   if (!filesLoaded && !filesLoading) {
     loadFiles().then(() => { if (parseHash()?.pid === pid) renderProjectView(pid); });
@@ -1409,6 +1704,721 @@ function syncViewport() {
   document.documentElement.style.setProperty('--vvh', `${vv ? vv.height : window.innerHeight}px`);
 }
 
+// ---- vendored renderers (mermaid + katex) -----------------------------------
+// Both vendor scripts are `defer`, so a transcript can paint before they land.
+// Nothing waits on them: the escaped source is already on screen and gets
+// upgraded in place once the global appears.
+function libReady(name) {
+  if (globalThis[name]) return Promise.resolve(globalThis[name]);
+  return new Promise(resolve => {
+    let tries = 0;
+    const tick = () => {
+      if (globalThis[name]) resolve(globalThis[name]);
+      else if (++tries > 120) resolve(null);   // ~6s, then give up quietly
+      else setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+function renderMath(root) {
+  const nodes = [...root.querySelectorAll('[data-tex]:not(.math-done)')];
+  if (!nodes.length) return;
+  libReady('katex').then(katex => {
+    if (!katex) return;
+    for (const el of nodes) {
+      el.classList.add('math-done');
+      const src = el.textContent;
+      try {
+        katex.render(el.dataset.tex, el, { throwOnError: false, displayMode: el.classList.contains('math-block') });
+      } catch {
+        el.textContent = src;   // put the source back if katex bailed hard
+      }
+    }
+  });
+}
+
+// Mermaid emits its theme CSS as a <style> inside the SVG, which style-src
+// 'self' refuses. CSSOM is not policed by CSP, so the rules are lifted out and
+// adopted through a constructed sheet instead — they are already scoped to the
+// diagram's own id, so adopting them document-wide is safe.
+let mermaidSheet = null;
+let mermaidCss = '';
+function adoptMermaidCss(css) {
+  try {
+    if (!mermaidSheet) {
+      mermaidSheet = new CSSStyleSheet();
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, mermaidSheet];
+    }
+    if (mermaidCss.length > 400_000) mermaidCss = '';   // long session, stale diagrams
+    mermaidCss += css;
+    mermaidSheet.replaceSync(mermaidCss);
+  } catch { /* no constructable stylesheets — the diagram renders unstyled */ }
+}
+
+function applyDecls(el, decls) {
+  for (const d of String(decls).split(';')) {
+    const i = d.indexOf(':');
+    if (i > 0) {
+      try { el.style.setProperty(d.slice(0, i).trim(), d.slice(i + 1).trim()); } catch { /* skip a bad declaration */ }
+    }
+  }
+}
+
+/**
+ * style-src 'self' refuses style="…" attributes, and mermaid puts plenty of
+ * them on the shapes it draws. Rename them in the SVG SOURCE so none ever
+ * enters the live document, then replay each declaration through CSSOM, which
+ * CSP does not police. Without this the diagram renders unstyled AND logs a
+ * violation per element. Doing it on the string beats parsing first: an XML
+ * parse can reject mermaid's HTML labels, and a DOMParser 'text/html'
+ * document is NOT CSP-inert (it enforces the creating page's style-src).
+ * mermaid's output is machine-generated and its text is escaped, so the
+ * attribute form is unambiguous here.
+ */
+function mountSvg(out, svgText) {
+  out.innerHTML = svgText.replace(/\sstyle="([^"]*)"/g, (_, d) => ` data-mmd-style="${d}"`);
+  for (const el of out.querySelectorAll('[data-mmd-style]')) {
+    const d = el.getAttribute('data-mmd-style');
+    el.removeAttribute('data-mmd-style');
+    applyDecls(el, d);
+  }
+}
+
+let mermaidInit = false;
+let mermaidSeq = 0;
+function renderMermaid(root) {
+  const boxes = [...root.querySelectorAll('.mermaid-box:not(.mermaid-done)')];
+  if (!boxes.length) return;
+  libReady('mermaid').then(async (mermaid) => {
+    if (!mermaid) return;
+    if (!mermaidInit) {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' });
+      mermaidInit = true;
+    }
+    for (const box of boxes) {
+      box.classList.add('mermaid-done');
+      const out = box.querySelector('.mermaid-out');
+      if (!out) continue;
+      try {
+        const { svg } = await mermaid.render(`mmd-${++mermaidSeq}`, box.dataset.mermaid || '');
+        mountSvg(out, svg.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, css) => { adoptMermaidCss(css); return ''; }));
+      } catch (e) {
+        // The source code block is still there — add one muted line saying why
+        // it isn't a diagram.
+        if (box.querySelector('.mermaid-err')) continue;
+        const err = document.createElement('div');
+        err.className = 'mermaid-err';
+        err.textContent = `mermaid: ${String(e?.message ?? e).split('\n')[0].slice(0, 160)}`;
+        box.appendChild(err);
+      }
+    }
+  });
+}
+
+// ---- artifacts --------------------------------------------------------------
+// An assistant turn carrying a whole page or drawing gets a preview panel:
+// a ```html / ```svg fence, a full document, or a bare <svg> block.
+function artifactsIn(content) {
+  const src = String(content ?? '');
+  const found = [];
+  const fence = /```(html|svg)[^\S\n]*\n?([\s\S]*?)```/gi;
+  let m;
+  while ((m = fence.exec(src)) !== null) found.push({ kind: m[1].toLowerCase(), code: m[2].trim() });
+  if (!found.length) {
+    const doc = src.match(/<!doctype html[\s\S]*<\/html>/i)
+      || src.match(/<html[\s>][\s\S]*<\/html>/i)
+      || src.match(/<!doctype html[\s\S]*$/i);
+    if (doc) found.push({ kind: 'html', code: doc[0].trim() });
+    else {
+      const svg = src.match(/<svg[\s>][\s\S]*?<\/svg>/i);
+      if (svg) found.push({ kind: 'svg', code: svg[0].trim() });
+    }
+  }
+  return found.filter(a => a.code);
+}
+
+function artifactLabel(a) {
+  const t = a.code.match(/<title[^>]*>([^<]{1,120})<\/title>/i);
+  if (t?.[1].trim()) return t[1].trim().slice(0, 60);
+  const first = a.code.split('\n').map(l => l.trim()).find(Boolean) || a.kind;
+  return first.slice(0, 60);
+}
+
+// default-src 'none' with no connect-src: the frame cannot fetch, XHR, or open
+// a socket anywhere. Combined with sandbox="allow-scripts" (and deliberately
+// NO allow-same-origin) the page runs in an opaque origin with no reach.
+const ARTIFACT_CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
+  + 'script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:;">';
+
+/** The artifact with the deny-everything CSP as the FIRST head element. */
+function artifactDoc(a) {
+  const src = a.code;
+  if (a.kind === 'svg' || !/<html[\s>]|<!doctype/i.test(src)) {
+    return `<!doctype html><html><head>${ARTIFACT_CSP}</head><body>${src}</body></html>`;
+  }
+  if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (h) => h + ARTIFACT_CSP);
+  if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (h) => `${h}<head>${ARTIFACT_CSP}</head>`);
+  return `<!doctype html><html><head>${ARTIFACT_CSP}</head><body>${src.replace(/<!doctype[^>]*>/i, '')}</body></html>`;
+}
+
+let artifacts = [];
+let artifactIdx = 0;
+
+function collectArtifacts() {
+  const out = [];
+  for (const m of lastRendered) {
+    if (m.role !== 'assistant') continue;
+    for (const a of artifactsIn(m.content)) out.push(a);
+  }
+  return out;
+}
+
+function openArtifactFromMsg(msgIdx) {
+  artifacts = collectArtifacts();
+  if (!artifacts.length) return;
+  let n = 0;
+  for (let i = 0; i < msgIdx && i < lastRendered.length; i++) {
+    if (lastRendered[i].role === 'assistant') n += artifactsIn(lastRendered[i].content).length;
+  }
+  showArtifact(Math.min(n, artifacts.length - 1));
+}
+
+function showArtifact(i) {
+  const a = artifacts[i];
+  if (!a) return;
+  artifactIdx = i;
+  const sel = $('artifact-versions');
+  sel.innerHTML = artifacts.map((x, k) => `<option value="${k}">v${k + 1} — ${esc(artifactLabel(x))}</option>`).join('');
+  sel.value = String(i);
+  $('artifact-frame').srcdoc = artifactDoc(a);
+  $('artifact-panel').classList.remove('hidden');
+  document.querySelector('.main').classList.add('with-artifact');
+}
+
+function closeArtifact() {
+  $('artifact-panel').classList.add('hidden');
+  document.querySelector('.main').classList.remove('with-artifact');
+  $('artifact-frame').removeAttribute('srcdoc');
+  artifacts = [];
+}
+
+// ---- generic modal ----------------------------------------------------------
+function closeModal() { $('modal-host').replaceChildren(); }
+
+/** Build a modal; `fill(card)` populates the card element. */
+function openModal(fill, wide) {
+  closeModal();
+  const back = document.createElement('div');
+  back.className = 'modal-back';
+  back.dataset.action = 'modal-backdrop';
+  const card = document.createElement('div');
+  card.className = wide ? 'modal-card wide' : 'modal-card';
+  back.appendChild(card);
+  $('modal-host').appendChild(back);
+  fill(card);
+  return card;
+}
+
+// ---- composer palette -------------------------------------------------------
+// "/" at position 0 opens commands + the saved-prompt library; "@" lists
+// agents. Arrow keys move, Enter picks, Esc closes.
+const PALETTE_BUILTINS = [
+  { name: 'new', desc: 'start a new chat', action: 'new-chat' },
+  { name: 'fork', desc: 'fork this chat', action: 'fork-chat' },
+  { name: 'export', desc: 'export as markdown', action: 'export-chat' },
+  { name: 'rename', desc: 'rename this chat', action: 'rename-chat' },
+  { name: 'archive', desc: 'archive / unarchive', action: 'archive-chat' },
+  { name: 'files', desc: 'open the file browser', action: 'open-files' },
+];
+
+let savedPrompts = [];
+let paletteRows = [];
+let paletteIdx = 0;
+
+async function loadPrompts() {
+  try {
+    const r = await api('GET', `/admin/api/agents/${encodeURIComponent(agentId)}/prompts`);
+    savedPrompts = r?.prompts || [];
+  } catch { savedPrompts = []; }
+}
+
+function paletteOpen() { return $('palette').classList.contains('open'); }
+
+function closePalette() {
+  const el = $('palette');
+  el.classList.remove('open');
+  el.setAttribute('aria-hidden', 'true');
+  el.innerHTML = '';
+  paletteRows = [];
+}
+
+/** Re-derive the palette from the composer's current text. */
+function syncPalette() {
+  const v = $('ask-input').value;
+  const lead = v.slice(0, 1);
+  if ((lead !== '/' && lead !== '@') || v.includes('\n')) { closePalette(); return; }
+  const filter = v.slice(1).trim().toLowerCase();
+  const rows = [];
+  if (lead === '@') {
+    for (const a of agents) {
+      if (!filter || a.id.toLowerCase().includes(filter) || (a.name || '').toLowerCase().includes(filter)) {
+        rows.push({ kind: 'agent', label: `@${a.id}`, desc: a.name || '', id: a.id });
+      }
+    }
+  } else {
+    for (const b of PALETTE_BUILTINS) {
+      if (b.name.startsWith(filter)) rows.push({ kind: 'builtin', label: `/${b.name}`, desc: b.desc, action: b.action });
+    }
+    for (const p of savedPrompts) {
+      if (!filter || p.name.toLowerCase().includes(filter)) {
+        rows.push({ kind: 'prompt', label: `/${p.name}`, desc: p.agent_id ? '' : 'all agents', id: p.id });
+      }
+    }
+  }
+  // Nothing matches any more — the operator is writing a message that merely
+  // starts with "/" or "@", so get out of the way and let Enter send it.
+  if (!rows.length) { closePalette(); return; }
+  if (lead === '/') rows.push({ kind: 'manage', label: 'manage prompts…', desc: '' });
+  paletteRows = rows;
+  // The filter just changed, so the previous highlight is meaningless — the
+  // top row is the one the operator is aiming at.
+  paletteIdx = 0;
+  renderPalette();
+}
+
+function renderPalette() {
+  const el = $('palette');
+  el.innerHTML = paletteRows.map((r, i) =>
+    `<button type="button" role="option" aria-selected="${i === paletteIdx}"`
+    + ` class="palette-row${i === paletteIdx ? ' active' : ''}${r.kind === 'manage' ? ' palette-foot' : ''}"`
+    + ` data-action="palette-pick" data-i="${i}">`
+    + `<span class="palette-name">${esc(r.label)}</span>`
+    + `<span class="palette-desc">${esc(r.desc)}</span></button>`).join('');
+  el.classList.add('open');
+  el.setAttribute('aria-hidden', 'false');
+}
+
+function movePalette(delta) {
+  if (!paletteRows.length) return;
+  paletteIdx = (paletteIdx + delta + paletteRows.length) % paletteRows.length;
+  renderPalette();
+  $('palette').querySelector('.palette-row.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function pickPalette(i) {
+  const row = paletteRows[i];
+  if (!row) return;
+  const input = $('ask-input');
+  closePalette();
+  if (row.kind === 'builtin') {
+    input.value = '';
+    autosize();
+    ACTIONS[row.action]?.(document.body);
+  } else if (row.kind === 'agent') {
+    input.value = '';
+    autosize();
+    go(chatPath(row.id));
+  } else if (row.kind === 'manage') {
+    input.value = '';
+    autosize();
+    openPromptManager();
+  } else {
+    const p = savedPrompts.find(x => x.id === row.id);
+    if (!p) return;
+    const vars = parseVars(p.content);
+    if (vars.length) openVarForm(p, vars);
+    else applyPromptText(p.content);
+  }
+}
+
+function applyPromptText(text) {
+  const input = $('ask-input');
+  input.value = text;
+  autosize();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// ---- prompt variables -------------------------------------------------------
+// {{name}} | {{name|type}} | {{name|type:prop="a,b"}}
+const VAR_TYPES = ['text', 'textarea', 'select', 'number', 'checkbox', 'date'];
+const varRe = () => /\{\{\s*([^}|]+?)\s*(?:\|\s*([A-Za-z]+)\s*(?::\s*([^}]*?))?)?\s*\}\}/g;
+
+function parseVars(content) {
+  const out = [];
+  const seen = new Set();
+  const re = varRe();
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    const name = m[1].trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const type = (m[2] || 'text').toLowerCase();
+    const props = {};
+    // prop="a,b" | prop=[a,b] | prop=bare
+    for (const pm of String(m[3] || '').matchAll(/([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\]|([^,\s]+))/g)) {
+      props[pm[1]] = String(pm[2] ?? pm[3] ?? pm[4] ?? '').trim();
+    }
+    out.push({ name, type: VAR_TYPES.includes(type) ? type : 'text', props });
+  }
+  return out;
+}
+
+function substituteVars(content, values) {
+  return content.replace(varRe(), (whole, rawName) => {
+    const k = rawName.trim();
+    return Object.prototype.hasOwnProperty.call(values, k) ? values[k] : whole;
+  });
+}
+
+function openVarForm(prompt_, vars) {
+  openModal((card) => {
+    card.innerHTML = `<h2 class="modal-title">${esc(prompt_.name)}</h2>`
+      + '<div class="modal-body" id="var-fields"></div>'
+      + '<div class="modal-actions"><button type="button" data-action="close-modal">Cancel</button>'
+      + '<button type="button" class="primary" data-action="apply-vars">Insert</button></div>';
+    const host = card.querySelector('#var-fields');
+    for (const v of vars) {
+      const field = document.createElement('div');
+      field.className = v.type === 'checkbox' ? 'field-row' : 'field';
+      const label = document.createElement('label');
+      label.textContent = v.name;
+      let input;
+      if (v.type === 'textarea') {
+        input = document.createElement('textarea');
+        input.rows = 4;
+      } else if (v.type === 'select') {
+        input = document.createElement('select');
+        for (const opt of String(v.props.options || '').split(',').map(o => o.trim()).filter(Boolean)) {
+          const o = document.createElement('option');
+          o.value = opt;
+          o.textContent = opt;
+          input.appendChild(o);
+        }
+      } else {
+        input = document.createElement('input');
+        input.type = v.type === 'number' ? 'number' : v.type === 'checkbox' ? 'checkbox' : v.type === 'date' ? 'date' : 'text';
+      }
+      input.dataset.var = v.name;
+      input.dataset.vtype = v.type;
+      if (v.type === 'checkbox') { field.appendChild(input); field.appendChild(label); }
+      else { field.appendChild(label); field.appendChild(input); }
+      host.appendChild(field);
+    }
+    card.dataset.promptId = String(prompt_.id);
+    host.querySelector('[data-var]')?.focus();
+  });
+}
+
+function applyVarForm() {
+  const card = $('modal-host').querySelector('.modal-card');
+  if (!card) return;
+  const p = savedPrompts.find(x => x.id === Number(card.dataset.promptId));
+  if (!p) { closeModal(); return; }
+  const values = {};
+  for (const el of card.querySelectorAll('[data-var]')) {
+    values[el.dataset.var] = el.dataset.vtype === 'checkbox' ? (el.checked ? 'yes' : 'no') : el.value;
+  }
+  closeModal();
+  applyPromptText(substituteVars(p.content, values));
+}
+
+// ---- prompt library modal ---------------------------------------------------
+function openPromptManager() {
+  openModal((card) => {
+    card.innerHTML = '<h2 class="modal-title">Saved prompts</h2>'
+      + '<div class="modal-body"><div class="prompt-list" id="prompt-rows"></div></div>'
+      + '<div class="modal-actions"><button type="button" data-action="new-prompt">New prompt</button>'
+      + '<span class="flex1"></span><button type="button" data-action="close-modal">Close</button></div>';
+    const host = card.querySelector('#prompt-rows');
+    host.innerHTML = savedPrompts.length
+      ? savedPrompts.map(p => `<div class="prompt-list-row">
+          <span class="prompt-list-name">${esc(p.name)}</span>
+          <span class="prompt-scope">${p.agent_id ? esc(p.agent_id) : 'all agents'}</span>
+          <button type="button" data-action="edit-prompt" data-pid="${p.id}">Edit</button>
+          <button type="button" class="danger" data-action="delete-prompt" data-pid="${p.id}">Delete</button>
+        </div>`).join('')
+      : '<div class="empty">No saved prompts yet.</div>';
+  });
+}
+
+function openPromptEditor(pid) {
+  const p = pid ? savedPrompts.find(x => x.id === pid) : null;
+  openModal((card) => {
+    card.innerHTML = `<h2 class="modal-title">${p ? 'Edit prompt' : 'New prompt'}</h2>`
+      + '<div class="modal-body">'
+      + '<div class="field"><label for="pe-name">Name</label><input id="pe-name" type="text" spellcheck="false"></div>'
+      + '<div class="field"><label for="pe-content">Content</label>'
+      + '<textarea id="pe-content" rows="10" spellcheck="false"></textarea>'
+      + '<span class="hint">{{name}}, {{name|select:options="a,b"}} — variables prompt for a value when fired.</span></div>'
+      + '<div class="field-row"><input id="pe-global" type="checkbox"><label for="pe-global">All agents</label>'
+      + `${p ? '<span class="hint">scope is fixed after creation</span>' : ''}</div>`
+      + '</div>'
+      + '<div class="modal-actions"><button type="button" data-action="close-modal">Cancel</button>'
+      + `<button type="button" class="primary" data-action="save-prompt" data-pid="${p ? p.id : ''}">Save</button></div>`;
+    card.querySelector('#pe-name').value = p?.name || '';
+    card.querySelector('#pe-content').value = p?.content || '';
+    // The server's prompt PATCH takes {name?, content?} only, so an existing
+    // prompt's scope can't be moved from here.
+    const g = card.querySelector('#pe-global');
+    g.checked = p ? p.agent_id == null : false;
+    g.disabled = !!p;
+    card.querySelector('#pe-name').focus();
+  });
+}
+
+async function savePrompt(pid) {
+  const card = $('modal-host').querySelector('.modal-card');
+  const name = card?.querySelector('#pe-name')?.value.trim() || '';
+  const content = card?.querySelector('#pe-content')?.value || '';
+  if (!name || !content.trim()) { toast('name and content are required', 'err'); return; }
+  try {
+    if (pid) await api('PATCH', `/admin/api/prompts/${pid}`, { name, content });
+    else await api('POST', '/admin/api/prompts', { name, content, agent_id: card.querySelector('#pe-global').checked ? null : agentId });
+    await loadPrompts();
+    openPromptManager();
+    toast('saved');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deletePrompt(pid) {
+  const p = savedPrompts.find(x => x.id === pid);
+  if (!confirm(`Delete the saved prompt “${p?.name ?? pid}”?`)) return;
+  try {
+    await api('DELETE', `/admin/api/prompts/${pid}`);
+    await loadPrompts();
+    openPromptManager();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ---- context chips ----------------------------------------------------------
+async function attachWebpage() {
+  const url = prompt('Fetch a web page as context:', 'https://');
+  if (!url?.trim() || url.trim() === 'https://') return;
+  try {
+    const r = await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/fetch-url`, { url: url.trim() });
+    // Already wrapped in the untrusted fence server-side — stored verbatim and
+    // prepended verbatim; never unwrapped.
+    contextChips.push({ label: r.host || 'page', text: r.text || '' });
+    renderAttachTray();
+    toast('page attached');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function openChatPicker() {
+  const list = convos.filter(c => c.id !== convoId);
+  openModal((card) => {
+    card.innerHTML = '<h2 class="modal-title">Reference a chat</h2>'
+      + '<div class="modal-body"><div class="prompt-list">'
+      + (list.length
+        ? list.map(c => `<button type="button" class="link-row" data-action="pick-ref-chat" data-cid="${c.id}">
+            <span class="link-row-title">${esc(c.title?.trim() ? c.title : '(new chat)')}</span>
+            <span class="link-row-meta">#${c.id} · ${fmtAge(c.started_at)}</span>
+          </button>`).join('')
+        : '<div class="empty">No other chats for this agent.</div>')
+      + '</div></div>'
+      + '<div class="modal-actions"><button type="button" data-action="close-modal">Cancel</button></div>';
+  });
+}
+
+async function referenceChat(cid) {
+  closeModal();
+  try {
+    const r = await api('POST', `/admin/api/conversations/${cid}/as-context`);
+    contextChips.push({ label: `chat #${cid}`, text: r.text || '' });
+    renderAttachTray();
+    toast('chat attached');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+// ---- sidebar hover preview --------------------------------------------------
+// Desktop only: a phone has no hover, and the popover would fight the tap.
+const previewCache = new Map();   // cid → { at, messages }
+let hoverTimer = null;
+
+function hoverCapable() {
+  return window.matchMedia('(hover: hover) and (min-width: 801px)').matches;
+}
+
+function scheduleHoverPreview(row) {
+  if (!hoverCapable()) return;
+  const cid = Number(row.dataset.cid);
+  if (!cid || cid === convoId) return;
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => showHoverPreview(row, cid), 350);
+}
+
+function hideHoverPreview() {
+  clearTimeout(hoverTimer);
+  const el = $('hover-preview');
+  el.classList.add('hidden');
+  el.setAttribute('aria-hidden', 'true');
+}
+
+async function showHoverPreview(row, cid) {
+  let entry = previewCache.get(cid);
+  if (!entry || Date.now() - entry.at > 30_000) {
+    try {
+      const { messages } = await api('GET', `/admin/api/conversations/${cid}?limit=20`);
+      entry = { at: Date.now(), messages: messages || [] };
+      previewCache.set(cid, entry);
+    } catch { return; }
+  }
+  if (!row.isConnected || !hoverCapable()) return;
+  const rows = entry.messages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-2);
+  const el = $('hover-preview');
+  el.innerHTML = rows.length
+    ? rows.map(m => {
+        const text = String(m.content ?? '').replace(/\s+/g, ' ').trim();
+        const clipped = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+        return `<div class="hp-row"><span class="hp-role">${esc(m.role === 'user' ? 'you' : 'agent')}</span>`
+          + `<span class="hp-text">${esc(clipped)}</span></div>`;
+      }).join('')
+    : '<div class="hp-empty">No messages yet.</div>';
+  el.classList.remove('hidden');
+  el.setAttribute('aria-hidden', 'false');
+  // element.style writes are not covered by style-src, so positioning here
+  // keeps the CSP at 'self'.
+  const r = row.getBoundingClientRect();
+  el.style.left = `${Math.round(r.right + 10)}px`;
+  el.style.top = `${Math.round(Math.min(r.top, window.innerHeight - el.offsetHeight - 12))}px`;
+}
+
+// ---- skills view ------------------------------------------------------------
+let skillList = [];
+
+async function loadSkills() {
+  try {
+    const r = await api('GET', '/admin/api/skills');
+    skillList = r?.skills || [];
+  } catch (e) {
+    skillList = [];
+    toast(e.message, 'err');
+  }
+}
+
+async function showSkillsView() {
+  $('view-skills').innerHTML = '<div class="view-head"><div class="view-title-wrap"><h1 class="view-title">Skills</h1></div></div>'
+    + '<div class="view-body"><div class="empty">loading…</div></div>';
+  await loadSkills();
+  if (parseHash()?.view === 'skills') renderSkillsView();
+}
+
+function renderSkillsView() {
+  const head = `<div class="view-head">
+      <div class="view-title-wrap">
+        <h1 class="view-title">Skills</h1>
+        <div class="view-sub">${skillList.length} skill${skillList.length === 1 ? '' : 's'} · markdown instruction sets agents load on demand</div>
+      </div>
+      <div class="head-actions">
+        <button type="button" data-action="new-skill">New skill</button>
+        <button type="button" data-action="reload-skills">Refresh</button>
+      </div>
+    </div>`;
+  if (!skillList.length) {
+    $('view-skills').innerHTML = `${head}<div class="view-body"><div class="empty-center">
+      <p>No skills yet.</p><p>Create one and bind it to an agent — the body only loads when the agent asks for it.</p>
+    </div></div>`;
+    return;
+  }
+  const rows = skillList.map(s => {
+    const bound = (s.agents || []).includes(agentId);
+    return `<tr data-action="edit-skill" data-sid="${s.id}">
+      <td class="skill-name">${esc(s.name)}</td>
+      <td>${esc(s.description || '')}</td>
+      <td class="num-cell">${(s.agents || []).length}</td>
+      <td class="num-cell">${fmtAge(s.updated_at)}</td>
+      <td class="bind-cell" data-action="noop">
+        <label><input type="checkbox" data-change="bind-skill" data-sid="${s.id}"${bound ? ' checked' : ''}>bound to ${esc(agentId)}</label>
+      </td>
+      <td class="row-actions">
+        <button type="button" class="danger" data-action="delete-skill" data-sid="${s.id}" data-name="${esc(s.name)}">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  $('view-skills').innerHTML = `${head}<div class="view-body"><div class="table-wrap"><table class="ftable">
+      <thead><tr><th>Name</th><th>Description</th><th>Agents</th><th>Updated</th><th>Bind</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div></div>`;
+}
+
+async function openSkillEditor(sid) {
+  let skill = null;
+  if (sid) {
+    try { skill = await api('GET', `/admin/api/skills/${sid}`); }
+    catch (e) { toast(e.message, 'err'); return; }
+  }
+  openModal((card) => {
+    card.innerHTML = `<h2 class="modal-title">${skill ? 'Edit skill' : 'New skill'}</h2>`
+      + '<div class="modal-body">'
+      + '<div class="field"><label for="sk-name">Name</label><input id="sk-name" type="text" spellcheck="false"></div>'
+      + '<div class="field"><label for="sk-desc">Description</label><input id="sk-desc" type="text"></div>'
+      + '<div class="field"><label for="sk-content">Content (markdown)</label>'
+      + '<textarea id="sk-content" class="tall" spellcheck="false"></textarea></div>'
+      + '</div>'
+      + '<div class="modal-actions"><button type="button" data-action="close-modal">Cancel</button>'
+      + `<button type="button" class="primary" data-action="save-skill" data-sid="${skill ? skill.id : ''}">Save</button></div>`;
+    card.querySelector('#sk-name').value = skill?.name || '';
+    card.querySelector('#sk-desc').value = skill?.description || '';
+    card.querySelector('#sk-content').value = skill?.content || '';
+    card.querySelector('#sk-name').focus();
+  }, true);
+}
+
+async function saveSkill(sid) {
+  const card = $('modal-host').querySelector('.modal-card');
+  const name = card?.querySelector('#sk-name')?.value.trim() || '';
+  const description = card?.querySelector('#sk-desc')?.value.trim() || '';
+  const content = card?.querySelector('#sk-content')?.value || '';
+  if (!name || !content.trim()) { toast('name and content are required', 'err'); return; }
+  try {
+    if (sid) await api('PATCH', `/admin/api/skills/${sid}`, { name, description, content });
+    else await api('POST', '/admin/api/skills', { name, description, content });
+    closeModal();
+    await loadSkills();
+    if (parseHash()?.view === 'skills') renderSkillsView();
+    toast('saved');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteSkill(sid, name) {
+  if (!confirm(`Delete the skill “${name}”?\n\nThis unbinds it from all agents; chats keep whatever they already loaded.`)) return;
+  try {
+    await api('DELETE', `/admin/api/skills/${sid}`);
+    await loadSkills();
+    if (parseHash()?.view === 'skills') renderSkillsView();
+    toast('skill deleted');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function toggleSkillBind(sid, bound) {
+  const enc = encodeURIComponent(agentId);
+  try {
+    if (bound) await api('POST', `/admin/api/agents/${enc}/skills`, { skill_id: sid });
+    else await api('DELETE', `/admin/api/agents/${enc}/skills/${sid}`);
+    await loadSkills();
+    if (parseHash()?.view === 'skills') renderSkillsView();
+  } catch (e) {
+    toast(e.message, 'err');
+    if (parseHash()?.view === 'skills') renderSkillsView();   // snap back
+  }
+}
+
+// ---- project instructions ---------------------------------------------------
+async function saveProjectPrompt(pid) {
+  const box = $('proj-prompt');
+  if (!box) return;
+  const text = box.value.trim();
+  try {
+    await api('PATCH', `/admin/api/projects/${pid}/prompt`, { system_prompt: text || null });
+    const p = projects.find(x => x.id === pid);
+    if (p) p.system_prompt = text || null;
+    toast(text ? 'instructions saved' : 'instructions cleared');
+    renderChatHead();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 // ---- action delegation -----------------------------------------------------
 const ACTIONS = {
   'copy-msg': async (el) => {
@@ -1508,8 +2518,53 @@ const ACTIONS = {
   'toggle-project-menu': (el) => toggleProjectMenu(el),
   'rename-project': (el) => { closeMenus(); renameProject(Number(el.dataset.pid), el.dataset.name); },
   'delete-project': (el) => { closeMenus(); deleteProject(Number(el.dataset.pid), el.dataset.name); },
-  'pick-attachment': () => $('ask-file').click(),
+  'pick-attachment': () => { closeMenus(); $('ask-file').click(); },
   'remove-attachment': (el) => { attachments.splice(Number(el.dataset.idx), 1); renderAttachTray(); },
+  'toggle-attach-menu': (el) => toggleProjectMenu(el),
+  'attach-webpage': () => { closeMenus(); attachWebpage(); },
+  'reference-chat': () => { closeMenus(); openChatPicker(); },
+  'pick-ref-chat': (el) => referenceChat(Number(el.dataset.cid)),
+  'remove-chip': (el) => { contextChips.splice(Number(el.dataset.idx), 1); renderAttachTray(); },
+  'copy-mermaid': async (el) => {
+    const src = el.closest('.mermaid-box')?.dataset.mermaid ?? '';
+    try { await navigator.clipboard.writeText(src); el.textContent = 'copied'; setTimeout(() => { el.textContent = 'copy'; }, 1200); }
+    catch { toast('copy failed — clipboard needs a secure context', 'err'); }
+  },
+  'pick-sibling': (el) => {
+    const child = Number(el.dataset.child);
+    if (!child) return;
+    pathChoice[el.dataset.parent] = child;
+    savePathChoice(convoId, pathChoice);
+    renderPath();
+    refreshInlineApprovals();
+  },
+  'edit-msg': (el) => startEdit(Number(el.dataset.idx)),
+  'cancel-edit': cancelEdit,
+  'regen-msg': (el) => regenerateMsg(Number(el.dataset.idx)),
+  'continue-msg': () => sendLiteral('continue'),
+  'open-artifact': (el) => openArtifactFromMsg(Number(el.dataset.idx)),
+  'close-artifact': closeArtifact,
+  'copy-artifact': async () => {
+    try { await navigator.clipboard.writeText(artifacts[artifactIdx]?.code ?? ''); toast('copied'); }
+    catch { toast('copy failed — clipboard needs a secure context', 'err'); }
+  },
+  'palette-pick': (el) => pickPalette(Number(el.dataset.i)),
+  'close-modal': closeModal,
+  'modal-backdrop': (el, e) => { if (e.target === el) closeModal(); },
+  'apply-vars': applyVarForm,
+  'new-prompt': () => openPromptEditor(null),
+  'edit-prompt': (el) => openPromptEditor(Number(el.dataset.pid)),
+  'save-prompt': (el) => savePrompt(el.dataset.pid ? Number(el.dataset.pid) : null),
+  'delete-prompt': (el) => deletePrompt(Number(el.dataset.pid)),
+  'open-skills': () => go(skillsPath(agentId)),
+  'new-skill': () => openSkillEditor(null),
+  'edit-skill': (el) => openSkillEditor(Number(el.dataset.sid)),
+  'save-skill': (el) => saveSkill(el.dataset.sid ? Number(el.dataset.sid) : null),
+  'delete-skill': (el) => deleteSkill(Number(el.dataset.sid), el.dataset.name),
+  'reload-skills': async () => { await loadSkills(); renderSkillsView(); },
+  'save-project-prompt': (el) => saveProjectPrompt(Number(el.dataset.pid)),
+  'open-inherited-project': (el) => { const pid = Number(el.dataset.pid); if (pid) go(projectPath(agentId, pid)); },
+  'noop': () => {},
   'zoom-attachment': (el) => openLightbox(el.getAttribute('src')),
   'close-lightbox': closeLightbox,
   'approve-approval': (el) => approveApprovalClick(el.closest('.approval-card')),
@@ -1525,6 +2580,8 @@ const ACTIONS = {
 const CHANGES = {
   'file-chat': (el) => fileChatUnder(el),
   'tag-file': (el) => tagFile(el.dataset.path, el.value === '' ? null : Number(el.value)),
+  'pick-artifact': (el) => showArtifact(Number(el.value)),
+  'bind-skill': (el) => toggleSkillBind(Number(el.dataset.sid), el.checked),
 };
 
 document.addEventListener('click', (e) => {
@@ -1542,7 +2599,7 @@ document.addEventListener('change', (e) => {
 // Click-outside closes the popovers. Registered AFTER the action delegator so
 // the click that opened a menu is handled first; the toggle check then bails.
 document.addEventListener('click', (e) => {
-  if (e.target.closest('[data-action="toggle-agent-menu"], [data-action="toggle-project-menu"], [data-action="toggle-chat-menu"]')) return;
+  if (e.target.closest('[data-action="toggle-agent-menu"], [data-action="toggle-project-menu"], [data-action="toggle-chat-menu"], [data-action="toggle-attach-menu"]')) return;
   if (e.target.closest('.agent-menu, .row-menu')) return;
   closeMenus();
 });
@@ -1550,16 +2607,45 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (document.querySelector('.lightbox')) { closeLightbox(); return; }
+  if ($('modal-host').firstChild) { closeModal(); return; }
+  if (paletteOpen()) { closePalette(); return; }
   if ($('agent-menu').classList.contains('open') || document.querySelector('.row-menu.open')) { closeMenus(); return; }
+  if (editing) { cancelEdit(); return; }
+  if (!$('artifact-panel').classList.contains('hidden')) { closeArtifact(); return; }
   if ($('sidebar').classList.contains('open')) closeSidebar();
+});
+
+// Decide the oldest pending approval without reaching for the mouse. Alt is in
+// the chord because Ctrl/Cmd+Enter alone is too easy to hit while typing.
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || !(e.ctrlKey || e.metaKey)) return;
+  if (e.key !== 'Enter' && e.key !== 'Backspace') return;
+  if (!$('view-chat').classList.contains('active')) return;
+  const card = $('transcript').querySelector('.approval-card');
+  if (!card) return;
+  e.preventDefault();
+  if (e.key === 'Enter') approveApprovalClick(card);
+  else rejectApprovalClick(card);
 });
 
 // ---- composer wiring -------------------------------------------------------
 $('ask-form').addEventListener('submit', (e) => { e.preventDefault(); sendAsk(); });
 $('ask-input').addEventListener('keydown', (e) => {
+  // The palette owns the arrows and Enter while it is open.
+  if (paletteOpen()) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePalette(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); movePalette(-1); return; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pickPalette(paletteIdx); return; }
+    if (e.key === 'Tab') { e.preventDefault(); pickPalette(paletteIdx); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAsk(); }
 });
-$('ask-input').addEventListener('input', autosize);
+$('ask-input').addEventListener('input', () => { autosize(); syncPalette(); });
+$('ask-input').addEventListener('blur', () => {
+  // Let a click on a palette row land before the dropdown disappears.
+  setTimeout(() => { if (document.activeElement !== $('ask-input')) closePalette(); }, 150);
+});
 $('ask-input').addEventListener('paste', (e) => {
   const files_ = Array.from(e.clipboardData?.items || [])
     .filter(it => it.kind === 'file' && it.type.startsWith('image/'))
@@ -1588,6 +2674,15 @@ composer.addEventListener('drop', (e) => {
   const dropped = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
   if (dropped.length) { e.preventDefault(); addAttachmentFiles(dropped); }
 });
+
+$('sidebar').addEventListener('mouseover', (e) => {
+  const row = e.target.closest('[data-action="open-chat"][data-cid]');
+  if (row) scheduleHoverPreview(row);
+});
+$('sidebar').addEventListener('mouseout', (e) => {
+  if (e.target.closest('[data-action="open-chat"][data-cid]')) hideHoverPreview();
+});
+$('sidebar').addEventListener('scroll', hideHoverPreview, true);
 
 $('side-search').addEventListener('input', debounce((e) => {
   searchQuery = e.target.value.trim().toLowerCase();
