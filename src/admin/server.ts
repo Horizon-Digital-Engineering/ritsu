@@ -611,6 +611,7 @@ export function createAdminApp(deps: AdminDeps) {
     // arrives here as req.path '/'. With trailing slash → '/index.html'.)
     if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
       || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
+      || req.path === '/ops' || req.path === '/ops.js' || req.path === '/ops.css'
       || req.path.startsWith('/vendor/')
       || req.path.startsWith('/plugins/')) {
       next();
@@ -776,6 +777,22 @@ export function createAdminApp(deps: AdminDeps) {
     return readFileSync(p, 'utf8');
   })();
 
+  const opsHtml = (() => {
+    const p = join(__dirname, 'ops.html');
+    if (!existsSync(p)) throw new Error(`admin/ops.html missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const opsJs = (() => {
+    const p = join(__dirname, 'ops.js');
+    if (!existsSync(p)) throw new Error(`admin/ops.js missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const opsCss = (() => {
+    const p = join(__dirname, 'ops.css');
+    if (!existsSync(p)) throw new Error(`admin/ops.css missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+
   // Vendored render libraries (mermaid/KaTeX) — boot-scanned into memory like
   // the other UI assets; the filename map IS the allowlist, so no path from
   // the request ever touches the filesystem.
@@ -856,6 +873,21 @@ export function createAdminApp(deps: AdminDeps) {
   app.get('/admin/workspace.css', (_req: Request, res: Response) => {
     setNoCache(res);
     res.type('text/css').send(wsCss);
+  });
+
+  // The operations board — approvals, jobs, channels, health, live logs on
+  // one "watch" surface. Same static-chrome model as the other two pages.
+  app.get('/admin/ops', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('html').send(opsHtml);
+  });
+  app.get('/admin/ops.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(opsJs);
+  });
+  app.get('/admin/ops.css', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('text/css').send(opsCss);
   });
 
   // ---- log level ---------------------------------------------------------

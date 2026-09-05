@@ -269,6 +269,21 @@ describe('workspace API routes', () => {
     return { status: res.status, json };
   }
 
+  it('serves the operations board without a token, like the other page chrome', async () => {
+    for (const [path, marker] of [
+      ['/admin/ops', 'Operations'],
+      ['/admin/ops.js', 'operations board'],
+      ['/admin/ops.css', '--rail-w'],
+    ] as const) {
+      const res = await fetch(`${baseUrl}${path}`);
+      assert.equal(res.status, 200, `${path} should be auth-exempt static chrome`);
+      assert.ok((await res.text()).includes(marker), `${path} serves the ops asset`);
+    }
+    // The data endpoints behind it stay gated.
+    const gated = await fetch(`${baseUrl}/admin/api/approvals`);
+    assert.equal(gated.status, 401);
+  });
+
   it('project CRUD round-trips over HTTP', async () => {
     const c = await req('POST', '/admin/api/agents/alice/projects', { name: 'sbir' });
     assert.equal(c.status, 201);

@@ -9,17 +9,29 @@
   <link rel="stylesheet" href="/admin/app.css" />
 </head>
 <body>
+  <nav class="rail" aria-label="Areas">
+    <a class="rail-logo" href="/admin/workspace" title="ritsu">r</a>
+    <a class="rail-btn" href="/admin/workspace" title="Workspace — talk to agents" aria-label="Workspace">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>
+    </a>
+    <a class="rail-btn" href="/admin/ops" title="Operations — approvals, jobs, health, logs" aria-label="Operations">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg>
+      <span id="rail-ops-badge" class="rail-badge hidden">0</span>
+    </a>
+    <a class="rail-btn active" href="/admin" title="Studio — agents &amp; configuration" aria-label="Studio" aria-current="page">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    </a>
+  </nav>
   <header>
-    <h1>ritsu <small id="version">…</small></h1>
+    <h1>Studio <small id="version">…</small></h1>
     <span class="info" id="info-bar"></span>
   </header>
   <nav class="tabs primary" id="nav-primary" aria-label="Top-level admin sections">
-    <button type="button" data-action="switch-group" data-group="dashboard" class="active">Dashboard</button>
-    <button type="button" data-action="switch-group" data-group="approvals">Approvals<span id="nav-approvals-badge" class="nav-badge hidden">0</span></button>
-    <button type="button" data-action="switch-group" data-group="agents">Agents</button>
-    <button type="button" data-action="switch-group" data-group="comms">Comms</button>
-    <button type="button" data-action="switch-group" data-group="auth">Auth</button>
-    <button type="button" data-action="switch-group" data-group="system">System</button>
+    <button type="button" data-action="switch-group" data-group="agents" class="active">Agents</button>
+    <button type="button" data-action="switch-group" data-group="extensions">Extensions</button>
+    <button type="button" data-action="switch-group" data-group="platform">Platform</button>
+    <button type="button" data-action="switch-group" data-group="access">Access</button>
+    <button type="button" data-action="switch-group" data-group="server">Server</button>
   </nav>
   <nav class="tabs secondary empty" id="nav-secondary" aria-label="Sub-tabs for the active section"></nav>
 
@@ -65,25 +77,6 @@
         </div>
       </form>
     </aside>
-
-    <!-- ============ APPROVALS ============ -->
-    <section id="pane-approvals" class="pane">
-      <div class="panel">
-        <div class="approvals-head">
-          <div>
-            <h2 class="m0">Approvals</h2>
-            <p id="approvals-summary" class="tile-header-meta">Tool calls waiting on your sign-off.</p>
-          </div>
-          <button id="approvals-refresh" data-action="approvals-refresh" title="refresh now">↻</button>
-        </div>
-        <div class="conv-kind-tabs" id="approvals-subtabs">
-          <button type="button" class="conv-kind-tab active" data-action="approvals-subtab" data-sub="pending">Pending</button>
-          <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="decided">Decided</button>
-          <button type="button" class="conv-kind-tab" data-action="approvals-subtab" data-sub="blocked">Blocked</button>
-        </div>
-        <div id="approvals-list">loading…</div>
-      </div>
-    </section>
 
     <!-- ============ EXTENSIONS ============ -->
     <section id="pane-extensions" class="pane">
@@ -261,7 +254,7 @@
             <div id="f-approval-tools" class="row-wrap"></div>
             <div class="form-hint">
               Tools this agent must get <strong>your approval</strong> for before each use.
-              The agent's turn pauses on a card in the Approvals tab until you approve or reject.
+              The agent's turn pauses on a card on the <a href="/admin/ops">operations board</a> until you approve or reject.
               Empty = no gating.
             </div>
           </div>
@@ -280,7 +273,7 @@
             <label><input id="f-escalation-approvable" type="checkbox" /> route capability-escalation calls to approval</label>
             <div class="form-hint">
               When on, a capability-escalation <code>ask_agent</code> call (this agent reaching
-              one that holds a capability it lacks) goes to the Approvals tab instead of being
+              one that holds a capability it lacks) goes to the operations board instead of being
               hard-denied. <strong>Ignored for crm/social agents</strong> — those always
               hard-deny, since they read untrusted content. Leave off unless this is a trusted
               internal agent.

@@ -1148,7 +1148,7 @@ async function refreshInlineApprovals() {
     const { approvals } = await api('GET', `/admin/api/approvals?conversation_id=${convoId}`);
     for (const a of approvals) t.insertAdjacentHTML('beforeend', approvalCardHtml(a));
     if (approvals.length) t.scrollTop = t.scrollHeight;
-  } catch { /* best-effort — the classic admin's Approvals tab is durable */ }
+  } catch { /* best-effort — the operations board is the durable queue */ }
 }
 
 /** Glyph for an approval, by tool name — quick visual recognition. */
@@ -2709,8 +2709,23 @@ window.visualViewport?.addEventListener('resize', syncViewport);
 window.addEventListener('resize', syncViewport);
 
 // ---- bootstrap -------------------------------------------------------------
+
+/** Pending-approvals badge on the rail's Operations icon. A cheap COUNT(*)
+ *  poll — the ops board itself is the live surface. */
+async function refreshRailOpsBadge() {
+  try {
+    const { pending } = await api('GET', '/admin/api/approvals/count');
+    const badge = $('rail-ops-badge');
+    if (!badge) return;
+    badge.textContent = String(pending);
+    badge.classList.toggle('hidden', !pending);
+  } catch { /* badge is best-effort */ }
+}
+
 async function boot() {
   syncViewport();
+  refreshRailOpsBadge();
+  setInterval(refreshRailOpsBadge, 30_000);
   try {
     await loadAgents();
   } catch (e) {

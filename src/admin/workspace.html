@@ -17,6 +17,20 @@
   <!-- Every handler is wired by the delegated listeners in workspace.js via
        data-action / data-change, so no inline onclick= or style= survives
        here — that is what lets the CSP keep script-src/style-src at 'self'. -->
+  <nav class="rail" aria-label="Areas">
+    <a class="rail-logo" href="/admin/workspace" title="ritsu">r</a>
+    <a class="rail-btn active" href="/admin/workspace" title="Workspace — talk to agents" aria-label="Workspace" aria-current="page">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>
+    </a>
+    <a class="rail-btn" href="/admin/ops" title="Operations — approvals, jobs, health, logs" aria-label="Operations">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg>
+      <span id="rail-ops-badge" class="rail-badge hidden">0</span>
+    </a>
+    <a class="rail-btn" href="/admin" title="Studio — agents &amp; configuration" aria-label="Studio">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    </a>
+  </nav>
+
   <div class="shell">
     <header class="topbar">
       <button type="button" class="icon-btn only-mobile" data-action="toggle-sidebar" aria-label="Toggle sidebar" aria-expanded="false">☰</button>
@@ -29,7 +43,6 @@
         <div id="agent-menu" class="agent-menu" role="menu" aria-hidden="true"></div>
       </div>
       <span class="flex1"></span>
-      <a class="topbar-link" href="/admin" title="Classic admin">admin ⚙</a>
     </header>
 
     <div id="scrim" class="scrim" data-action="close-sidebar"></div>

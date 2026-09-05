@@ -6,6 +6,30 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-05
+
+### Added
+
+- **Three-area navigation.** A fixed icon rail on every admin page switches
+  between the three surfaces by intent: **Workspace** (talk to agents),
+  **Operations** (watch the system), **Studio** (build and configure). The
+  rail carries a live pending-approvals badge on the Operations icon.
+- **Operations board** at `/admin/ops` — one live "watch" page absorbing the
+  monitoring loop: pending approvals (approve / two-step reject, spoof
+  unmasking, escalation banners), recent decisions, blocked inter-agent
+  calls, scheduled jobs with next-run times, channel status, health checks,
+  and a live log tail with a warnings-only filter. Approvals and the tail
+  update over SSE; the rail health dot reflects the worst health check.
+
+### Changed
+
+- The classic admin panel is now **Studio**: its nav regrouped around
+  building — Agents (with the tile overview as its first tab), Extensions,
+  Platform (channels / jobs / MCP), Access (tokens / API keys / OAuth), and
+  Server. The Dashboard and Approvals tabs are gone; tiles live under
+  Agents › Overview and the approvals queue lives on the Operations board.
+  Inline approval cards in chat surfaces are unchanged.
+
 ## [0.11.1] — 2026-09-05
 
 ### Fixed

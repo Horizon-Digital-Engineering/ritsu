@@ -1,6 +1,6 @@
 {
   "name": "ritsu",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json && mkdir -p dist/admin && cp src/admin/ui.html dist/admin/ui.html && cp src/admin/app.js dist/admin/app.js && cp src/admin/app.css dist/admin/app.css && cp src/admin/workspace.html dist/admin/workspace.html && cp src/admin/workspace.js dist/admin/workspace.js && cp src/admin/workspace.css dist/admin/workspace.css && cp -r src/admin/vendor dist/admin/vendor && for d in src/plugins/*/ui; do [ -d \"$d\" ] || continue; dest=\"dist/plugins/$(basename \"$(dirname \"$d\")\")/ui\"; mkdir -p \"$dest\" && cp \"$d\"/* \"$dest\"/; done && chmod +x dist/cli.js",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/admin && cp src/admin/ui.html dist/admin/ui.html && cp src/admin/app.js dist/admin/app.js && cp src/admin/app.css dist/admin/app.css && cp src/admin/workspace.html dist/admin/workspace.html && cp src/admin/workspace.js dist/admin/workspace.js && cp src/admin/workspace.css dist/admin/workspace.css && cp src/admin/ops.html dist/admin/ops.html && cp src/admin/ops.js dist/admin/ops.js && cp src/admin/ops.css dist/admin/ops.css && cp -r src/admin/vendor dist/admin/vendor && for d in src/plugins/*/ui; do [ -d \"$d\" ] || continue; dest=\"dist/plugins/$(basename \"$(dirname \"$d\")\")/ui\"; mkdir -p \"$dest\" && cp \"$d\"/* \"$dest\"/; done && chmod +x dist/cli.js",
     "start": "node dist/index.js",
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",

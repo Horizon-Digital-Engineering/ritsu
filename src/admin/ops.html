@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0f1115">
+<title>ritsu — operations</title>
+<link rel="stylesheet" href="/admin/ops.css">
+</head>
+<body>
+  <!-- Handlers are wired by delegated listeners in ops.js via data-action,
+       so no inline onclick= or style= appears here — the admin CSP keeps
+       script-src/style-src at 'self'. -->
+
+  <nav class="rail" aria-label="Areas">
+    <a class="rail-logo" href="/admin/workspace" title="ritsu">r</a>
+    <a class="rail-btn" href="/admin/workspace" title="Workspace — talk to agents" aria-label="Workspace">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>
+    </a>
+    <a class="rail-btn active" href="/admin/ops" title="Operations — approvals, jobs, health, logs" aria-label="Operations" aria-current="page">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg>
+      <span id="rail-ops-badge" class="rail-badge hidden">0</span>
+    </a>
+    <a class="rail-btn" href="/admin" title="Studio — agents &amp; configuration" aria-label="Studio">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    </a>
+    <span class="rail-spacer"></span>
+    <span id="rail-health-dot" class="rail-health" title="Health"></span>
+  </nav>
+
+  <div class="page">
+    <header class="topbar">
+      <h1>Operations</h1>
+      <span id="live-dot" class="live-dot" title="Live stream connecting…"></span>
+      <span id="live-label" class="live-label">connecting…</span>
+      <span class="flex1"></span>
+      <a class="topbar-link" href="/admin/workspace">workspace</a>
+      <a class="topbar-link" href="/admin">studio</a>
+    </header>
+
+    <main class="board">
+      <!-- Pending approvals — the reason this page exists. -->
+      <section class="needs-you">
+        <div class="section-head warn-head">
+          <span id="needs-you-title">Needs you</span>
+          <span id="needs-you-count" class="count-pill hidden">0</span>
+        </div>
+        <div id="approvals-pending" class="approval-grid">
+          <div class="empty-note">Loading…</div>
+        </div>
+      </section>
+
+      <!-- Glanceable status: jobs · channels · health -->
+      <section class="status-strip">
+        <div class="status-card">
+          <div class="section-head">Jobs</div>
+          <div id="jobs-list" class="status-body"><div class="empty-note">Loading…</div></div>
+        </div>
+        <div class="status-card">
+          <div class="section-head">Channels</div>
+          <div id="channels-list" class="status-body"><div class="empty-note">Loading…</div></div>
+        </div>
+        <div class="status-card">
+          <div class="section-head">Health</div>
+          <div id="health-list" class="status-body"><div class="empty-note">Loading…</div></div>
+        </div>
+      </section>
+
+      <!-- Live tail + the audit column -->
+      <section class="bottom-grid">
+        <div class="tail-card">
+          <div class="section-head">
+            <span>Live tail</span>
+            <span class="flex1"></span>
+            <label class="tail-filter"><input id="tail-warn-only" type="checkbox" data-change="tail-filter"> warnings only</label>
+          </div>
+          <div id="log-tail" class="log-tail" aria-live="off"></div>
+        </div>
+        <div class="side-col">
+          <div class="status-card">
+            <div class="section-head">Recent decisions</div>
+            <div id="approvals-decided" class="status-body"><div class="empty-note">Loading…</div></div>
+          </div>
+          <div class="status-card">
+            <div class="section-head">Blocked calls</div>
+            <div id="denials-list" class="status-body"><div class="empty-note">Loading…</div></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="admin-login" class="modal-fullpage">
+    <form id="admin-login-form" autocomplete="on" class="admin-login-card">
+      <h2 class="admin-login-title">ritsu</h2>
+      <p id="admin-login-msg" class="admin-login-msg">Sign in with your admin token.</p>
+      <input id="admin-login-user" type="text" name="username" autocomplete="username" value="ritsu"
+             readonly tabindex="-1" class="hidden">
+      <label for="admin-login-token" class="admin-login-label">Admin token</label>
+      <input id="admin-login-token" name="password" type="password" autocomplete="current-password"
+             placeholder="rt_…" required spellcheck="false" class="admin-login-input">
+      <button type="submit" class="admin-login-btn">Sign in</button>
+    </form>
+  </div>
+
+<script src="/admin/ops.js" defer></script>
+</body>
+</html>
