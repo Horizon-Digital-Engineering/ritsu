@@ -13,6 +13,10 @@ export interface MessageAttachment {
 export interface ConversationMessage {
   role: MessageRole;
   content: string;
+  /** Row id — present on rows read back from the store. The tree key. */
+  id?: number;
+  /** The message this one answers or follows; null = a root turn. */
+  parent_message_id?: number | null;
   /** Unix seconds. Present on rows read back from the store. */
   created_at?: number;
   /** Who produced this turn. Null for legacy rows / assistant turns / system
@@ -47,6 +51,10 @@ export interface ConversationSummary {
   pinned: boolean;
   /** Archived chats leave the sidebar list but remain searchable. */
   archived: boolean;
+  /** When the workspace UI last opened this chat; null = never. */
+  read_at: number | null;
+  /** Unix seconds of the newest message; null for an empty conversation. */
+  last_message_at: number | null;
 }
 
 /** One server-side search hit: the summary plus where the match was found. */
@@ -67,7 +75,13 @@ export interface ConversationStore {
     content: string,
     caller_label?: string | null,
     attachments?: MessageAttachment[],
+    parent_message_id?: number | null,
   ): number;
+  /** Id of the newest message in a conversation, or null when empty. The
+   *  default parent for the next appended turn. */
+  leafMessageId(conversation_id: number): number | null;
+  /** Mark the conversation read as of now (workspace UI opened it). */
+  markRead(conversation_id: number): void;
   recent(conversation_id: number, limit?: number): ConversationMessage[];
   /** The agent a conversation belongs to, or null if it doesn't exist. Used to
    *  reject a caller-supplied conversation_id that names another agent's thread. */
@@ -143,13 +157,19 @@ export class SqliteConversationStore implements ConversationStore {
     content: string,
     caller_label?: string | null,
     attachments?: MessageAttachment[],
+    parent_message_id?: number | null,
   ): number {
     // One transaction: an attachment insert that fails partway used to leave
     // the message row with some of its images and no way to tell.
     const messageId = this.db.transaction((): number => {
+      // Thread the tree: an unthreaded append continues from the current
+      // leaf, so the linear case stays linear without every caller caring.
+      const parent = parent_message_id !== undefined
+        ? parent_message_id
+        : this.leafMessageId(conversation_id);
       const r = this.db
-        .prepare('INSERT INTO messages (conversation_id, role, content, caller_label) VALUES (?, ?, ?, ?)')
-        .run(conversation_id, role, content, caller_label ?? null);
+        .prepare('INSERT INTO messages (conversation_id, role, content, caller_label, parent_message_id) VALUES (?, ?, ?, ?, ?)')
+        .run(conversation_id, role, content, caller_label ?? null, parent);
       const id = Number(r.lastInsertRowid);
       if (attachments && attachments.length > 0) {
         const ins = this.db.prepare(
@@ -194,7 +214,7 @@ export class SqliteConversationStore implements ConversationStore {
     // order with the most recent turn at the end.
     const rows = this.db
       .prepare(
-        `SELECT id, role, content, caller_label, created_at FROM messages
+        `SELECT id, role, content, caller_label, created_at, parent_message_id FROM messages
          WHERE conversation_id = ?
          ORDER BY id DESC
          LIMIT ?`,
@@ -226,7 +246,9 @@ export class SqliteConversationStore implements ConversationStore {
         }
       }
     }
-    return rows.map(({ id: _id, ...rest }) => rest);
+    // ids stay on the rows now — they are the message-tree keys the UI and
+    // the path walker navigate by.
+    return rows;
   }
 
   findOrStartInterAgentThread(caller_agent_id: string, target_agent_id: string): number {
@@ -256,6 +278,19 @@ export class SqliteConversationStore implements ConversationStore {
       .prepare('UPDATE conversations SET title = ? WHERE id = ?')
       .run(title, conversation_id);
     return r.changes > 0;
+  }
+
+  leafMessageId(conversation_id: number): number | null {
+    const row = this.db
+      .prepare('SELECT id FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1')
+      .get(conversation_id) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  markRead(conversation_id: number): void {
+    this.db
+      .prepare(`UPDATE conversations SET read_at = strftime('%s','now') WHERE id = ?`)
+      .run(conversation_id);
   }
 
   setFlags(conversation_id: number, flags: { pinned?: boolean; archived?: boolean }): boolean {
@@ -393,8 +428,9 @@ export class SqliteConversationStore implements ConversationStore {
     involves?: string,
   ): ConversationSummary[] {
     const baseSql = `
-      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id, c.pinned, c.archived, c.title AS custom_title,
+      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id, c.pinned, c.archived, c.read_at, c.title AS custom_title,
              (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+             (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id) AS last_message_at,
              COALESCE(
                (SELECT m.content FROM messages m
                 WHERE m.conversation_id = c.id AND m.role = 'user'

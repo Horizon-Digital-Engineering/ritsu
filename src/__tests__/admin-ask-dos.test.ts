@@ -19,6 +19,8 @@ import { SqliteJobStore } from '../scheduler/store.js';
 import { ChannelRegistry } from '../channels/registry.js';
 import { createAdminApp } from '../admin/server.js';
 import { ProjectStore } from '../project-store.js';
+import { SkillStore } from '../skill-store.js';
+import { PromptStore } from '../prompt-store.js';
 import { BackupManager } from '../backup.js';
 
 // SEC-4: JSON body parsing is mounted AFTER admin auth, so an unauthenticated
@@ -53,7 +55,7 @@ describe('admin /ask pre-auth DoS ordering (SEC-4)', () => {
     const app = createAdminApp({
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
-      oauth, projects: new ProjectStore(db),
+      oauth, projects: new ProjectStore(db), skills: new SkillStore(db), prompts: new PromptStore(db),
       version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
     });
     await new Promise<void>(resolve => { server = app.listen(0, '127.0.0.1', () => resolve()); });

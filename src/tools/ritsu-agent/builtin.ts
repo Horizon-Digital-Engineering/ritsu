@@ -41,6 +41,8 @@ import type { RaTool } from '../../model/ritsu-agent/types.js';
 import type { JobStore } from '../../scheduler/store.js';
 import { buildSchedulerTools } from './scheduler.js';
 import { buildEmailTools, buildSocialTools } from './crm.js';
+import { buildSkillTools, buildHistoryTools } from './workspace-tools.js';
+import type { SkillsLookup } from '../mcp-internal/workspace-tools.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
 
@@ -93,6 +95,8 @@ export interface RaToolDeps {
   /** SecretStore for the CRM connectors (email/social). Present + the matching
    *  capability is what surfaces those tools. */
   secrets?: SecretStore;
+  /** Skills manifest/body lookup → the view_skill tool. */
+  skillsLookup?: SkillsLookup;
   /** True when a scheduled job woke this turn. Suppresses the scheduling tools
    *  so a fire cannot create more work — set from the caller label, per call. */
   insideJobRun?: boolean;
@@ -606,6 +610,9 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
       ...buildProcessTools(deps.workspaces).filter(t => allowed.has(t.name)),
     );
   }
+  // Own-history recall + bound skills. History is fenced inside the handlers.
+  out.push(...buildHistoryTools(deps.agentId, deps.conversations));
+  if (deps.skillsLookup) out.push(...buildSkillTools(deps.agentId, deps.skillsLookup));
   // Network tools don't need a workspace — they hit the network, not the FS.
   out.push(...buildNetworkTools(deps.network).filter(t => allowed.has(t.name)));
   // Agent-allowlisted plugin tools (parity with the claude-direct MCP path).

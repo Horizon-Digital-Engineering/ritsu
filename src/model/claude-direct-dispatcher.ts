@@ -9,7 +9,7 @@ import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
 import { assembleMcp, type McpProvider, type SdkMcpServer } from '../tools/mcp-gateway.js';
-import { schedulerProvider } from '../tools/builtin-providers.js';
+import { schedulerProvider, skillsProvider, historyProvider } from '../tools/builtin-providers.js';
 import type { JobStore } from '../scheduler/store.js';
 import {
   memoryProvider, commsProvider, adminProvider, monitorProvider, emailProvider, socialProvider,
@@ -69,6 +69,10 @@ export interface ClaudeDirectOpts {
    * group is withheld automatically during a scheduled run.
    */
   scheduler?: { store: JobStore };
+  /** Skills manifest/body lookup — the mcp__skills__view_skill server. */
+  skillsLookup?: import('../tools/mcp-internal/workspace-tools.js').SkillsLookup;
+  /** Own-history search/read — the mcp__history__* server. */
+  history?: { conversations: import('../conversation-store.js').ConversationStore };
   /**
    * Wire ritsu's per-agent inter-agent messaging tools (ask_agent, list_agents)
    * into this agent's SDK invocation. The caller's agent_id is closed over so
@@ -419,6 +423,8 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null, 
   if (opts.email) providers.push(emailProvider(opts.email.secrets, opts.email.approvals));
   if (opts.social) providers.push(socialProvider(opts.social.secrets, opts.social.approvals));
   if (opts.scheduler) providers.push(schedulerProvider(opts.scheduler.store));
+  if (opts.skillsLookup) providers.push(skillsProvider(opts.skillsLookup));
+  if (opts.history) providers.push(historyProvider(opts.history.conversations));
   if (opts.plugins) providers.push(...opts.plugins);
 
   const agentId = opts.agentId ?? opts.memory?.agentId ?? opts.approval?.agentId ?? 'unknown';

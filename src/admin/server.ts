@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from 'express';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, sep, resolve as resolvePath, normalize as normalizePath } from 'node:path';
 import { spawnSync } from '../util/safe-spawn.js';
 import { createHash } from 'node:crypto';
@@ -41,9 +41,13 @@ import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { RateLimiter } from '../util/rate-limit.js';
 import { ProjectStore } from '../project-store.js';
+import { SkillStore } from '../skill-store.js';
+import { PromptStore } from '../prompt-store.js';
 import {
   listFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile, canonicalIfContained,
 } from '../agent-files.js';
+import { validateUrl, safeFetch } from '../tools/ritsu-agent/ssrf-guard.js';
+import { fenceUntrusted } from '../util/untrusted.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { TOOL_NAMES, TOOL_INFO } from '../mcp-server.js';
@@ -67,6 +71,20 @@ function param(v: string | string[] | undefined): string {
  * table (attachments included), and `?limit=abc` reaches the driver as NaN
  * and 500s on a datatype mismatch.
  */
+/** Crude but safe page-to-text: scripts/styles dropped, tags to spaces, a few
+ *  entities decoded, whitespace collapsed. Extraction quality is not the goal
+ *  — the result is fenced context, not rendered content. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function clampLimit(raw: unknown, fallback: number, max: number): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -86,6 +104,8 @@ export interface AdminDeps {
   commsDenials: CommsDenialStore;
   backup: BackupManager;
   projects: ProjectStore;
+  skills: SkillStore;
+  prompts: PromptStore;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -144,6 +164,9 @@ const AskBody = z.object({
   // this" turn); the refine below enforces "text OR image".
   message: z.string().trim().default(''),
   conversation_id: z.number().int().optional(),
+  // Message-tree anchor: edit-a-turn passes the edited message's own parent,
+  // creating a sibling branch instead of appending to the leaf.
+  parent_message_id: z.number().int().positive().nullable().optional(),
   attachments: z.array(AttachmentBody).max(4).optional(),
 }).refine(
   b => b.message.length > 0 || (b.attachments?.length ?? 0) > 0,
@@ -405,7 +428,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects, skills, prompts } = deps;
 
   /** Secrets are unwritable without a master key. Answering with the reason
    *  beats a 500 whose cause is only visible in the journal. */
@@ -578,6 +601,7 @@ export function createAdminApp(deps: AdminDeps) {
     // arrives here as req.path '/'. With trailing slash → '/index.html'.)
     if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
       || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
+      || req.path.startsWith('/vendor/')
       || req.path.startsWith('/plugins/')) {
       next();
       return;
@@ -741,6 +765,46 @@ export function createAdminApp(deps: AdminDeps) {
     if (!existsSync(p)) throw new Error(`admin/workspace.css missing at ${p} — run \`npm run build\``);
     return readFileSync(p, 'utf8');
   })();
+
+  // Vendored render libraries (mermaid/KaTeX) — boot-scanned into memory like
+  // the other UI assets; the filename map IS the allowlist, so no path from
+  // the request ever touches the filesystem.
+  const vendorFiles = (() => {
+    const dir = join(__dirname, 'vendor');
+    const out = new Map<string, { data: Buffer; type: string }>();
+    if (!existsSync(dir)) return out;
+    const typeOf = (n: string) =>
+      n.endsWith('.js') ? 'application/javascript'
+        : n.endsWith('.css') ? 'text/css'
+          : n.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream';
+    for (const name of readdirSync(dir)) {
+      const fp = join(dir, name);
+      if (statSync(fp).isFile() && /\.(js|css)$/.test(name)) {
+        out.set(name, { data: readFileSync(fp), type: typeOf(name) });
+      }
+    }
+    const fontsDir = join(dir, 'fonts');
+    if (existsSync(fontsDir)) {
+      for (const name of readdirSync(fontsDir)) {
+        if (name.endsWith('.woff2')) {
+          out.set(`fonts/${name}`, { data: readFileSync(join(fontsDir, name)), type: 'font/woff2' });
+        }
+      }
+    }
+    return out;
+  })();
+
+  app.get(['/admin/vendor/:file', '/admin/vendor/fonts/:file'], (req: Request, res: Response) => {
+    const key = req.path.startsWith('/admin/vendor/fonts/')
+      ? `fonts/${param(req.params.file)}`
+      : param(req.params.file);
+    const hit = vendorFiles.get(key);
+    if (!hit) { res.status(404).end(); return; }
+    // These change only on a deliberate version bump — let the browser keep
+    // them for a day instead of re-pulling 4MB per visit.
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.type(hit.type).send(hit.data);
+  });
 
   function setNoCache(res: Response): void {
     // Mobile Safari is notoriously eager to serve stale assets across
@@ -1109,6 +1173,47 @@ export function createAdminApp(deps: AdminDeps) {
    * same conversation persistence. The Tiles panel calls this with an
    * optional conversation_id to thread; omit to start fresh.
    */
+  /** Titles land only on untitled chats with exactly one exchange, and only
+   *  when a task endpoint is configured (secrets ns 'ingest') — otherwise the
+   *  derived first-60-chars title stands, as always. */
+  async function autoTitle(cid: number, userMsg: string, reply: string): Promise<void> {
+    const endpoint = secrets.get(INGEST_NS, 'endpoint')?.trim();
+    if (!endpoint || !userMsg) return;
+    const sm = conversations.listSummaries(undefined, 10_000, 'human').find(x => x.id === cid);
+    if (!sm || sm.message_count > 2) return;
+    const raw = (host as unknown as { db: { prepare(q: string): { get(...a: unknown[]): unknown } } }).db
+      .prepare('SELECT title FROM conversations WHERE id = ?').get(cid) as { title: string | null } | undefined;
+    if (raw?.title?.trim()) return;   // operator already named it
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 10_000);
+    try {
+      const res = await fetch(`${endpoint.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        signal: ctl.signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(secrets.get(INGEST_NS, 'api_key')?.trim()
+            ? { authorization: `Bearer ${secrets.get(INGEST_NS, 'api_key')!.trim()}` } : {}),
+        },
+        body: JSON.stringify({
+          model: secrets.get(INGEST_NS, 'model')?.trim() || 'qwen2.5-vl',
+          temperature: 0,
+          messages: [
+            { role: 'system', content: 'Name this conversation in at most six words. Reply with ONLY the title — no quotes, no punctuation at the end.' },
+            { role: 'user', content: `User: ${userMsg.slice(0, 2000)}\n\nAssistant: ${reply.slice(0, 2000)}` },
+          ],
+        }),
+      });
+      if (!res.ok) return;
+      const json = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+      const title = typeof json.choices?.[0]?.message?.content === 'string'
+        ? json.choices[0].message.content.trim().replace(/^["']|["']$/g, '').slice(0, 80) : '';
+      if (title) conversations.setTitle(cid, title);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   app.post('/admin/agents/:id/ask', async (req: Request, res: Response) => {
     const def = await defStore.read(param(req.params.id));
     if (!def) {
@@ -1121,7 +1226,7 @@ export function createAdminApp(deps: AdminDeps) {
     }
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
-    const { message, conversation_id, attachments } = ask;
+    const { message, conversation_id, attachments, parent_message_id } = ask;
     // Resolve the conversation up-front so the typing-dot SSE events
     // carry the same id as the message events that follow. If the
     // caller didn't supply one, this is the canonical human thread the
@@ -1139,7 +1244,14 @@ export function createAdminApp(deps: AdminDeps) {
       // need to differentiate which device/token. The UI hides the byline
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
-      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments });
+      const r = await host.get(def.id).onMessage({
+        message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments,
+        ...(parent_message_id !== undefined ? { parent_message_id } : {}),
+      });
+      // Auto-title: a cheap task model (the ingest endpoint, when configured)
+      // names the chat after its first exchange — fire-and-forget, never
+      // blocking the reply, never touching a manually-set title.
+      autoTitle(resolvedConvoId, message, r.reply).catch(() => undefined);
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -1497,6 +1609,158 @@ export function createAdminApp(deps: AdminDeps) {
       return;
     }
     res.status(conversations.deleteConversation(cid) ? 204 : 404).end();
+  });
+
+  // ---- skills, prompts, project prompt, tree ops, context plumbing -------
+
+  const SkillBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(300).default(''),
+    content: z.string().min(1).max(200_000),
+  }).strict();
+  const SkillPatch = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(300).optional(),
+    content: z.string().min(1).max(200_000).optional(),
+  }).strict();
+  const SkillBind = z.object({ skill_id: z.number().int().positive() }).strict();
+  const PromptBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    content: z.string().min(1).max(50_000),
+    agent_id: z.string().trim().min(1).max(120).nullable().default(null),
+  }).strict();
+  const ProjectPromptBody = z.object({ system_prompt: z.string().trim().max(20_000).nullable() }).strict();
+  const RegenBody = z.object({ assistant_message_id: z.number().int().positive() }).strict();
+  const FetchUrlBody = z.object({ url: z.string().trim().min(8).max(2048) }).strict();
+
+  app.get('/admin/api/skills', (_req: Request, res: Response) => {
+    res.json({ skills: skills.list() });
+  });
+  app.get('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    const row = Number.isInteger(sid) ? skills.read(sid) : null;
+    if (!row) { res.status(404).json({ error: 'no such skill' }); return; }
+    res.json(row);
+  });
+  app.post('/admin/api/skills', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillBody);
+    if (!body) return;
+    if (skills.readByName(body.name)) { res.status(409).json({ error: 'a skill with that name exists' }); return; }
+    res.status(201).json(skills.create(body.name, body.description, body.content));
+  });
+  app.patch('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillPatch);
+    if (!body) return;
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    res.status(skills.update(sid, body) ? 200 : 404).json({ ok: true });
+  });
+  app.delete('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    res.status(skills.delete(sid) ? 204 : 404).end();
+  });
+  app.post('/admin/api/agents/:id/skills', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillBind);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    if (!skills.read(body.skill_id)) { res.status(404).json({ error: 'no such skill' }); return; }
+    skills.bind(id, body.skill_id);
+    res.json({ ok: true });
+  });
+  app.delete('/admin/api/agents/:id/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    res.status(skills.unbind(param(req.params.id), sid) ? 200 : 404).json({ ok: true });
+  });
+
+  app.get('/admin/api/agents/:id/prompts', (req: Request, res: Response) => {
+    res.json({ prompts: prompts.listFor(param(req.params.id)) });
+  });
+  app.post('/admin/api/prompts', (req: Request, res: Response) => {
+    const body = parseBody(req, res, PromptBody);
+    if (!body) return;
+    res.status(201).json(prompts.create(body.agent_id, body.name, body.content));
+  });
+  app.patch('/admin/api/prompts/:pid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillPatch);   // same {name?, content?} shape
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(prompts.update(pid, body) ? 200 : 404).json({ ok: true });
+  });
+  app.delete('/admin/api/prompts/:pid', (req: Request, res: Response) => {
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(prompts.delete(pid) ? 204 : 404).end();
+  });
+
+  // The sub-persona knob: a prompt every chat filed under the project inherits.
+  app.patch('/admin/api/projects/:pid/prompt', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectPromptBody);
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    const prompt = body.system_prompt?.trim() ? body.system_prompt.trim() : null;
+    res.status(projects.setSystemPrompt(pid, prompt) ? 200 : 404).json({ ok: true });
+  });
+
+  // A sibling answer to an existing assistant turn — the original stays.
+  app.post('/admin/api/conversations/:cid/regenerate', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, RegenBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const owner = conversations.agentIdOf(cid);
+    if (!owner) { res.status(404).json({ error: 'no such conversation' }); return; }
+    try {
+      const r = await host.get(owner).regenerate(cid, body.assistant_message_id);
+      res.json(r);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.patch('/admin/api/conversations/:cid/read', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    conversations.markRead(cid);
+    res.json({ ok: true });
+  });
+
+  // Fetch a page as fenced context for the composer. Same SSRF guard the
+  // agent's own WebFetch runs behind; the result is data, never instructions.
+  app.post('/admin/api/agents/:id/fetch-url', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FetchUrlBody);
+    if (!body) return;
+    const v = validateUrl(body.url);
+    if (!v.ok) { res.status(400).json({ error: `url rejected: ${v.reason}` }); return; }
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20_000);
+      const r = await safeFetch(body.url, { signal: ctl.signal }).finally(() => clearTimeout(timer));
+      const raw = (await r.text()).slice(0, 2_000_000);
+      const text = htmlToText(raw).slice(0, 60_000);
+      const hostname = new URL(body.url).host;
+      res.json({ host: hostname, text: fenceUntrusted(`web page ${hostname}`, text) });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
+  // A past conversation as fenced context ("reference chat") — injected whole,
+  // no chunking; fenced because transcripts can carry channel-borne text.
+  app.post('/admin/api/conversations/:cid/as-context', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    if (!conversations.agentIdOf(cid)) { res.status(404).json({ error: 'no such conversation' }); return; }
+    const rows = conversations.recent(cid, 200);
+    const text = rows
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => `${m.role}: ${m.content}`)
+      .join('\n\n');
+    res.json({ text: fenceUntrusted(`referenced conversation ${cid}`, text) });
   });
 
   // Explicit new chat. A bare ask (no conversation_id) deliberately lands in

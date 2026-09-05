@@ -1,5 +1,7 @@
 import type { AgentBase, AgentDeps } from './agents/base.js';
 import { buildAgent } from './agents/registry.js';
+import { ProjectStore } from './project-store.js';
+import { SkillStore } from './skill-store.js';
 import { buildDispatcher, type DispatcherOpts } from './model/factory.js';
 import { SqliteMemoryStore, type MemoryStore } from './memory-store.js';
 import type { ConversationStore } from './conversation-store.js';
@@ -66,6 +68,8 @@ export class AgentHost {
   private readonly agents = new Map<string, AgentBase>();
   private pluginHost?: PluginHost;
   private jobStore?: JobStore;
+  private readonly projects: ProjectStore;
+  private readonly skills: SkillStore;
   /** Per-agent `approval_tools` entries the runtime cannot enforce. Surfaced by
    *  the admin API so a save says so instead of only the log. */
   private readonly ungateable = new Map<string, string[]>();
@@ -117,7 +121,9 @@ export class AgentHost {
         def.model,
         { ...opts, secrets: this.secrets },
       ),
-  ) {}
+  ) {
+    this.projects = new ProjectStore(db);
+    this.skills = new SkillStore(db);}
 
   async loadAll(): Promise<void> {
     const defs = await this.defStore.list();
@@ -188,6 +194,9 @@ export class AgentHost {
         autoGated.push(
           'memory_remember', 'memory_update_memory', 'memory_forget',
           'agent_comms_ask_agent',
+          // Own-history recall replays past (possibly channel-borne) content
+          // into fresh context — hold it behind the operator too.
+          'history_search_chats', 'history_view_chat',
           // Scheduling is the most durable self-persistence there is: a job
           // feeds attacker text back as a user turn on a timer and delivers
           // the reply to every channel, outliving the conversation the
@@ -209,6 +218,7 @@ export class AgentHost {
           'mcp__agent_comms__ask_agent',
           'mcp__agent_admin__create_agent', 'mcp__agent_admin__update_agent',
           'mcp__agent_admin__reload_agent',
+          'mcp__history__search_chats', 'mcp__history__view_chat',
         );
         const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
         if (stripped.length) {
@@ -283,6 +293,10 @@ export class AgentHost {
       // CRM credentials. The native email/social tools resolve the mailbox
       // and social accounts through this; the model never sees them.
       secrets: this.secrets,
+      skillsLookup: {
+        manifest: () => this.skills.manifestFor(def.id),
+        content: (name: string) => this.skills.contentFor(def.id, name),
+      },
     } : null;
     const dispatcher = this.dispatcherFactory(def, {
       agentId: def.id,
@@ -375,6 +389,11 @@ export class AgentHost {
       // gets the same tools through ritsuAgentToolDeps; this is the direct-
       // runtime half, which is the default and would otherwise have none.
       ...(this.jobStore ? { scheduler: { store: this.jobStore } } : {}),
+      skillsLookup: {
+        manifest: () => this.skills.manifestFor(def.id),
+        content: (name: string) => this.skills.contentFor(def.id, name),
+      },
+      history: { conversations: this.conversations },
       // api-runtime config. Only consumed when the factory picks the
       // 'ritsu-agent' kind (def.runtime === 'api').
       ...(isRitsuAgent ? {
@@ -392,6 +411,14 @@ export class AgentHost {
       // Flow-level memory: wired only when a MemoryService is set on the host.
       // Absent => today's static-RAG behavior, unchanged.
       ...(this.memoryService ? { memoryService: this.memoryService } : {}),
+      // Project prompt inheritance + the lazy skills manifest. Read live from
+      // the DB per turn, so filing a chat or binding a skill takes effect on
+      // the very next message without a reload.
+      projectPrompt: (cid) => this.projects.promptForConversation(cid),
+      skills: {
+        manifest: () => this.skills.manifestFor(def.id),
+        content: (name) => this.skills.contentFor(def.id, name),
+      },
     };
     this.agents.set(def.id, buildAgent(def, deps));
     logger.info('agent.wired', {

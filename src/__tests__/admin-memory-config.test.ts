@@ -22,6 +22,8 @@ import { ChannelRegistry } from '../channels/registry.js';
 import { BackupManager } from '../backup.js';
 import { createAdminApp } from '../admin/server.js';
 import { ProjectStore } from '../project-store.js';
+import { SkillStore } from '../skill-store.js';
+import { PromptStore } from '../prompt-store.js';
 import { _resetKeyCacheForTests } from '../util/secret-crypto.js';
 
 describe('GET /admin/api/memory', () => {
@@ -55,7 +57,7 @@ describe('GET /admin/api/memory', () => {
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'),
       channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
-      oauth, projects: new ProjectStore(db),
+      oauth, projects: new ProjectStore(db), skills: new SkillStore(db), prompts: new PromptStore(db),
       version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:7333',
       memoryBoot: { mode: 'sqlite', remote: null },
     });

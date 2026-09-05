@@ -92,6 +92,35 @@ CREATE INDEX IF NOT EXISTS idx_agent_projects_agent ON agent_projects(agent_id);
 -- one of the agent's workspace roots. Tags can dangle when a file is moved or
 -- deleted on disk; readers filter against the live listing rather than
 -- pretending the table is authoritative over the filesystem.
+-- Saved prompt library, fired from the composer palette. agent_id null =
+-- available in every workspace. Content may carry typed variables
+-- ({{name | select:options=[a,b]}}) that the UI turns into a small form.
+CREATE TABLE IF NOT EXISTS workspace_prompts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id   TEXT,
+  name       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- Skills: operator-authored markdown instruction sets. Bound to an agent they
+-- inject only a name+description manifest; the agent loads the body on demand
+-- via its view_skill tool — twenty bound skills cost no context until used.
+CREATE TABLE IF NOT EXISTS skills (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  content     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_skills (
+  agent_id  TEXT NOT NULL,
+  skill_id  INTEGER NOT NULL REFERENCES skills(id),
+  PRIMARY KEY (agent_id, skill_id)
+);
+
 CREATE TABLE IF NOT EXISTS agent_project_files (
   project_id INTEGER NOT NULL REFERENCES agent_projects(id),
   path       TEXT NOT NULL,
@@ -533,6 +562,15 @@ function migrate(db: Db): void {
   // Sidebar organization. Archived chats leave the list but stay searchable.
   addColumnIfMissing(db, 'conversations', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'conversations', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+  // When the operator last opened this chat in the workspace UI. A newer
+  // message than this = unread dot; channel-fed turns land while nobody looks.
+  addColumnIfMissing(db, 'conversations', 'read_at', 'INTEGER');
+  // Message tree. Every message records the message it answers or follows —
+  // regenerate makes SIBLINGS under one parent instead of overwriting, and the
+  // UI picks a path. Null = a root turn (legacy rows and conversation starts).
+  addColumnIfMissing(db, 'messages', 'parent_message_id', 'INTEGER');
+  // A project can carry a system prompt every chat filed under it inherits.
+  addColumnIfMissing(db, 'agent_projects', 'system_prompt', 'TEXT');
   // Per-message caller attribution: identifies who/what produced a given user
   // turn within a conversation. Values: 'admin-ui' for the admin chat panel,
   // an MCP token's name (or OAuth client_id) for bearer-authed calls, or the

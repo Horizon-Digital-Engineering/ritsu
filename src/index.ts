@@ -24,6 +24,8 @@ import { CLAUDE_NS } from './model/claude-direct-dispatcher.js';
 import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
 import { BackupManager, snapshotPreMigration } from './backup.js';
 import { ProjectStore } from './project-store.js';
+import { SkillStore } from './skill-store.js';
+import { PromptStore } from './prompt-store.js';
 import { createMcpServer } from './mcp-server.js';
 import { createAdminApp } from './admin/server.js';
 import { SqliteChannelStore } from './channels/channel-store.js';
@@ -60,6 +62,8 @@ async function main(): Promise<void> {
   const approvals = new ApprovalStore(db);
   const secrets = new SecretStore(db);
   const projects = new ProjectStore(db);
+  const skills = new SkillStore(db);
+  const promptLib = new PromptStore(db);
   const pluginHost = new PluginHost(db, secrets);
   for (const plugin of await discoverPlugins()) pluginHost.register(plugin);
   // Close out any approvals left pending by a prior process — their agent
@@ -211,6 +215,8 @@ async function main(): Promise<void> {
     secrets,
     backup,
     projects,
+    skills,
+    prompts: promptLib,
     channels: channelStore,
     channelRegistry: channels,
     jobs: jobStore,

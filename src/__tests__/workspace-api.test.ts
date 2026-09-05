@@ -19,6 +19,8 @@ import { randomBytes } from 'node:crypto';
 import { openDatabase, type Db } from '../db.js';
 import { createAdminApp } from '../admin/server.js';
 import { ProjectStore } from '../project-store.js';
+import { SkillStore } from '../skill-store.js';
+import { PromptStore } from '../prompt-store.js';
 import { listFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile, canonicalIfContained } from '../agent-files.js';
 import { AgentHost, type DispatcherFactory } from '../agent-host.js';
 import { SqliteAgentDefinitionStore } from '../agent-definition-store.js';
@@ -178,11 +180,13 @@ describe('agent-files', () => {
 
 // ─── Route level ────────────────────────────────────────────────────────────
 
+const dispatched: Array<{ agent: string; messages: Array<{ role: string; content: unknown }> }> = [];
 const stubFactory: DispatcherFactory = (def) => ({
   kind: 'claude-direct',
   defaultModel: def.model,
-  async chat(): Promise<ChatResponse> {
-    return { content: 'stub', model: def.model, raw: null };
+  async chat(req): Promise<ChatResponse> {
+    dispatched.push({ agent: def.id, messages: req.messages as Array<{ role: string; content: unknown }> });
+    return { content: `reply #${dispatched.length}`, model: def.model, raw: null };
   },
 });
 
@@ -216,10 +220,11 @@ describe('workspace API routes', () => {
 
     // Two agents so cross-agent refusals are testable; alice gets a real root.
     for (const id of ['alice', 'bob']) {
-      await defStore.upsert({
+      const saved = await defStore.upsert({
         id, type: 'generic', name: id, description: id, system_prompt: 'p',
         model: 'm',
       } as never);
+      host.addOrReplace(saved);
     }
     workspaces.upsert({ agent_id: 'alice', path: wsRoot, permissions: ['read'] } as never);
 
@@ -236,7 +241,7 @@ describe('workspace API routes', () => {
       channelRegistry: new ChannelRegistry(channelStore, { get: () => { throw new Error('unused'); } }),
       jobs: new SqliteJobStore(db),
       oauth: new OAuthStore(db),
-      projects: new ProjectStore(db),
+      projects: new ProjectStore(db), skills: new SkillStore(db), prompts: new PromptStore(db),
       version: 'test', authMode: 'on', mcpUrl: 'http://127.0.0.1:1',
     });
     server = await new Promise((resolve, reject) => {
@@ -406,6 +411,115 @@ describe('workspace API routes', () => {
     const upTo = (await req('POST', `/admin/api/conversations/${cid}/fork`,
       { up_to_message_id: 2_000_000 })).status;
     assert.equal(upTo, 201);
+  });
+
+  it('threads a message tree: edits branch, regenerate makes siblings, context follows the path', async () => {
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+
+    // Two linear turns.
+    await req('POST', '/admin/agents/alice/ask', { message: 'first question', conversation_id: cid });
+    await req('POST', '/admin/agents/alice/ask', { message: 'second question', conversation_id: cid });
+    const rows = convs.recent(cid);
+    assert.equal(rows.length, 4);
+    assert.equal(rows[0].parent_message_id, null, 'root turn');
+    assert.equal(rows[1].parent_message_id, rows[0].id, 'reply answers the question');
+    assert.equal(rows[2].parent_message_id, rows[1].id, 'linear default = continue from leaf');
+
+    // Edit turn one: same parent as the original (root) → a sibling branch.
+    await req('POST', '/admin/agents/alice/ask',
+      { message: 'first question, edited', conversation_id: cid, parent_message_id: null });
+    const afterEdit = convs.recent(cid);
+    const edited = afterEdit.find(m => m.content === 'first question, edited')!;
+    assert.equal(edited.parent_message_id, null, 'sibling of the original root turn');
+    // The dispatch for the edited turn must NOT contain branch A's tail.
+    const lastDispatch = dispatched.at(-1)!;
+    const texts = lastDispatch.messages.map(m => String(m.content));
+    assert.equal(texts.some(t => t.includes('second question')), false,
+      'the other branch must not leak into context');
+
+    // Regenerate the very first answer: a sibling under the same user turn.
+    const firstAnswer = rows[1];
+    const regen = await req('POST', `/admin/api/conversations/${cid}/regenerate`,
+      { assistant_message_id: firstAnswer.id });
+    assert.equal(regen.status, 200);
+    const sibs = convs.recent(cid).filter(m => m.role === 'assistant' && m.parent_message_id === rows[0].id);
+    assert.equal(sibs.length, 2, 'original + regenerated, side by side');
+    assert.equal((await req('POST', `/admin/api/conversations/${cid}/regenerate`,
+      { assistant_message_id: 999_999 })).status, 400);
+  });
+
+  it('skills: CRUD, binding, agent-scoped body lookup, and manifest injection', async () => {
+    const mk = await req('POST', '/admin/api/skills',
+      { name: 'release-notes', description: 'How to write our release notes', content: '# Steps\nBe terse.' });
+    assert.equal(mk.status, 201);
+    const sid = mk.json.id as number;
+    assert.equal((await req('POST', '/admin/api/skills',
+      { name: 'release-notes', description: '', content: 'x' })).status, 409, 'names are unique');
+
+    assert.equal((await req('POST', '/admin/api/agents/alice/skills', { skill_id: sid })).status, 200);
+    const list = await req('GET', '/admin/api/skills');
+    assert.deepEqual((list.json.skills as Array<{ agents: string[] }>)[0].agents, ['alice']);
+
+    // The manifest reaches the next turn's system context; the body does not.
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    await req('POST', '/admin/agents/alice/ask', { message: 'hi', conversation_id: cid });
+    const sys = dispatched.at(-1)!.messages.filter(m => m.role === 'system').map(m => String(m.content));
+    assert.ok(sys.some(t => t.includes('release-notes') && t.includes('view_skill')), 'lazy manifest injected');
+    assert.equal(sys.some(t => t.includes('Be terse.')), false, 'body loads only on demand');
+
+    assert.equal((await req('DELETE', `/admin/api/agents/alice/skills/${sid}`)).status, 200);
+    assert.equal((await req('DELETE', `/admin/api/skills/${sid}`)).status, 204);
+  });
+
+  it('a project prompt is inherited by chats filed under it — and only those', async () => {
+    const pid = (await req('POST', '/admin/api/agents/alice/projects', { name: 'persona' })).json.id as number;
+    assert.equal((await req('PATCH', `/admin/api/projects/${pid}/prompt`,
+      { system_prompt: 'Answer in pirate voice.' })).status, 200);
+
+    const inside = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    await req('PATCH', `/admin/api/conversations/${inside}/project`, { project_id: pid });
+    await req('POST', '/admin/agents/alice/ask', { message: 'ahoy', conversation_id: inside });
+    let sys = dispatched.at(-1)!.messages.filter(m => m.role === 'system').map(m => String(m.content));
+    assert.ok(sys.some(t => t.includes('pirate voice')), 'filed chat inherits the project prompt');
+
+    const outside = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    await req('POST', '/admin/agents/alice/ask', { message: 'hello', conversation_id: outside });
+    sys = dispatched.at(-1)!.messages.filter(m => m.role === 'system').map(m => String(m.content));
+    assert.equal(sys.some(t => t.includes('pirate voice')), false, 'unfiled chats stay vanilla');
+  });
+
+  it('prompt library scopes rows per agent plus globals', async () => {
+    await req('POST', '/admin/api/prompts', { name: 'daily', content: 'Summarize {{topic|text}}', agent_id: null });
+    await req('POST', '/admin/api/prompts', { name: 'alice-only', content: 'x', agent_id: 'alice' });
+    await req('POST', '/admin/api/prompts', { name: 'bob-only', content: 'x', agent_id: 'bob' });
+    const names = ((await req('GET', '/admin/api/agents/alice/prompts')).json.prompts as Array<{ name: string }>)
+      .map(x => x.name);
+    assert.ok(names.includes('daily') && names.includes('alice-only') && !names.includes('bob-only'));
+  });
+
+  it('context plumbing: fetch-url is SSRF-guarded, reference chats come fenced', async () => {
+    assert.equal((await req('POST', '/admin/api/agents/alice/fetch-url',
+      { url: 'http://127.0.0.1:1/x' })).status, 400, 'loopback refused before any request');
+    assert.equal((await req('POST', '/admin/api/agents/alice/fetch-url',
+      { url: 'file:///etc/passwd' })).status, 400);
+
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    convs.append(cid, 'user', 'the launch code discussion');
+    const ctx = await req('POST', `/admin/api/conversations/${cid}/as-context`);
+    assert.equal(ctx.status, 200);
+    assert.match(String(ctx.json.text), /UNTRUSTED/, 'a referenced transcript is data, not instructions');
+    assert.match(String(ctx.json.text), /launch code discussion/);
+  });
+
+  it('read markers: opening a chat clears its unread state', async () => {
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    convs.append(cid, 'assistant', 'a message that arrived while nobody looked');
+    let sm = convs.listSummaries('alice').find(x => x.id === cid)!;
+    assert.equal(sm.read_at, null);
+    assert.ok(sm.last_message_at, 'summaries expose the newest message time');
+    assert.equal((await req('PATCH', `/admin/api/conversations/${cid}/read`)).status, 200);
+    sm = convs.listSummaries('alice').find(x => x.id === cid)!;
+    assert.ok(sm.read_at != null && sm.read_at >= sm.last_message_at!, 'read_at moves past the newest message');
   });
 
   it('refuses traversal and speculative tags over HTTP', async () => {

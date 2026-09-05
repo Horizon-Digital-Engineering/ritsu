@@ -20,6 +20,9 @@ export interface Project {
   id: number;
   agent_id: string;
   name: string;
+  /** Prepended to every turn in a chat filed under this project — the
+   *  sub-persona knob. Null = the project is purely organizational. */
+  system_prompt: string | null;
   created_at: number;
   /** Conversations filed under this project. */
   chat_count: number;
@@ -33,7 +36,7 @@ export class ProjectStore {
   listFor(agent_id: string): Project[] {
     return this.db
       .prepare(
-        `SELECT p.id, p.agent_id, p.name, p.created_at,
+        `SELECT p.id, p.agent_id, p.name, p.system_prompt, p.created_at,
                 (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS chat_count,
                 (SELECT COUNT(*) FROM agent_project_files f WHERE f.project_id = p.id) AS file_count
          FROM agent_projects p
@@ -46,7 +49,7 @@ export class ProjectStore {
   read(id: number): Project | null {
     const row = this.db
       .prepare(
-        `SELECT p.id, p.agent_id, p.name, p.created_at,
+        `SELECT p.id, p.agent_id, p.name, p.system_prompt, p.created_at,
                 (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS chat_count,
                 (SELECT COUNT(*) FROM agent_project_files f WHERE f.project_id = p.id) AS file_count
          FROM agent_projects p WHERE p.id = ?`,
@@ -67,6 +70,25 @@ export class ProjectStore {
   rename(id: number, name: string): boolean {
     const r = this.db.prepare('UPDATE agent_projects SET name = ? WHERE id = ?').run(name, id);
     return r.changes > 0;
+  }
+
+  setSystemPrompt(id: number, prompt: string | null): boolean {
+    return this.db
+      .prepare('UPDATE agent_projects SET system_prompt = ? WHERE id = ?')
+      .run(prompt, id).changes > 0;
+  }
+
+  /** The inherited prompt for a conversation, resolved through its filing.
+   *  Null when unfiled or the project carries no prompt. */
+  promptForConversation(conversation_id: number): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT p.system_prompt FROM conversations c
+         JOIN agent_projects p ON p.id = c.project_id
+         WHERE c.id = ?`,
+      )
+      .get(conversation_id) as { system_prompt: string | null } | undefined;
+    return row?.system_prompt?.trim() ? row.system_prompt : null;
   }
 
   /** Unfiles members, never deletes them. One transaction so a crash can't
