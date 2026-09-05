@@ -6,6 +6,24 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-09-05
+
+### Fixed
+
+- JSON import hardening, so older exports restore completely:
+  - Exports from before the `format` stamp existed are accepted as the
+    version-1 shape instead of being rejected.
+  - Rows now insert under deferred foreign-key enforcement with an explicit
+    `foreign_key_check` before commit — alphabetical table order (attachments
+    before messages) and self-referential references no longer fail the
+    import, and a genuinely dangling reference rolls the whole import back.
+  - The memory backend's tables are created before copying, so memory
+    records survive import into a fresh database instead of being dropped as
+    "unknown".
+  - Data for tables the target schema doesn't have (typically uninstalled
+    plugins) is now a hard error listing the tables, instead of a silent
+    drop; `--skip-unknown` opts into skipping them, reported loudly.
+
 ## [0.12.1] — 2026-09-05
 
 ### Fixed

@@ -19,6 +19,7 @@ import { buildEmailTools, buildSocialTools } from '../tools/ritsu-agent/crm.js';
 import { clampLimit } from '../admin/server.js';
 import { ungateableApprovalTools } from '../agent-host.js';
 import { importJson, exportFormatForTests } from '../backup.js';
+import { SqliteMemoryBackend } from '../memory/sqlite-backend.js';
 
 describe('backup retention', () => {
   let tmp: string;
@@ -244,7 +245,7 @@ describe('JSON export round-trip', () => {
 
     const file = new BackupManager(src, srcPath).exportJson();
     const destPath = join(tmp, 'rebuilt.db');
-    const counts = importJson(file, destPath);
+    const { counts } = importJson(file, destPath);
 
     assert.equal(counts.memories, 1);
     const dest = openDatabase(destPath);
@@ -277,6 +278,80 @@ describe('JSON export round-trip', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io4-'));
     const dbPath = join(tmp, 'f.db');
     assert.equal(new BackupManager(openDatabase(dbPath), dbPath).exportJson().format, exportFormatForTests);
+  });
+
+  it('accepts an export from before the format stamp existed', () => {
+    // Old exports ARE the v1 shape — the field was added without a layout change.
+    const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io5-'));
+    const srcPath = join(tmp, 'src.db');
+    const src = openDatabase(srcPath);
+    src.prepare("INSERT INTO memories (agent_id, content, lineage_root_id) VALUES ('a', 'old world', 0)").run();
+    const file = new BackupManager(src, srcPath).exportJson() as { format?: string };
+    delete file.format;
+    const { counts } = importJson(file as never, join(tmp, 'rebuilt.db'));
+    assert.equal(counts.memories, 1);
+  });
+
+  it('imports rows in export order despite forward and self-referential FKs', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io6-'));
+    const srcPath = join(tmp, 'src.db');
+    const src = openDatabase(srcPath);
+    // message_attachments sorts alphabetically before messages, so its rows
+    // arrive before the messages they reference.
+    src.prepare("INSERT INTO conversations (id, agent_id) VALUES (1, 'a')").run();
+    src.prepare("INSERT INTO messages (id, conversation_id, role, content) VALUES (1, 1, 'user', 'hi')").run();
+    src.prepare("INSERT INTO message_attachments (message_id, conversation_id, media_type, data) VALUES (1, 1, 'image/png', 'aGk=')").run();
+    // Self-referential FK: memory 1 is superseded by memory 2, so row 1
+    // references a row that arrives after it whatever the table order.
+    src.prepare("INSERT INTO memories (id, agent_id, content, lineage_root_id) VALUES (2, 'a', 'new', 0)").run();
+    src.prepare("INSERT INTO memories (id, agent_id, content, lineage_root_id, superseded_by) VALUES (1, 'a', 'old', 0, 2)").run();
+
+    const file = new BackupManager(src, srcPath).exportJson();
+    const { counts } = importJson(file, join(tmp, 'rebuilt.db'));
+    assert.equal(counts.memories, 2);
+    assert.equal(counts.message_attachments, 1, 'attachment imported although its table sorts before messages');
+  });
+
+  it('rolls back an import whose rows reference missing rows', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io7-'));
+    const srcPath = join(tmp, 'src.db');
+    const src = openDatabase(srcPath);
+    src.prepare("INSERT INTO conversations (id, agent_id) VALUES (1, 'a')").run();
+    src.prepare("INSERT INTO messages (id, conversation_id, role, content) VALUES (1, 1, 'user', 'hi')").run();
+    const file = new BackupManager(src, srcPath).exportJson();
+    // Corrupt the export: a message pointing at a conversation that is not there.
+    (file.tables.messages as Array<Record<string, unknown>>).push(
+      { ...(file.tables.messages as Array<Record<string, unknown>>)[0], id: 99, conversation_id: 12345 });
+    const destPath = join(tmp, 'rebuilt.db');
+    assert.throws(() => importJson(file, destPath), /dangling foreign-key/);
+  });
+
+  it('lands memory raw_records although only the backend creates that table', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io8-'));
+    const srcPath = join(tmp, 'src.db');
+    const src = openDatabase(srcPath);
+    new SqliteMemoryBackend(src);
+    src.prepare(`INSERT INTO raw_records (id, type, content, content_hash, event_time, ingest_time, source, user_id)
+                 VALUES ('r1', 'note', 'do not lose me', 'x', 1, 1, 'test', 'u')`).run();
+    const file = new BackupManager(src, srcPath).exportJson();
+    const destPath = join(tmp, 'rebuilt.db');
+    const { counts, skipped } = importJson(file, destPath);
+    assert.equal(counts.raw_records, 1, 'memory records survive import into a fresh DB');
+    assert.deepEqual(skipped, []);
+    const dest = openDatabase(destPath);
+    new SqliteMemoryBackend(dest);
+    assert.equal((dest.prepare('SELECT count(*) c FROM raw_records').get() as { c: number }).c, 1);
+  });
+
+  it('refuses to silently drop unknown tables, and reports them under allowSkip', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io9-'));
+    const srcPath = join(tmp, 'src.db');
+    const src = openDatabase(srcPath);
+    const file = new BackupManager(src, srcPath).exportJson();
+    file.tables.plugin_widgets = [{ id: 1, name: 'w' }];
+    assert.throws(() => importJson(file, join(tmp, 'a.db')), /plugin_widgets/);
+    const { skipped } = importJson(file, join(tmp, 'b.db'), { allowSkip: true });
+    assert.deepEqual(skipped, ['plugin_widgets']);
   });
 });
 
