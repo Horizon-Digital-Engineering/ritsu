@@ -65,9 +65,18 @@ note "${INSTALL_DIR} (owner: ${SERVICE_USER})"
 note "${ENV_DIR} (owner: root)"
 
 bold "==> Source code"
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
-  note "existing checkout — pulling"
-  sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" pull --ff-only
+# The .git probe must run WITH privileges: the install dir is 750 ritsu:ritsu,
+# so an unprivileged test can't traverse it and reports "no repo" for a
+# perfectly good checkout — sending a reinstall down the clone path to die on
+# the non-empty directory.
+if sudo test -d "${INSTALL_DIR}/.git"; then
+  note "existing checkout — syncing to origin/main"
+  sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" fetch origin --prune
+  sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" reset --hard origin/main
+elif sudo find "${INSTALL_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+  echo "ERROR: ${INSTALL_DIR} is non-empty but not a git checkout." >&2
+  echo "Inspect it (sudo ls -la ${INSTALL_DIR}) — move data aside or remove it, then re-run." >&2
+  exit 1
 else
   note "cloning fresh"
   sudo -u "${SERVICE_USER}" -H git clone "${REPO_URL}" "${INSTALL_DIR}"

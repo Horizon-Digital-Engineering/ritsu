@@ -6,6 +6,16 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-09-05
+
+### Fixed
+
+- The installer now detects an existing checkout even though the install
+  directory is unreadable to the invoking user, and syncs it the same way
+  the updater does (fetch + hard reset) instead of pulling. A non-repo
+  obstruction in the install directory is reported with instructions
+  instead of surfacing as a git fatal.
+
 ## [0.11.0] — 2026-09-05
 
 ### Added
