@@ -1435,6 +1435,31 @@ export function createAdminApp(deps: AdminDeps) {
     res.json({ ok: true, path: canonical });
   });
 
+  const TitleBody = z.object({ title: z.string().trim().max(120).nullable() }).strict();
+
+  // Rename a chat. Null (or empty after trim) reverts to the derived title.
+  app.patch('/admin/api/conversations/:cid/title', (req: Request, res: Response) => {
+    const body = parseBody(req, res, TitleBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const title = body.title?.trim() ? body.title.trim() : null;
+    res.status(conversations.setTitle(cid, title) ? 200 : 404).json({ ok: true });
+  });
+
+  // Delete a chat outright (messages + attachments). The default chat is
+  // refused: it is the anchor telegram and bare asks share, and deleting it
+  // would silently promote the next-oldest thread into being the default.
+  app.delete('/admin/api/conversations/:cid', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    if (conversations.isHumanAnchor(cid)) {
+      res.status(400).json({ error: 'the default chat cannot be deleted' });
+      return;
+    }
+    res.status(conversations.deleteConversation(cid) ? 204 : 404).end();
+  });
+
   // Explicit new chat. A bare ask (no conversation_id) deliberately lands in
   // the default thread, so starting a FRESH conversation needs its own verb.
   app.post('/admin/api/agents/:id/conversations', async (req: Request, res: Response) => {

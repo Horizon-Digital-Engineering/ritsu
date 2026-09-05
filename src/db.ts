@@ -528,6 +528,8 @@ function migrate(db: Db): void {
   addColumnIfMissing(db, 'conversations', 'caller_agent_id', 'TEXT');
   // Which workspace project a conversation is filed under (null = unfiled).
   addColumnIfMissing(db, 'conversations', 'project_id', 'INTEGER');
+  // Operator-set title. Null = derive from the first user message, as always.
+  addColumnIfMissing(db, 'conversations', 'title', 'TEXT');
   // Per-message caller attribution: identifies who/what produced a given user
   // turn within a conversation. Values: 'admin-ui' for the admin chat panel,
   // an MCP token's name (or OAuth client_id) for bearer-authed calls, or the

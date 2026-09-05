@@ -526,3 +526,47 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .scrim { transition: none; }
 }
+
+/* ---- markdown in assistant messages ---- */
+.msg { position: relative; }
+.msg h2, .msg h3, .msg h4, .msg h5 { margin: 0.55em 0 0.3em; line-height: 1.25; font-weight: 650; }
+.msg h2 { font-size: 1.15rem; } .msg h3 { font-size: 1.06rem; } .msg h4, .msg h5 { font-size: 1rem; }
+.msg ul, .msg ol { margin: 0.35em 0; padding-left: 1.4em; }
+.msg li { margin: 0.15em 0; }
+.msg blockquote { margin: 0.4em 0; padding: 0.1em 0.8em; border-left: 3px solid var(--line); color: var(--muted); }
+.msg hr { border: 0; border-top: 1px solid var(--line); margin: 0.7em 0; }
+.msg a { color: var(--accent); }
+.md-gap { height: 0.65em; }
+.md-ic {
+  font-family: var(--mono); font-size: 0.92em;
+  background: var(--bg-2, rgba(127,127,127,0.15));
+  padding: 0.08em 0.35em; border-radius: 4px;
+}
+
+.codeblock { margin: 0.5em 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.codebar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 3px 10px; border-bottom: 1px solid var(--line);
+  background: var(--bg-2, rgba(127,127,127,0.08));
+}
+.codelang { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+.codecopy {
+  font-size: 0.72rem; color: var(--muted); background: none; border: 0;
+  cursor: pointer; padding: 2px 6px; border-radius: 4px;
+}
+.codecopy:hover { color: var(--fg); background: var(--bg-3, rgba(127,127,127,0.15)); }
+.codeblock pre { margin: 0; padding: 10px 12px; overflow-x: auto; }
+.codeblock code { font-family: var(--mono); font-size: 0.86rem; line-height: 1.45; }
+
+/* per-message copy: invisible until the message is hovered or focused */
+.msg-copy {
+  position: absolute; top: 4px; right: 6px;
+  font-size: 0.7rem; color: var(--muted); background: none; border: 0;
+  cursor: pointer; opacity: 0; transition: opacity 0.12s; padding: 2px 6px; border-radius: 4px;
+}
+.msg:hover .msg-copy, .msg-copy:focus { opacity: 1; }
+.msg-copy:hover { color: var(--fg); background: var(--bg-3, rgba(127,127,127,0.15)); }
+
+/* chat header ⋯ menu */
+.menu-wrap { position: relative; }
+.menu-wrap .row-menu { right: 0; left: auto; }

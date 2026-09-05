@@ -86,6 +86,15 @@ export interface ConversationStore {
    *  false for an unknown conversation. Cross-agent validation is the
    *  caller's job — this store doesn't know which agent owns a project. */
   setProject(conversation_id: number, project_id: number | null): boolean;
+  /** Operator-set title; null reverts to deriving from the first user turn. */
+  setTitle(conversation_id: number, title: string | null): boolean;
+  /** True when this is the agent's canonical human thread — the anchor
+   *  telegram and bare asks share. Never creates one. */
+  isHumanAnchor(conversation_id: number): boolean;
+  /** Delete a conversation with its messages and attachments. The caller
+   *  refuses the human anchor first — deleting it would silently promote the
+   *  next-oldest thread into being the default chat. */
+  deleteConversation(conversation_id: number): boolean;
 }
 
 export class SqliteConversationStore implements ConversationStore {
@@ -216,6 +225,38 @@ export class SqliteConversationStore implements ConversationStore {
     return r.changes > 0;
   }
 
+  setTitle(conversation_id: number, title: string | null): boolean {
+    const r = this.db
+      .prepare('UPDATE conversations SET title = ? WHERE id = ?')
+      .run(title, conversation_id);
+    return r.changes > 0;
+  }
+
+  isHumanAnchor(conversation_id: number): boolean {
+    const row = this.db
+      .prepare('SELECT agent_id, caller_agent_id FROM conversations WHERE id = ?')
+      .get(conversation_id) as { agent_id: string; caller_agent_id: string | null } | undefined;
+    if (!row || row.caller_agent_id !== null) return false;
+    const oldest = this.db
+      .prepare(
+        `SELECT id FROM conversations
+         WHERE agent_id = ? AND caller_agent_id IS NULL
+         ORDER BY id ASC LIMIT 1`,
+      )
+      .get(row.agent_id) as { id: number } | undefined;
+    return oldest?.id === conversation_id;
+  }
+
+  deleteConversation(conversation_id: number): boolean {
+    let removed = false;
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM message_attachments WHERE conversation_id = ?').run(conversation_id);
+      this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation_id);
+      removed = this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation_id).changes > 0;
+    })();
+    return removed;
+  }
+
   findOrStartHumanThread(agent_id: string): number {
     const existing = this.db
       .prepare(
@@ -235,7 +276,7 @@ export class SqliteConversationStore implements ConversationStore {
     involves?: string,
   ): ConversationSummary[] {
     const baseSql = `
-      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id,
+      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id, c.title AS custom_title,
              (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
              COALESCE(
                (SELECT m.content FROM messages m
@@ -255,13 +296,13 @@ export class SqliteConversationStore implements ConversationStore {
     else if (kind === 'agent') where.push('c.caller_agent_id IS NOT NULL');
     const sql = `${baseSql}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY c.id DESC LIMIT ?`;
     params.push(limit);
-    type Row = Omit<ConversationSummary, 'title'> & { first_user_msg: string };
+    type Row = Omit<ConversationSummary, 'title'> & { first_user_msg: string; custom_title: string | null };
     const rows = this.db.prepare(sql).all(...params) as Row[];
     return rows.map(r => {
-      const { first_user_msg, ...rest } = r;
+      const { first_user_msg, custom_title, ...rest } = r;
       const oneLine = first_user_msg.replace(/\s+/g, ' ').trim();
-      const title = oneLine.length > 60 ? oneLine.slice(0, 57) + '…' : oneLine;
-      return { ...rest, title };
+      const derived = oneLine.length > 60 ? oneLine.slice(0, 57) + '…' : oneLine;
+      return { ...rest, title: custom_title?.trim() ? custom_title.trim() : derived };
     });
   }
 }

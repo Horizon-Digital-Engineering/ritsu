@@ -75,6 +75,13 @@
             <span class="file-under-label">File under</span>
             <select id="chat-project" data-change="file-chat" aria-label="File this chat under a project"></select>
           </label>
+          <div id="chat-menu-wrap" class="menu-wrap hidden">
+            <button type="button" class="icon-btn" data-action="toggle-chat-menu" aria-label="Chat actions">⋯</button>
+            <div id="chat-menu" class="row-menu">
+              <button type="button" data-action="rename-chat">Rename</button>
+              <button type="button" id="chat-menu-delete" class="danger" data-action="delete-chat">Delete chat</button>
+            </div>
+          </div>
         </div>
 
         <div id="transcript" class="transcript" aria-live="polite"></div>

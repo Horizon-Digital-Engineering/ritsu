@@ -338,6 +338,29 @@ describe('workspace API routes', () => {
     assert.equal((list.json.files as Array<{ rel: string }>).some(f => f.rel === 'ref/spec.md'), false);
   });
 
+  it('renames and deletes chats, but never the default chat', async () => {
+    const dc = (await req('GET', '/admin/api/agents/alice/default-chat')).json.conversation_id as number;
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+
+    assert.equal((await req('PATCH', `/admin/api/conversations/${cid}/title`, { title: '  Launch plan  ' })).status, 200);
+    let row = convs.listSummaries('alice').find(sm => sm.id === cid);
+    assert.equal(row?.title, 'Launch plan', 'manual title overrides, trimmed');
+
+    assert.equal((await req('PATCH', `/admin/api/conversations/${cid}/title`, { title: null })).status, 200);
+    row = convs.listSummaries('alice').find(sm => sm.id === cid);
+    assert.equal(row?.title, '', 'null reverts to the derived (empty here) title');
+
+    // The anchor is renameable but not deletable.
+    assert.equal((await req('PATCH', `/admin/api/conversations/${dc}/title`, { title: 'HQ' })).status, 200);
+    const refuse = await req('DELETE', `/admin/api/conversations/${dc}`);
+    assert.equal(refuse.status, 400);
+    assert.match(String(refuse.json.error), /default chat/);
+
+    assert.equal((await req('DELETE', `/admin/api/conversations/${cid}`)).status, 204);
+    assert.equal(convs.listSummaries('alice').some(sm => sm.id === cid), false);
+    assert.equal((await req('DELETE', `/admin/api/conversations/${cid}`)).status, 404);
+  });
+
   it('refuses traversal and speculative tags over HTTP', async () => {
     const esc = await req('POST', '/admin/api/agents/alice/files', {
       path: '../../escape.txt', data: Buffer.from('x').toString('base64'),

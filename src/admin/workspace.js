@@ -421,6 +421,9 @@ function isChatOpen(cid) {
   return $('view-chat').classList.contains('active') && convoId === cid;
 }
 
+/** The message list behind the current transcript render, for copy actions. */
+let lastRendered = [];
+
 // ---- chat view -------------------------------------------------------------
 function convoTitle(cid) {
   if (cid && cid === defaultChat?.conversation_id) return 'Default chat';
@@ -438,10 +441,16 @@ function renderChatHead() {
   if (c?.started_at) bits.push(`started ${fmtAge(c.started_at)} ago`);
   $('chat-sub').textContent = bits.join(' · ');
 
+  const isDefault = convoId === defaultChat?.conversation_id;
+  $('chat-menu-wrap').classList.toggle('hidden', !convoId);
+  // Renaming the default chat is fine; deleting the anchor is refused
+  // server-side too — hiding the option just keeps the menu honest.
+  $('chat-menu-delete').classList.toggle('hidden', isDefault);
+
   // The default chat is the pinned always-first thread — filing it under a
   // project would leave it in two places at once, so it isn't offered.
   const wrap = $('chat-file-wrap');
-  const filable = convoId && convoId !== defaultChat?.conversation_id;
+  const filable = convoId && !isDefault;
   wrap.classList.toggle('hidden', !filable);
   if (!filable) return;
   const sel = $('chat-project');
@@ -483,6 +492,59 @@ async function reloadTranscript() {
   } catch { /* SSE or the next navigation retries */ }
 }
 
+// ---- markdown (assistant messages) -----------------------------------------
+// MD-PURE-START (node-testable: no DOM, only esc())
+/**
+ * Minimal, escape-first markdown for assistant replies. The whole input is
+ * HTML-escaped BEFORE any transform, and every tag that appears in the output
+ * comes from a literal below — content can only ever land inside text
+ * positions or quoted, escaped attributes. Links are restricted to http(s).
+ * Fenced code is lifted out first so nothing inside it is transformed.
+ */
+function md(raw) {
+  const blocks = [];
+  let text = String(raw ?? '').replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    blocks.push({ lang, code });
+    return `\u0000B${blocks.length - 1}\u0000`;
+  });
+  text = esc(text);
+  text = text.replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
+  text = text
+    .replace(/^#### (.+)$/gm, '<h5>$1</h5>')
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  text = text
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\s][^*\n]*?)\*(?!\*)/g, '$1<em>$2</em>');
+  // esc() ran first, so a quote in the URL is already &quot; and cannot
+  // break out of the attribute; the ^https? anchor shuts out javascript: etc.
+  text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  text = text
+    .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
+    .replace(/<\/blockquote>\n<blockquote>/g, '<br>');
+  text = text.replace(/(?:^|\n)((?:[-*] .+(?:\n|$))+)/g, (m, body) =>
+    '\n<ul>' + body.trim().split('\n').map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('') + '</ul>\n');
+  text = text.replace(/(?:^|\n)((?:\d+\. .+(?:\n|$))+)/g, (m, body) =>
+    '\n<ol>' + body.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('') + '</ol>\n');
+  text = text.replace(/^(?:---+|\*\*\*+)$/gm, '<hr>');
+  text = text.replace(/\n{2,}/g, '\u0000P\u0000').replace(/\n/g, '<br>');
+  text = text
+    .replace(/\u0000P\u0000/g, '<div class="md-gap"></div>')
+    .replace(/(<\/(?:h2|h3|h4|h5|ul|ol|blockquote)>|<hr>)<br>/g, '$1')
+    .replace(/<br>(<(?:h2|h3|h4|h5|ul|ol|blockquote|hr)[ >])/g, '$1');
+  text = text.replace(/\u0000B(\d+)\u0000(?:<br>)?/g, (_, i) => {
+    const b = blocks[+i];
+    return '<div class="codeblock"><div class="codebar">'
+      + `<span class="codelang">${esc(b.lang || 'text')}</span>`
+      + '<button type="button" class="codecopy" data-action="copy-code">copy</button></div>'
+      + `<pre><code>${esc(b.code.replace(/\n$/, ''))}</code></pre></div>`;
+  });
+  return text;
+}
+// MD-PURE-END
+
 function renderTranscript(messages) {
   const t = $('transcript');
   const visible = (messages || []).filter(m => m.role !== 'system');
@@ -492,14 +554,20 @@ function renderTranscript(messages) {
     // Byline only when the caller is another agent; everything else (admin
     // token, MCP bearer, this browser) is just "you".
     const agentIds = new Set(agents.map(a => a.id));
-    t.innerHTML = visible.map(m => {
+    lastRendered = visible;
+    t.innerHTML = visible.map((m, i) => {
       const byline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label)
         ? `<div class="msg-byline">${esc(m.caller_label)}</div>` : '';
       const atts = m.attachments?.length
         ? `<div class="msg-atts">${m.attachments.map(a =>
             `<img class="att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${esc(a.data)}" alt="attachment">`).join('')}</div>`
         : '';
-      return `<div class="msg ${esc(m.role)}">${byline}${esc(m.content)}${atts}</div>`;
+      // Assistant turns render as markdown; user turns stay literal text —
+      // what the operator typed is what they see.
+      const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>');
+      const copy = m.content
+        ? `<button type="button" class="msg-copy" data-action="copy-msg" data-idx="${i}" aria-label="Copy message">copy</button>` : '';
+      return `<div class="msg ${esc(m.role)}">${byline}${body}${atts}${copy}</div>`;
     }).join('');
   }
   if (convoId !== null && inFlight.has(convoId)) ensurePendingBubble();
@@ -1294,6 +1362,44 @@ function syncViewport() {
 
 // ---- action delegation -----------------------------------------------------
 const ACTIONS = {
+  'copy-msg': async (el) => {
+    const m = lastRendered[Number(el.dataset.idx)];
+    if (!m) return;
+    try { await navigator.clipboard.writeText(m.content); toast('copied'); }
+    catch { toast('copy failed — clipboard needs a secure context', 'err'); }
+  },
+  'copy-code': async (el) => {
+    const code = el.closest('.codeblock')?.querySelector('code')?.textContent ?? '';
+    try { await navigator.clipboard.writeText(code); el.textContent = 'copied'; setTimeout(() => { el.textContent = 'copy'; }, 1200); }
+    catch { toast('copy failed — clipboard needs a secure context', 'err'); }
+  },
+  'toggle-chat-menu': () => {
+    $('chat-menu').classList.toggle('open');
+  },
+  'rename-chat': async () => {
+    closeMenus();
+    if (!convoId) return;
+    const current = convoTitle(convoId);
+    const name = prompt('Chat title (empty reverts to automatic):', current === '(new chat)' ? '' : current);
+    if (name === null) return;
+    try {
+      await api('PATCH', `/admin/api/conversations/${convoId}/title`, { title: name.trim() || null });
+      const c = convos.find(x => x.id === convoId);
+      if (c) c.title = name.trim();
+      renderChatHead(); renderSidebar();
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  'delete-chat': async () => {
+    closeMenus();
+    if (!convoId) return;
+    if (!confirm('Delete this chat and its messages? This cannot be undone.')) return;
+    try {
+      await api('DELETE', `/admin/api/conversations/${convoId}`);
+      convos = convos.filter(x => x.id !== convoId);
+      renderSidebar();
+      go(`/a/${encodeURIComponent(agentId)}`);   // land on the default chat
+    } catch (e) { toast(e.message, 'err'); }
+  },
   'toggle-sidebar': () => ($('sidebar').classList.contains('open') ? closeSidebar() : openSidebar()),
   'close-sidebar': closeSidebar,
   'toggle-agent-menu': toggleAgentMenu,
@@ -1340,7 +1446,7 @@ document.addEventListener('change', (e) => {
 // Click-outside closes the popovers. Registered AFTER the action delegator so
 // the click that opened a menu is handled first; the toggle check then bails.
 document.addEventListener('click', (e) => {
-  if (e.target.closest('[data-action="toggle-agent-menu"], [data-action="toggle-project-menu"]')) return;
+  if (e.target.closest('[data-action="toggle-agent-menu"], [data-action="toggle-project-menu"], [data-action="toggle-chat-menu"]')) return;
   if (e.target.closest('.agent-menu, .row-menu')) return;
   closeMenus();
 });
