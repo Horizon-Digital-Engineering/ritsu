@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>ritsu</title>
+<link rel="stylesheet" href="/admin/workspace.css">
+<!-- Vendored, self-hosted: the admin CSP allows no CDN. Both expose a plain
+     global (globalThis.mermaid / window.katex); defer keeps 3.5MB of mermaid
+     off the critical path and the render passes wait for the global. -->
+<link rel="stylesheet" href="/admin/vendor/katex.min.css">
+<script src="/admin/vendor/katex.min.js" defer></script>
+<script src="/admin/vendor/mermaid.min.js" defer></script>
+</head>
+<body>
+  <!-- Every handler is wired by the delegated listeners in workspace.js via
+       data-action / data-change, so no inline onclick= or style= survives
+       here — that is what lets the CSP keep script-src/style-src at 'self'. -->
+  <div class="shell">
+    <header class="topbar">
+      <button type="button" class="icon-btn only-mobile" data-action="toggle-sidebar" aria-label="Toggle sidebar" aria-expanded="false">☰</button>
+      <div class="switcher">
+        <button type="button" id="agent-btn" class="agent-btn" data-action="toggle-agent-menu" aria-haspopup="menu" aria-expanded="false">
+          <span id="agent-btn-glyph" aria-hidden="true"></span>
+          <span id="agent-btn-label" class="agent-name">loading…</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div id="agent-menu" class="agent-menu" role="menu" aria-hidden="true"></div>
+      </div>
+      <span class="flex1"></span>
+      <a class="topbar-link" href="/admin" title="Classic admin">admin ⚙</a>
+    </header>
+
+    <div id="scrim" class="scrim" data-action="close-sidebar"></div>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="side-top">
+        <button type="button" class="new-chat" data-action="new-chat">+ New chat</button>
+        <label class="search-wrap">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input id="side-search" type="search" placeholder="Search chats and projects"
+                 aria-label="Search chats and projects" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+
+      <nav class="side-scroll" aria-label="Workspace">
+        <div class="side-section">
+          <div id="side-default" class="side-list"></div>
+        </div>
+        <div class="side-section">
+          <div class="side-head">
+            <span>Projects</span>
+            <button type="button" class="side-head-btn" data-action="new-project" title="New project" aria-label="New project">+</button>
+          </div>
+          <div id="side-projects" class="side-list"></div>
+        </div>
+        <div class="side-section">
+          <div class="side-head"><span>Chats</span></div>
+          <div id="side-chats" class="side-list"></div>
+        </div>
+      </nav>
+
+      <div class="side-foot">
+        <button type="button" id="files-nav" class="side-item files-nav" data-action="open-files">
+          <span class="side-item-lead" aria-hidden="true">📁</span>
+          <span class="side-item-title">Files</span>
+        </button>
+        <button type="button" id="skills-nav" class="side-item files-nav" data-action="open-skills">
+          <span class="side-item-lead" aria-hidden="true">⚙</span>
+          <span class="side-item-title">Skills</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- ============ CHAT ============ -->
+      <section id="view-chat" class="view" aria-label="Chat">
+        <div class="view-head">
+          <div class="view-title-wrap">
+            <h1 id="chat-title" class="view-title">…</h1>
+            <div id="chat-sub" class="view-sub"></div>
+            <button type="button" id="chat-inherit" class="inherit-badge hidden" data-action="open-inherited-project"></button>
+          </div>
+          <label id="chat-file-wrap" class="file-under hidden">
+            <span class="file-under-label">File under</span>
+            <select id="chat-project" data-change="file-chat" aria-label="File this chat under a project"></select>
+          </label>
+          <div id="chat-menu-wrap" class="menu-wrap hidden">
+            <button type="button" class="icon-btn" data-action="toggle-chat-menu" aria-label="Chat actions">⋯</button>
+            <div id="chat-menu" class="row-menu">
+              <button type="button" id="chat-menu-pin" data-action="pin-chat">Pin</button>
+              <button type="button" data-action="rename-chat">Rename</button>
+              <button type="button" data-action="fork-chat">Fork chat</button>
+              <button type="button" data-action="export-chat">Export (.md)</button>
+              <button type="button" id="chat-menu-archive" data-action="archive-chat">Archive</button>
+              <button type="button" id="chat-menu-delete" class="danger" data-action="delete-chat">Delete chat</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+
+        <form id="ask-form" class="composer">
+          <!-- "/" or "@" at position 0 opens this; rows are built in JS and
+               chosen with the arrow keys, so it stays out of the tab order. -->
+          <div id="palette" class="palette" role="listbox" aria-label="Commands" aria-hidden="true"></div>
+          <div id="edit-banner" class="edit-banner hidden">
+            <span class="edit-banner-text">Editing a message — sending forks a new branch.</span>
+            <button type="button" class="edit-banner-x" data-action="cancel-edit" title="Cancel (Esc)">✕</button>
+          </div>
+          <div id="attach-tray" class="attach-tray" aria-hidden="true"></div>
+          <div id="attach-hint" class="attach-hint" aria-hidden="true"></div>
+          <!-- Placeholder stays short: a textarea does not autosize to wrapped
+               placeholder text, so a long one clips on a phone. -->
+          <textarea id="ask-input" rows="1" aria-label="Message this agent" placeholder="Message…"
+                    title="Enter to send, Shift+Enter for a newline, “/” for commands, paste an image to attach"></textarea>
+          <div class="composer-row">
+            <div class="menu-wrap">
+              <button type="button" class="icon-btn" data-action="toggle-attach-menu" title="Attach" aria-label="Attach" aria-haspopup="menu">📎</button>
+              <div id="attach-menu" class="row-menu attach-menu">
+                <button type="button" data-action="pick-attachment">Attach image</button>
+                <button type="button" data-action="attach-webpage">Attach webpage</button>
+                <button type="button" data-action="reference-chat">Reference chat</button>
+              </div>
+            </div>
+            <input type="file" id="ask-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden aria-label="Attach an image">
+            <span class="flex1"></span>
+            <button type="submit" id="ask-send" class="primary send-btn" title="Send" aria-label="Send">→</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- ============ PROJECT ============ -->
+      <section id="view-project" class="view" aria-label="Project"></section>
+
+      <!-- ============ FILES ============ -->
+      <section id="view-files" class="view" aria-label="Files"></section>
+
+      <!-- ============ SKILLS ============ -->
+      <section id="view-skills" class="view" aria-label="Skills"></section>
+
+      <!-- ============ ARTIFACT ============ -->
+      <!-- sandbox is allow-scripts ONLY: no allow-same-origin, so the frame
+           gets an opaque origin and can never read this page, its storage, or
+           its admin token. srcdoc is set from JS with a deny-everything CSP
+           meta injected as the first head element. -->
+      <aside id="artifact-panel" class="artifact-panel hidden" aria-label="Artifact">
+        <div class="artifact-head">
+          <select id="artifact-versions" data-change="pick-artifact" aria-label="Artifact version"></select>
+          <button type="button" data-action="copy-artifact" title="Copy source">copy source</button>
+          <button type="button" class="icon-btn" data-action="close-artifact" aria-label="Close artifact">✕</button>
+        </div>
+        <iframe id="artifact-frame" class="artifact-frame" sandbox="allow-scripts"
+                referrerpolicy="no-referrer" title="Artifact preview"></iframe>
+      </aside>
+    </main>
+  </div>
+
+  <input type="file" id="upload-file" multiple hidden aria-label="Upload files to this workspace">
+
+  <!-- Modals (prompt library, skill editor, variable forms) and the sidebar
+       hover preview are built as DOM nodes into these hosts. -->
+  <div id="modal-host"></div>
+  <div id="hover-preview" class="hover-preview hidden" aria-hidden="true"></div>
+
+  <output id="toast" class="toast hidden"></output>
+
+  <!-- A real <form> with a password input + hidden username so password
+       managers recognize it as a saveable login and offer autofill. -->
+  <div id="admin-login" class="modal-fullpage">
+    <form id="admin-login-form" autocomplete="on" class="admin-login-card">
+      <h2 class="admin-login-title">ritsu</h2>
+      <p id="admin-login-msg" class="admin-login-msg">Sign in with your admin token.</p>
+      <input id="admin-login-user" type="text" name="username" autocomplete="username" value="ritsu"
+             readonly tabindex="-1" aria-label="Username" class="hidden">
+      <label for="admin-login-token" class="admin-login-label">Admin token</label>
+      <input id="admin-login-token" name="password" type="password" autocomplete="current-password"
+             placeholder="rt_…" required spellcheck="false" class="admin-login-input">
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <script src="/admin/workspace.js" type="module"></script>
+</body>
+</html>

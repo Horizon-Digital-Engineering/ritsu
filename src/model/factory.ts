@@ -63,6 +63,8 @@ export interface DispatcherOpts {
   social?: { agentId: string; secrets: import('../auth/secret-store.js').SecretStore; approvals: ApprovalStore };
   /** Scheduling tools. Suppressed inside a scheduled run by the provider. */
   scheduler?: { store: JobStore };
+  skillsLookup?: import('../tools/mcp-internal/workspace-tools.js').SkillsLookup;
+  history?: { conversations: import('../conversation-store.js').ConversationStore };
   /**
    * Ritsu-agent runtime config (Phase B). When present + kind is
    * 'ritsu-agent', the dispatcher uses its own tool-calling loop against
@@ -118,6 +120,8 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.email      !== undefined) out.email      = opts.email;
   if (opts.social     !== undefined) out.social     = opts.social;
   if (opts.scheduler  !== undefined) out.scheduler  = opts.scheduler;
+  if (opts.skillsLookup !== undefined) out.skillsLookup = opts.skillsLookup;
+  if (opts.history    !== undefined) out.history    = opts.history;
   if (opts.agentId    !== undefined) out.agentId    = opts.agentId;
   if (opts.plugins    !== undefined) out.plugins    = opts.plugins;
   return out;

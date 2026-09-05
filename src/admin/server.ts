@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from 'express';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, sep, resolve as resolvePath, normalize as normalizePath } from 'node:path';
 import { spawnSync } from '../util/safe-spawn.js';
 import { createHash } from 'node:crypto';
@@ -40,6 +40,14 @@ import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
 import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { RateLimiter } from '../util/rate-limit.js';
+import { ProjectStore } from '../project-store.js';
+import { SkillStore } from '../skill-store.js';
+import { PromptStore } from '../prompt-store.js';
+import {
+  listFiles, readWorkspaceFile, writeWorkspaceFile, deleteWorkspaceFile, canonicalIfContained,
+} from '../agent-files.js';
+import { validateUrl, safeFetch } from '../tools/ritsu-agent/ssrf-guard.js';
+import { fenceUntrusted } from '../util/untrusted.js';
 import { logger } from '../util/log.js';
 import { stripTrailingSlashes } from '../util/path-utils.js';
 import { TOOL_NAMES, TOOL_INFO } from '../mcp-server.js';
@@ -63,6 +71,27 @@ function param(v: string | string[] | undefined): string {
  * table (attachments included), and `?limit=abc` reaches the driver as NaN
  * and 500s on a datatype mismatch.
  */
+/** Crude but safe page-to-text: scripts/styles dropped, tags to spaces, a few
+ *  entities decoded, whitespace collapsed. Extraction quality is not the goal
+ *  — the result is fenced context, not rendered content. */
+function htmlToText(html: string): string {
+  return html
+    // Element CONTENT removal keys on the opening tag boundary and tolerates
+    // attributes/whitespace in the closer; the general tag strip below then
+    // eats any straggler markup, so a malformed closer can't smuggle content.
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
+    // characters "&lt;" rather than a freshly minted "<".
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function clampLimit(raw: unknown, fallback: number, max: number): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -81,6 +110,9 @@ export interface AdminDeps {
   approvals: ApprovalStore;
   commsDenials: CommsDenialStore;
   backup: BackupManager;
+  projects: ProjectStore;
+  skills: SkillStore;
+  prompts: PromptStore;
   secrets: SecretStore;
   channels: ChannelStore;
   channelRegistry: ChannelRegistry;
@@ -139,6 +171,9 @@ const AskBody = z.object({
   // this" turn); the refine below enforces "text OR image".
   message: z.string().trim().default(''),
   conversation_id: z.number().int().optional(),
+  // Message-tree anchor: edit-a-turn passes the edited message's own parent,
+  // creating a sibling branch instead of appending to the leaf.
+  parent_message_id: z.number().int().positive().nullable().optional(),
   attachments: z.array(AttachmentBody).max(4).optional(),
 }).refine(
   b => b.message.length > 0 || (b.attachments?.length ?? 0) > 0,
@@ -400,7 +435,7 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
 export function createAdminApp(deps: AdminDeps) {
-  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup } = deps;
+  const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects, skills, prompts } = deps;
 
   /** Secrets are unwritable without a master key. Answering with the reason
    *  beats a 500 whose cause is only visible in the journal. */
@@ -572,6 +607,8 @@ export function createAdminApp(deps: AdminDeps) {
     // (Express mounts paths relative to the mount point: GET /admin
     // arrives here as req.path '/'. With trailing slash → '/index.html'.)
     if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
+      || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
+      || req.path.startsWith('/vendor/')
       || req.path.startsWith('/plugins/')) {
       next();
       return;
@@ -618,7 +655,7 @@ export function createAdminApp(deps: AdminDeps) {
   const jsonDefault = express.json({ limit: '256kb' });
   const jsonAsk = express.json({ limit: '32mb' });
   app.use((req, res, next) =>
-    req.method === 'POST' && req.path.endsWith('/ask')
+    req.method === 'POST' && (req.path.endsWith('/ask') || req.path.endsWith('/files'))
       ? jsonAsk(req, res, next)
       : jsonDefault(req, res, next),
   );
@@ -720,6 +757,62 @@ export function createAdminApp(deps: AdminDeps) {
     return readFileSync(p, 'utf8');
   })();
 
+  const wsHtml = (() => {
+    const p = join(__dirname, 'workspace.html');
+    if (!existsSync(p)) throw new Error(`admin/workspace.html missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const wsJs = (() => {
+    const p = join(__dirname, 'workspace.js');
+    if (!existsSync(p)) throw new Error(`admin/workspace.js missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+  const wsCss = (() => {
+    const p = join(__dirname, 'workspace.css');
+    if (!existsSync(p)) throw new Error(`admin/workspace.css missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  })();
+
+  // Vendored render libraries (mermaid/KaTeX) — boot-scanned into memory like
+  // the other UI assets; the filename map IS the allowlist, so no path from
+  // the request ever touches the filesystem.
+  const vendorFiles = (() => {
+    const dir = join(__dirname, 'vendor');
+    const out = new Map<string, { data: Buffer; type: string }>();
+    if (!existsSync(dir)) return out;
+    const typeOf = (n: string) =>
+      n.endsWith('.js') ? 'application/javascript'
+        : n.endsWith('.css') ? 'text/css'
+          : n.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream';
+    for (const name of readdirSync(dir)) {
+      const fp = join(dir, name);
+      if (statSync(fp).isFile() && /\.(js|css)$/.test(name)) {
+        out.set(name, { data: readFileSync(fp), type: typeOf(name) });
+      }
+    }
+    const fontsDir = join(dir, 'fonts');
+    if (existsSync(fontsDir)) {
+      for (const name of readdirSync(fontsDir)) {
+        if (name.endsWith('.woff2')) {
+          out.set(`fonts/${name}`, { data: readFileSync(join(fontsDir, name)), type: 'font/woff2' });
+        }
+      }
+    }
+    return out;
+  })();
+
+  app.get(['/admin/vendor/:file', '/admin/vendor/fonts/:file'], (req: Request, res: Response) => {
+    const key = req.path.startsWith('/admin/vendor/fonts/')
+      ? `fonts/${param(req.params.file)}`
+      : param(req.params.file);
+    const hit = vendorFiles.get(key);
+    if (!hit) { res.status(404).end(); return; }
+    // These change only on a deliberate version bump — let the browser keep
+    // them for a day instead of re-pulling 4MB per visit.
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.type(hit.type).send(hit.data);
+  });
+
   function setNoCache(res: Response): void {
     // Mobile Safari is notoriously eager to serve stale assets across
     // ritsu releases; these headers force a fresh fetch on every visit.
@@ -744,6 +837,22 @@ export function createAdminApp(deps: AdminDeps) {
     res.setHeader('Content-Type', 'text/css; charset=utf-8');
     setNoCache(res);
     res.send(uiCss);
+  });
+
+  // The agent-workspace page — the chat-first main surface. The classic admin
+  // panel stays at /admin; the root of the admin port lands here.
+  app.get('/', (_req: Request, res: Response) => { res.redirect('/admin/workspace'); });
+  app.get('/admin/workspace', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('html').send(wsHtml);
+  });
+  app.get('/admin/workspace.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(wsJs);
+  });
+  app.get('/admin/workspace.css', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('text/css').send(wsCss);
   });
 
   // ---- log level ---------------------------------------------------------
@@ -1071,6 +1180,47 @@ export function createAdminApp(deps: AdminDeps) {
    * same conversation persistence. The Tiles panel calls this with an
    * optional conversation_id to thread; omit to start fresh.
    */
+  /** Titles land only on untitled chats with exactly one exchange, and only
+   *  when a task endpoint is configured (secrets ns 'ingest') — otherwise the
+   *  derived first-60-chars title stands, as always. */
+  async function autoTitle(cid: number, userMsg: string, reply: string): Promise<void> {
+    const endpoint = secrets.get(INGEST_NS, 'endpoint')?.trim();
+    if (!endpoint || !userMsg) return;
+    const sm = conversations.listSummaries(undefined, 10_000, 'human').find(x => x.id === cid);
+    if (!sm || sm.message_count > 2) return;
+    const raw = (host as unknown as { db: { prepare(q: string): { get(...a: unknown[]): unknown } } }).db
+      .prepare('SELECT title FROM conversations WHERE id = ?').get(cid) as { title: string | null } | undefined;
+    if (raw?.title?.trim()) return;   // operator already named it
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 10_000);
+    try {
+      const res = await fetch(`${endpoint.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        signal: ctl.signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(secrets.get(INGEST_NS, 'api_key')?.trim()
+            ? { authorization: `Bearer ${secrets.get(INGEST_NS, 'api_key')!.trim()}` } : {}),
+        },
+        body: JSON.stringify({
+          model: secrets.get(INGEST_NS, 'model')?.trim() || 'qwen2.5-vl',
+          temperature: 0,
+          messages: [
+            { role: 'system', content: 'Name this conversation in at most six words. Reply with ONLY the title — no quotes, no punctuation at the end.' },
+            { role: 'user', content: `User: ${userMsg.slice(0, 2000)}\n\nAssistant: ${reply.slice(0, 2000)}` },
+          ],
+        }),
+      });
+      if (!res.ok) return;
+      const json = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+      const title = typeof json.choices?.[0]?.message?.content === 'string'
+        ? json.choices[0].message.content.trim().replace(/^["']|["']$/g, '').slice(0, 80) : '';
+      if (title) conversations.setTitle(cid, title);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   app.post('/admin/agents/:id/ask', async (req: Request, res: Response) => {
     const def = await defStore.read(param(req.params.id));
     if (!def) {
@@ -1083,7 +1233,7 @@ export function createAdminApp(deps: AdminDeps) {
     }
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
-    const { message, conversation_id, attachments } = ask;
+    const { message, conversation_id, attachments, parent_message_id } = ask;
     // Resolve the conversation up-front so the typing-dot SSE events
     // carry the same id as the message events that follow. If the
     // caller didn't supply one, this is the canonical human thread the
@@ -1101,7 +1251,14 @@ export function createAdminApp(deps: AdminDeps) {
       // need to differentiate which device/token. The UI hides the byline
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
-      const r = await host.get(def.id).onMessage({ message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments });
+      const r = await host.get(def.id).onMessage({
+        message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments,
+        ...(parent_message_id !== undefined ? { parent_message_id } : {}),
+      });
+      // Auto-title: a cheap task model (the ingest endpoint, when configured)
+      // names the chat after its first exchange — fire-and-forget, never
+      // blocking the reply, never touching a manually-set title.
+      autoTitle(resolvedConvoId, message, r.reply).catch(() => undefined);
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -1253,6 +1410,380 @@ export function createAdminApp(deps: AdminDeps) {
     const agent = await defStore.read(param(req.params.agent));
     if (agent) host.addOrReplace(agent);
     res.status(ok ? 204 : 404).end();
+  });
+
+  // ---- workspace UI: projects, files, default chat -----------------------
+  // The agent-workspace page (chat-first landing). Projects are organizational
+  // only; files are the agent's real workspace directories, served through the
+  // same containment guards the agent FS tools use.
+
+  const ProjectNameBody = z.object({ name: z.string().trim().min(1).max(120) }).strict();
+  const ConvProjectBody = z.object({ project_id: z.number().int().positive().nullable() }).strict();
+  const FileUploadBody = z.object({
+    path: z.string().min(1).max(1024),
+    data: z.string().max(34_000_000),   // base64; decoded cap enforced below
+    overwrite: z.boolean().optional(),
+  }).strict();
+  const FileTagBody = z.object({
+    path: z.string().min(1).max(1024),
+    project_id: z.number().int().positive().nullable(),
+  }).strict();
+
+  app.get('/admin/api/agents/:id/projects', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.json({ projects: projects.listFor(id) });
+  });
+
+  app.post('/admin/api/agents/:id/projects', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectNameBody);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.status(201).json(projects.create(id, body.name));
+  });
+
+  app.patch('/admin/api/projects/:pid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectNameBody);
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(projects.rename(pid, body.name) ? 200 : 404).json({ ok: true });
+  });
+
+  app.delete('/admin/api/projects/:pid', (req: Request, res: Response) => {
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(projects.delete(pid) ? 204 : 404).end();
+  });
+
+  // File a conversation under a project. Cross-agent filing is refused: the
+  // project and the conversation must belong to the same agent, or a chat
+  // would surface inside another agent's workspace.
+  app.patch('/admin/api/conversations/:cid/project', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ConvProjectBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const owner = conversations.agentIdOf(cid);
+    if (!owner) { res.status(404).json({ error: 'no such conversation' }); return; }
+    if (body.project_id != null) {
+      const project = projects.read(body.project_id);
+      if (!project) { res.status(404).json({ error: 'no such project' }); return; }
+      if (project.agent_id !== owner) {
+        res.status(400).json({ error: 'project belongs to a different agent' });
+        return;
+      }
+    }
+    conversations.setProject(cid, body.project_id);
+    res.json({ ok: true });
+  });
+
+  // The default chat: the stable human thread telegram and bare asks already
+  // share, plus which channel (if any) feeds it — so the UI can badge it.
+  app.get('/admin/api/agents/:id/default-chat', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    const bound = deps.channels.list().find(c => c.operator_agent_id === id && c.enabled);
+    res.json({
+      conversation_id: conversations.findOrStartHumanThread(id),
+      channel: bound ? { id: bound.id, kind: bound.kind, name: bound.name } : null,
+    });
+  });
+
+  app.get('/admin/api/agents/:id/files', (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    const listing = listFiles(workspaces.listFor(id));
+    const tags = projects.fileTagsFor(id);
+    res.json({
+      truncated: listing.truncated,
+      files: listing.files.map(f => ({ ...f, project_id: tags.get(f.path) ?? null })),
+    });
+  });
+
+  app.get('/admin/api/agents/:id/file', async (req: Request, res: Response) => {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    const r = await readWorkspaceFile(path, workspaces.listFor(param(req.params.id)));
+    if (!r.ok) { res.status(404).json({ error: r.reason }); return; }
+    const base = r.value.canonical.split('/').pop() ?? 'file';
+    const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_') || 'file';
+    // Always an opaque download: never let the browser interpret workspace
+    // content (an uploaded .html would otherwise render under this origin).
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.send(r.value.data);
+  });
+
+  app.post('/admin/api/agents/:id/files', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FileUploadBody);
+    if (!body) return;
+    const data = Buffer.from(body.data, 'base64');
+    const r = await writeWorkspaceFile(
+      body.path, data, workspaces.listFor(param(req.params.id)), body.overwrite === true,
+    );
+    if (!r.ok) { res.status(400).json({ error: r.reason }); return; }
+    res.status(201).json({ path: r.value.canonical, bytes: data.length });
+  });
+
+  app.delete('/admin/api/agents/:id/file', async (req: Request, res: Response) => {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    const r = await deleteWorkspaceFile(path, workspaces.listFor(param(req.params.id)));
+    if (!r.ok) { res.status(404).json({ error: r.reason }); return; }
+    projects.dropTag(r.value.canonical);   // a deleted file must not keep a tag
+    res.status(204).end();
+  });
+
+  app.post('/admin/api/agents/:id/files/tag', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FileTagBody);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (body.project_id != null) {
+      const project = projects.read(body.project_id);
+      if (!project) { res.status(404).json({ error: 'no such project' }); return; }
+      if (project.agent_id !== id) {
+        res.status(400).json({ error: 'project belongs to a different agent' });
+        return;
+      }
+    }
+    // Only a real, contained file can carry a tag — refuse paths outside the
+    // roots and paths that do not exist, so tags cannot be minted speculatively.
+    const canonical = await canonicalIfContained(body.path, workspaces.listFor(id));
+    if (!canonical) { res.status(404).json({ error: 'no such workspace file' }); return; }
+    projects.tagFile(id, canonical, body.project_id);
+    res.json({ ok: true, path: canonical });
+  });
+
+  const TitleBody = z.object({ title: z.string().trim().max(120).nullable() }).strict();
+  const FlagsBody = z.object({
+    pinned: z.boolean().optional(),
+    archived: z.boolean().optional(),
+  }).strict().refine(b => b.pinned !== undefined || b.archived !== undefined, { message: 'nothing to change' });
+  const ForkBody = z.object({ up_to_message_id: z.number().int().positive().optional() }).strict();
+
+  app.patch('/admin/api/conversations/:cid/flags', (req: Request, res: Response) => {
+    const body = parseBody(req, res, FlagsBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    // Archiving the default chat would hide the thread its channel feeds.
+    if (body.archived === true && conversations.isHumanAnchor(cid)) {
+      res.status(400).json({ error: 'the default chat cannot be archived' });
+      return;
+    }
+    res.status(conversations.setFlags(cid, body) ? 200 : 404).json({ ok: true });
+  });
+
+  app.post('/admin/api/conversations/:cid/fork', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ForkBody) ?? {};
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const id = conversations.fork(cid, body.up_to_message_id);
+    if (id === null) { res.status(404).json({ error: 'no such conversation' }); return; }
+    res.status(201).json({ conversation_id: id });
+  });
+
+  // Server-side search over one agent's chats: titles AND message bodies,
+  // multi-word ANDed across the chat. Archived chats are included — archive
+  // means out of the list, not forgotten.
+  app.get('/admin/api/search', (req: Request, res: Response) => {
+    const agentId = typeof req.query.agent_id === 'string' ? req.query.agent_id : '';
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!agentId || !q) { res.json({ results: [] }); return; }
+    const limit = clampLimit(req.query.limit, 30, 100);
+    res.json({ results: conversations.searchSummaries(agentId, q, limit) });
+  });
+
+
+  // Rename a chat. Null (or empty after trim) reverts to the derived title.
+  app.patch('/admin/api/conversations/:cid/title', (req: Request, res: Response) => {
+    const body = parseBody(req, res, TitleBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const title = body.title?.trim() ? body.title.trim() : null;
+    res.status(conversations.setTitle(cid, title) ? 200 : 404).json({ ok: true });
+  });
+
+  // Delete a chat outright (messages + attachments). The default chat is
+  // refused: it is the anchor telegram and bare asks share, and deleting it
+  // would silently promote the next-oldest thread into being the default.
+  app.delete('/admin/api/conversations/:cid', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    if (conversations.isHumanAnchor(cid)) {
+      res.status(400).json({ error: 'the default chat cannot be deleted' });
+      return;
+    }
+    res.status(conversations.deleteConversation(cid) ? 204 : 404).end();
+  });
+
+  // ---- skills, prompts, project prompt, tree ops, context plumbing -------
+
+  const SkillBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(300).default(''),
+    content: z.string().min(1).max(200_000),
+  }).strict();
+  const SkillPatch = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(300).optional(),
+    content: z.string().min(1).max(200_000).optional(),
+  }).strict();
+  const SkillBind = z.object({ skill_id: z.number().int().positive() }).strict();
+  const PromptBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    content: z.string().min(1).max(50_000),
+    agent_id: z.string().trim().min(1).max(120).nullable().default(null),
+  }).strict();
+  const ProjectPromptBody = z.object({ system_prompt: z.string().trim().max(20_000).nullable() }).strict();
+  const RegenBody = z.object({ assistant_message_id: z.number().int().positive() }).strict();
+  const FetchUrlBody = z.object({ url: z.string().trim().min(8).max(2048) }).strict();
+
+  app.get('/admin/api/skills', (_req: Request, res: Response) => {
+    res.json({ skills: skills.list() });
+  });
+  app.get('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    const row = Number.isInteger(sid) ? skills.read(sid) : null;
+    if (!row) { res.status(404).json({ error: 'no such skill' }); return; }
+    res.json(row);
+  });
+  app.post('/admin/api/skills', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillBody);
+    if (!body) return;
+    if (skills.readByName(body.name)) { res.status(409).json({ error: 'a skill with that name exists' }); return; }
+    res.status(201).json(skills.create(body.name, body.description, body.content));
+  });
+  app.patch('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillPatch);
+    if (!body) return;
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    res.status(skills.update(sid, body) ? 200 : 404).json({ ok: true });
+  });
+  app.delete('/admin/api/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    res.status(skills.delete(sid) ? 204 : 404).end();
+  });
+  app.post('/admin/api/agents/:id/skills', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, SkillBind);
+    if (!body) return;
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    if (!skills.read(body.skill_id)) { res.status(404).json({ error: 'no such skill' }); return; }
+    skills.bind(id, body.skill_id);
+    res.json({ ok: true });
+  });
+  app.delete('/admin/api/agents/:id/skills/:sid', (req: Request, res: Response) => {
+    const sid = Number(param(req.params.sid));
+    if (!Number.isInteger(sid)) { res.status(400).json({ error: 'sid must be integer' }); return; }
+    // Idempotent: an absent bind IS the requested state, not an error.
+    skills.unbind(param(req.params.id), sid);
+    res.json({ ok: true });
+  });
+
+  app.get('/admin/api/agents/:id/prompts', (req: Request, res: Response) => {
+    res.json({ prompts: prompts.listFor(param(req.params.id)) });
+  });
+  app.post('/admin/api/prompts', (req: Request, res: Response) => {
+    const body = parseBody(req, res, PromptBody);
+    if (!body) return;
+    res.status(201).json(prompts.create(body.agent_id, body.name, body.content));
+  });
+  const PromptPatch = z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    content: z.string().min(1).max(50_000).optional(),
+    agent_id: z.string().trim().min(1).max(120).nullable().optional(),
+  }).strict();
+
+  app.patch('/admin/api/prompts/:pid', (req: Request, res: Response) => {
+    const body = parseBody(req, res, PromptPatch);
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(prompts.update(pid, body) ? 200 : 404).json({ ok: true });
+  });
+  app.delete('/admin/api/prompts/:pid', (req: Request, res: Response) => {
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    res.status(prompts.delete(pid) ? 204 : 404).end();
+  });
+
+  // The sub-persona knob: a prompt every chat filed under the project inherits.
+  app.patch('/admin/api/projects/:pid/prompt', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ProjectPromptBody);
+    if (!body) return;
+    const pid = Number(param(req.params.pid));
+    if (!Number.isInteger(pid)) { res.status(400).json({ error: 'pid must be integer' }); return; }
+    const prompt = body.system_prompt?.trim() ? body.system_prompt.trim() : null;
+    res.status(projects.setSystemPrompt(pid, prompt) ? 200 : 404).json({ ok: true });
+  });
+
+  // A sibling answer to an existing assistant turn — the original stays.
+  app.post('/admin/api/conversations/:cid/regenerate', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, RegenBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const owner = conversations.agentIdOf(cid);
+    if (!owner) { res.status(404).json({ error: 'no such conversation' }); return; }
+    try {
+      const r = await host.get(owner).regenerate(cid, body.assistant_message_id);
+      res.json(r);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.patch('/admin/api/conversations/:cid/read', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    conversations.markRead(cid);
+    res.json({ ok: true });
+  });
+
+  // Fetch a page as fenced context for the composer. Same SSRF guard the
+  // agent's own WebFetch runs behind; the result is data, never instructions.
+  app.post('/admin/api/agents/:id/fetch-url', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, FetchUrlBody);
+    if (!body) return;
+    const v = validateUrl(body.url);
+    if (!v.ok) { res.status(400).json({ error: `url rejected: ${v.reason}` }); return; }
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20_000);
+      const r = await safeFetch(body.url, { signal: ctl.signal }).finally(() => clearTimeout(timer));
+      const raw = (await r.text()).slice(0, 2_000_000);
+      const text = htmlToText(raw).slice(0, 60_000);
+      const hostname = new URL(body.url).host;
+      res.json({ host: hostname, text: fenceUntrusted(`web page ${hostname}`, text) });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
+  // A past conversation as fenced context ("reference chat") — injected whole,
+  // no chunking; fenced because transcripts can carry channel-borne text.
+  app.post('/admin/api/conversations/:cid/as-context', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    if (!conversations.agentIdOf(cid)) { res.status(404).json({ error: 'no such conversation' }); return; }
+    const rows = conversations.recent(cid, 200);
+    const text = rows
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => `${m.role}: ${m.content}`)
+      .join('\n\n');
+    res.json({ text: fenceUntrusted(`referenced conversation ${cid}`, text) });
+  });
+
+  // Explicit new chat. A bare ask (no conversation_id) deliberately lands in
+  // the default thread, so starting a FRESH conversation needs its own verb.
+  app.post('/admin/api/agents/:id/conversations', async (req: Request, res: Response) => {
+    const id = param(req.params.id);
+    if (!(await defStore.read(id))) { res.status(404).json({ error: 'no such agent' }); return; }
+    res.status(201).json({ conversation_id: conversations.start(id) });
   });
 
   // ---- one-shot test pane (uses a draft prompt; never persisted) --------

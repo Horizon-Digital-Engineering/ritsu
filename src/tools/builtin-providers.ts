@@ -5,6 +5,10 @@ import { buildAgentMonitorMcp, MONITOR_TOOL_NAMES, MONITOR_MCP_NAME, type AgentM
 import { buildAgentEmailMcp, EMAIL_TOOL_NAMES, EMAIL_MCP_NAME } from './mcp-internal/email.js';
 import { buildAgentSocialMcp, SOCIAL_TOOL_NAMES, SOCIAL_MCP_NAME } from './mcp-internal/social.js';
 import { buildAgentSchedulerMcp, SCHEDULER_TOOL_NAMES, SCHEDULER_MCP_NAME } from './mcp-internal/scheduler.js';
+import {
+  buildAgentSkillsMcp, buildAgentHistoryMcp,
+  SKILLS_MCP_NAME, SKILLS_TOOL_NAMES, HISTORY_MCP_NAME, HISTORY_TOOL_NAMES,
+} from './mcp-internal/workspace-tools.js';
 import type { McpProvider } from './mcp-gateway.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
@@ -65,6 +69,28 @@ export function socialProvider(secrets: SecretStore, approvals: ApprovalStore): 
  * Scheduling. Absent during a scheduled run — a job that can schedule jobs has
  * no natural stopping point, and each agent turn it creates costs a model call.
  */
+export function skillsProvider(skills: import('./mcp-internal/workspace-tools.js').SkillsLookup): McpProvider {
+  return {
+    namespace: SKILLS_MCP_NAME,
+    build: (ctx) => ({
+      server: buildAgentSkillsMcp(ctx.agentId, skills, ctx.gate),
+      toolNames: [...SKILLS_TOOL_NAMES],
+      gatedTools: [],
+    }),
+  };
+}
+
+export function historyProvider(conversations: import('../conversation-store.js').ConversationStore): McpProvider {
+  return {
+    namespace: HISTORY_MCP_NAME,
+    build: (ctx) => ({
+      server: buildAgentHistoryMcp(ctx.agentId, conversations, ctx.gate),
+      toolNames: [...HISTORY_TOOL_NAMES],
+      gatedTools: [],
+    }),
+  };
+}
+
 export function schedulerProvider(store: JobStore): McpProvider {
   return {
     namespace: SCHEDULER_MCP_NAME,

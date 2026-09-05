@@ -2316,6 +2316,8 @@ const MCP_TOOL_MAP = {
   email: ['read_inbox', 'read_email', 'send_email'],
   social: ['read_mentions', 'read_my_posts', 'post_tweet', 'post_linkedin'],
   scheduler: ['schedule_create', 'schedule_list', 'schedule_remove', 'schedule_pause'],
+  skills: ['view_skill'],
+  history: ['search_chats', 'view_chat'],
 };
 
 /** The two runtimes name the same tool differently: the direct runtime reaches
@@ -2341,6 +2343,8 @@ function deriveAgentTools(agent, pluginManifests = []) {
         : '(can_call empty — ask_agent has no allowed targets)',
     },
     { server: 'scheduler', tools: MCP_TOOL_MAP.scheduler, note: 'suppressed inside a scheduled run' },
+    { server: 'skills', tools: MCP_TOOL_MAP.skills, note: 'bound skills load on demand' },
+    { server: 'history', tools: MCP_TOOL_MAP.history, note: 'own chats only; gated for crm/social agents' },
     ...(caps.has('manage_agents')
       ? [{ server: 'agent_admin', tools: MCP_TOOL_MAP.agent_admin, note: 'capability: manage_agents' }]
       : []),

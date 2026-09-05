@@ -6,6 +6,44 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent workspaces — a chat-first main page.** The admin port's root now
+  lands on a per-agent workspace: pick an agent and live in its chats, rather
+  than opening a panel from an admin grid. The classic admin panel is
+  unchanged at `/admin`.
+  - **Default chat.** Every agent has one stable thread — the same one a
+    bound channel (e.g. Telegram) already feeds — pinned at the top and
+    badged with the channel. Phone and desk land in the same conversation.
+  - **Projects.** Named groups an operator files chats and workspace files
+    under, per agent. Organizational only: deleting a project unfiles its
+    members, never deletes them, and filing is refused across agents.
+  - **Files.** Browse, upload, download, and delete files in the agent's
+    workspace directories from the UI, behind the same containment guards
+    (canonicalization, symlink refusal, pseudo-filesystem deny) the agent's
+    own filesystem tools run behind. Containment is enforced; the agent's
+    per-root permission flags gate the agent, not the operator. Downloads
+    are always served as opaque attachments.
+  - New API: project CRUD, conversation filing, file browse/upload/delete,
+    file→project tags (real, contained files only), explicit new-conversation
+    creation, and default-chat resolution.
+  - **Message tree.** Every message records its parent; editing a turn
+    branches instead of overwriting, regenerate produces sibling answers
+    navigated in place, and a turn's context follows its own path — the
+    other branch never leaks in. Fork still copies into a fresh chat.
+  - **Skills.** Shared markdown instruction sets bound per agent with a lazy
+    manifest — one line each in context, the body loaded on demand via
+    view_skill on either runtime.
+  - **Project instructions.** A project can carry a system prompt every chat
+    filed under it inherits — a sub-persona without minting a new agent.
+  - **Prompt library**, own-history tools (search_chats/view_chat: fenced,
+    own chats only, held for approval on injection-exposed agents),
+    URL-as-context and chat-as-context (both fenced), unread markers,
+    chat search/pin/archive/fork/export, markdown replies with code copy,
+    and optional auto-titling via the configured task endpoint.
+  - **Rendering.** Mermaid diagrams and KaTeX math, self-hosted (vendored
+    with their MIT licenses — the admin CSP allows no CDNs).
+
 Denial visibility + opt-in escalation approval, plus a runtime-hardening pass.
 Blocked inter-agent calls used to be invisible to the operator — a real,
 working security block looked like a misbehaving agent. Now every `ask_agent`

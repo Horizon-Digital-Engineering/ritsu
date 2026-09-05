@@ -74,6 +74,59 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id);
 
+-- Workspace projects: named groups an operator files chats and workspace
+-- files under, inside one agent's workspace UI. Purely organizational —
+-- deleting a project unfiles its members, it never deletes them. Distinct
+-- from agent_workspaces (filesystem roots) and from the projects PLUGIN
+-- (plugin_projects_* tables), which are unrelated concepts.
+CREATE TABLE IF NOT EXISTS agent_projects (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id   TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_projects_agent ON agent_projects(agent_id);
+
+-- File → project tags. path is the canonical absolute path of a file inside
+-- one of the agent's workspace roots. Tags can dangle when a file is moved or
+-- deleted on disk; readers filter against the live listing rather than
+-- pretending the table is authoritative over the filesystem.
+-- Saved prompt library, fired from the composer palette. agent_id null =
+-- available in every workspace. Content may carry typed variables
+-- ({{name | select:options=[a,b]}}) that the UI turns into a small form.
+CREATE TABLE IF NOT EXISTS workspace_prompts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id   TEXT,
+  name       TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- Skills: operator-authored markdown instruction sets. Bound to an agent they
+-- inject only a name+description manifest; the agent loads the body on demand
+-- via its view_skill tool — twenty bound skills cost no context until used.
+CREATE TABLE IF NOT EXISTS skills (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  content     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_skills (
+  agent_id  TEXT NOT NULL,
+  skill_id  INTEGER NOT NULL REFERENCES skills(id),
+  PRIMARY KEY (agent_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_project_files (
+  project_id INTEGER NOT NULL REFERENCES agent_projects(id),
+  path       TEXT NOT NULL,
+  PRIMARY KEY (project_id, path)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id INTEGER NOT NULL REFERENCES conversations(id),
@@ -502,6 +555,38 @@ function migrate(db: Db): void {
   // Inter-agent conversations: caller_agent_id is null for human-initiated
   // threads, set to the calling agent's id for agent-to-agent threads.
   addColumnIfMissing(db, 'conversations', 'caller_agent_id', 'TEXT');
+  // Which workspace project a conversation is filed under (null = unfiled).
+  addColumnIfMissing(db, 'conversations', 'project_id', 'INTEGER');
+  // Operator-set title. Null = derive from the first user message, as always.
+  addColumnIfMissing(db, 'conversations', 'title', 'TEXT');
+  // Sidebar organization. Archived chats leave the list but stay searchable.
+  addColumnIfMissing(db, 'conversations', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'conversations', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+  // When the operator last opened this chat in the workspace UI. A newer
+  // message than this = unread dot; channel-fed turns land while nobody looks.
+  addColumnIfMissing(db, 'conversations', 'read_at', 'INTEGER');
+  // Message tree. Every message records the message it answers or follows —
+  // regenerate makes SIBLINGS under one parent instead of overwriting, and the
+  // UI picks a path. Null = a root turn.
+  addColumnIfMissing(db, 'messages', 'parent_message_id', 'INTEGER');
+  // Backfill: pre-tree history is linear by definition, so thread it once.
+  // Guarded on "no threaded message exists yet": after the first backfill (or
+  // the first real turn) that's false forever, so a deliberate root sibling
+  // created by editing a turn is never re-threaded by a later boot.
+  const hasTree = db
+    .prepare('SELECT 1 AS x FROM messages WHERE parent_message_id IS NOT NULL LIMIT 1')
+    .get() as { x: number } | undefined;
+  if (!hasTree) {
+    db.exec(`
+      UPDATE messages SET parent_message_id = (
+        SELECT MAX(m2.id) FROM messages m2
+        WHERE m2.conversation_id = messages.conversation_id AND m2.id < messages.id
+      )
+      WHERE parent_message_id IS NULL
+    `);
+  }
+  // A project can carry a system prompt every chat filed under it inherits.
+  addColumnIfMissing(db, 'agent_projects', 'system_prompt', 'TEXT');
   // Per-message caller attribution: identifies who/what produced a given user
   // turn within a conversation. Values: 'admin-ui' for the admin chat panel,
   // an MCP token's name (or OAuth client_id) for bearer-authed calls, or the
