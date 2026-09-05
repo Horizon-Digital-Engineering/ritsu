@@ -198,34 +198,32 @@ function toast(msg, kind = 'ok') {
 // here, hidden when the active group has ≤1 tab) = sub-tabs of the active
 // group. The pane is keyed off the *tab* id, same as before, so existing
 // loaders / pane ids didn't have to move.
+// Studio grouping: this page is the "build & configure" area — the watch
+// surfaces (approvals queue, live logs at a glance) live on /admin/ops, and
+// talking to agents lives on /admin/workspace. The rail switches areas.
 const NAV_GROUPS = [
-  { id: 'dashboard', label: 'Dashboard', tabs: [
-    { id: 'tiles', label: 'Dashboard' },
-  ] },
-  { id: 'approvals', label: 'Approvals', tabs: [
-    { id: 'approvals', label: 'Approvals' },
-  ] },
   { id: 'agents', label: 'Agents', tabs: [
+    { id: 'tiles',         label: 'Overview' },
     { id: 'agents',        label: 'Agents' },
     { id: 'workspaces',    label: 'Workspaces' },
     { id: 'memories',      label: 'Memories' },
     { id: 'conversations', label: 'Conversations' },
     { id: 'tools',         label: 'Tools' },
   ] },
-  { id: 'comms', label: 'Comms', tabs: [
+  { id: 'extensions', label: 'Extensions', tabs: [
+    { id: 'extensions', label: 'Extensions' },
+  ] },
+  { id: 'platform', label: 'Platform', tabs: [
     { id: 'channels', label: 'Channels' },
     { id: 'jobs', label: 'Jobs' },
     { id: 'mcp',      label: 'MCP' },
   ] },
-  { id: 'extensions', label: 'Extensions', tabs: [
-    { id: 'extensions', label: 'Extensions' },
-  ] },
-  { id: 'auth', label: 'Auth', tabs: [
+  { id: 'access', label: 'Access', tabs: [
     { id: 'tokens',        label: 'Tokens' },
     { id: 'api-keys',      label: 'API Keys' },
     { id: 'oauth-clients', label: 'OAuth Clients' },
   ] },
-  { id: 'system', label: 'System', tabs: [
+  { id: 'server', label: 'Server', tabs: [
     { id: 'health',   label: 'Health' },
     { id: 'memory',   label: 'Memory' },
     { id: 'settings', label: 'Settings' },
@@ -240,7 +238,7 @@ const TAB_TO_GROUP = (() => {
   for (const g of NAV_GROUPS) for (const t of g.tabs) m.set(t.id, g.id);
   return m;
 })();
-let activeGroup = 'dashboard';
+let activeGroup = 'agents';
 let activeTab   = 'tiles';
 
 function renderNav() {
@@ -279,7 +277,6 @@ function switchTab(name) {
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
   if (pluginTabs[name]) pluginTabs[name](document.getElementById(`pane-${name}`));
-  if (name === 'approvals') loadApprovalsTab();
   if (name === 'extensions') loadExtensionsTab();
   if (name === 'mcp') loadMcpTools();
   else if (name === 'tokens') refreshTokens();
@@ -2603,14 +2600,13 @@ function renderAudit() {
 
 // ---- approvals (human-in-the-loop) ------------------------------------
 // A gated tool call blocks the agent's turn on a pending row server-side.
-// The operator approves/rejects here (the Approvals tab) or inline in the
-// chat panel — both share the same endpoints + the /approvals/stream SSE.
-// The nav badge stays live on EVERY tab via a global stream opened at boot.
-let approvalsSubtab = 'pending';
+// The QUEUE lives on the operations board (/admin/ops); this page keeps the
+// rail badge live plus the inline cards in the slide-in chat panel — all
+// three surfaces share the same endpoints + the /approvals/stream SSE.
 let approvalsSseAbort = null;
 
-/** Open the global approvals stream once. Keeps the nav badge + (if shown)
- *  the Approvals list live regardless of which tab is active. */
+/** Open the global approvals stream once. Keeps the rail badge live
+ *  regardless of which tab is active. */
 function ensureApprovalsSse() {
   if (approvalsSseAbort) return;
   approvalsSseAbort = new AbortController();
@@ -2619,9 +2615,9 @@ function ensureApprovalsSse() {
 
 function handleApprovalsSseEvent(ev) {
   refreshApprovalBadge();
-  if (activeTab === 'approvals') loadApprovalsList();
   // The chat panel handles its own inline copy via the same stream
-  // (handlePanelApprovalEvent) when it's open.
+  // (handlePanelApprovalEvent) when it's open; the queue itself lives on
+  // the operations board (/admin/ops).
 }
 
 async function refreshApprovalBadge() {
@@ -2631,103 +2627,13 @@ async function refreshApprovalBadge() {
   } catch { /* badge is best-effort */ }
 }
 
+/** The rail's Operations icon carries the pending count — the queue itself
+ *  lives on /admin/ops. */
 function setApprovalBadge(n) {
-  const el = $('nav-approvals-badge');
+  const el = $('rail-ops-badge');
   if (!el) return;
   el.textContent = String(n);
   el.classList.toggle('hidden', !n);
-}
-
-function loadApprovalsTab() {
-  ensureApprovalsSse();
-  loadApprovalsList();
-}
-
-function setApprovalsSubtab(sub) {
-  approvalsSubtab = sub;
-  document.querySelectorAll('#approvals-subtabs .conv-kind-tab').forEach(b =>
-    b.classList.toggle('active', b.dataset.sub === sub));
-  loadApprovalsList();
-}
-
-async function loadApprovalsList() {
-  const target = $('approvals-list');
-  if (!target) return;
-  try {
-    if (approvalsSubtab === 'blocked') {
-      const { denials } = await api('GET', '/admin/api/comms-denials?limit=200');
-      renderDenialsList(denials);
-      $('approvals-summary').textContent = denials.length
-        ? `${denials.length} blocked inter-agent call${denials.length === 1 ? '' : 's'} — refused by a guard, not a lying agent.`
-        : 'No blocked calls.';
-      return;
-    }
-    const { approvals } = await api('GET', `/admin/api/approvals?state=${approvalsSubtab}&limit=200`);
-    renderApprovalsList(approvals);
-    if (approvalsSubtab === 'pending') {
-      setApprovalBadge(approvals.length);
-      $('approvals-summary').textContent = approvals.length
-        ? `${approvals.length} tool call${approvals.length === 1 ? '' : 's'} waiting on your sign-off.`
-        : 'Nothing waiting — every agent is unblocked.';
-    } else {
-      $('approvals-summary').textContent = 'Recently approved / rejected.';
-    }
-  } catch (e) {
-    target.innerHTML = `<div class="txt-err">${esc(e.message)}</div>`;
-  }
-}
-
-function renderApprovalsList(list) {
-  const target = $('approvals-list');
-  if (!list.length) {
-    target.innerHTML = approvalsSubtab === 'pending'
-      ? '<div class="ap-empty">No pending approvals — nothing needs you right now.</div>'
-      : '<div class="ap-empty">No decisions yet.</div>';
-    return;
-  }
-  target.innerHTML = list.map(a => a.state === 'pending'
-    ? approvalCardHtml(a)
-    : approvalStampHtml(a)).join('');
-}
-
-/** Blocked inter-agent calls (ask_agent refused by a guard). Previously these
- *  were invisible — a denied call writes no transcript message, only a log
- *  line — so this is the surface that makes them visible. */
-function renderDenialsList(denials) {
-  const target = $('approvals-list');
-  if (!denials.length) {
-    target.innerHTML = '<div class="ap-empty">No blocked calls — no agent has been refused an inter-agent call.</div>';
-    return;
-  }
-  target.innerHTML = denials.map(denialRowHtml).join('');
-}
-
-function denialReasonLabel(r) {
-  return ({
-    not_in_allowlist: 'not in allowlist',
-    escalation: 'capability escalation',
-    cycle: 'call cycle',
-    depth: 'call depth',
-    inflight: 'too many in flight',
-  })[r] || r;
-}
-
-function denialRowHtml(d) {
-  const cls = d.reason === 'escalation' ? ' denial-escalation' : '';
-  const detail = d.detail ? `<span class="denial-detail">${esc(d.detail)}</span>` : '';
-  const msg = d.message
-    ? `<div class="denial-msg" title="${esc(d.message)}">“${esc(d.message.length > 240 ? d.message.slice(0, 240) + '…' : d.message)}”</div>`
-    : '';
-  return `<div class="denial-row${cls}">`
-    + `<div class="denial-head">`
-    +   `<span class="denial-x">✗</span>`
-    +   `<span class="denial-pair"><code>${esc(d.caller)}</code> → <code>${esc(d.target)}</code></span>`
-    +   `<span class="denial-reason">${esc(denialReasonLabel(d.reason))}</span>`
-    +   detail
-    +   `<span class="denial-ago">${approvalAgo(d.created_at)}</span>`
-    + `</div>`
-    + msg
-    + `</div>`;
 }
 
 /** Glyph for an approval, by tool name — quick visual recognition. */
@@ -3122,8 +3028,6 @@ const ACTIONS = {
   'save-linkedin-ext':      () => saveConnectorExt('linkedin'),
 
   // approvals tab + inline cards
-  'approvals-refresh':      () => loadApprovalsList(),
-  'approvals-subtab':       (el) => setApprovalsSubtab(el.dataset.sub),
   'approve-approval':       (el) => approveApprovalClick(el.closest('.approval-card')),
   'reject-approval':        (el) => rejectApprovalClick(el.closest('.approval-card')),
   'toggle-approval-detail': (el) => toggleApprovalDetail(el.closest('.approval-card')),

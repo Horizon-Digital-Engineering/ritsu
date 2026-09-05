@@ -19,9 +19,44 @@
 }
 * { box-sizing: border-box; }
 body {
-  margin: 0; background: var(--bg); color: var(--fg);
+  margin: 0 0 0 60px; background: var(--bg); color: var(--fg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px; line-height: 1.5;
+}
+
+/* ---- area rail ---------------------------------------------------------
+   The 60px global switcher between the three surfaces: Workspace (talk),
+   Operations (watch), Studio (build). Same markup + classes on all three
+   pages; each stylesheet carries its own copy, like the tokens. */
+.rail {
+  position: fixed; inset: 0 auto 0 0; width: 60px; z-index: 100;
+  background: #0b0d11; border-right: 1px solid #1c212b;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 14px 0; gap: 6px;
+}
+.rail-logo {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, #6ea8ff, #9a7bff);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 14px; font-weight: 800; font-size: 15px; color: #0b0d11;
+  text-decoration: none;
+}
+.rail-btn {
+  position: relative;
+  width: 44px; height: 44px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+}
+.rail-btn:hover { color: var(--fg); background: var(--panel-2); }
+.rail-btn.active {
+  color: var(--accent); background: rgba(110, 168, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.25);
+}
+.rail-badge {
+  position: absolute; top: 4px; right: 4px;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--warn); color: #211a08;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
 }
 a { color: var(--accent); }
 code, pre { font-family: inherit; }
@@ -702,6 +737,10 @@ body.panel-open { overflow: hidden; touch-action: none; }
    horizontally so it never wraps awkwardly. */
 @media (max-width: 900px) {
   main { padding: 1rem; }
+  /* The area rail yields its 60px to content on phones; a proper mobile
+     switcher is the next pass. */
+  .rail { display: none; }
+  body { margin-left: 0; }
   header { padding: 0.6rem 1rem; gap: 0.6rem; flex-wrap: wrap; }
   header .info { width: 100%; margin-left: 0; }
   /* Wrap tabs onto a second row instead of horizontally scrolling —
