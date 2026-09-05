@@ -101,8 +101,7 @@ jobs:
         with:
           name: sbom
           path: |
-            ritsu-*-sbom.*.json
-            ritsu-*-sbom.*.json.sigstore.json
+            ritsu-*-sbom.*
             ritsu-*-provenance.intoto.jsonl
 
       - name: Attach SBOMs + signatures + provenance to release
@@ -110,8 +109,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # One glob per family, NO overlap: ritsu-*-sbom.*.json also matched
+          # the .sigstore.json bundles, so each bundle appeared twice in the
+          # arg list and the second occurrence 404'd clobbering the first.
           gh release upload "$REF_NAME" \
-            ritsu-*-sbom.*.json \
-            ritsu-*-sbom.*.json.sigstore.json \
+            ritsu-*-sbom.* \
             ritsu-*-provenance.intoto.jsonl \
             --clobber
