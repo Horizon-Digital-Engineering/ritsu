@@ -570,3 +570,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* chat header ⋯ menu */
 .menu-wrap { position: relative; }
 .menu-wrap .row-menu { right: 0; left: auto; }
+
+.side-item-snippet {
+  display: block; font-size: 0.72rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.side-group-toggle {
+  background: none; border: 0; cursor: pointer; width: 100%; text-align: left;
+  font: inherit; color: inherit; padding: inherit;
+}
+.side-group-toggle:hover { color: var(--fg); }

@@ -530,6 +530,9 @@ function migrate(db: Db): void {
   addColumnIfMissing(db, 'conversations', 'project_id', 'INTEGER');
   // Operator-set title. Null = derive from the first user message, as always.
   addColumnIfMissing(db, 'conversations', 'title', 'TEXT');
+  // Sidebar organization. Archived chats leave the list but stay searchable.
+  addColumnIfMissing(db, 'conversations', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'conversations', 'archived', 'INTEGER NOT NULL DEFAULT 0');
   // Per-message caller attribution: identifies who/what produced a given user
   // turn within a conversation. Values: 'admin-ui' for the admin chat panel,
   // an MCP token's name (or OAuth client_id) for bearer-authed calls, or the

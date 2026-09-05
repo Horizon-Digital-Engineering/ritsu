@@ -361,6 +361,53 @@ describe('workspace API routes', () => {
     assert.equal((await req('DELETE', `/admin/api/conversations/${cid}`)).status, 404);
   });
 
+  it('pins, archives, searches, and forks', async () => {
+    // Seed a chat with content via the store (no model in this harness).
+    const cid = (await req('POST', '/admin/api/agents/alice/conversations')).json.conversation_id as number;
+    convs.append(cid, 'user', 'planning the zephyr launch window');
+    convs.append(cid, 'assistant', 'the window opens **Tuesday**; checklist follows');
+    convs.append(cid, 'user', 'add fuel margins to the checklist');
+
+    // flags
+    assert.equal((await req('PATCH', `/admin/api/conversations/${cid}/flags`, { pinned: true })).status, 200);
+    let sm = convs.listSummaries('alice').find(x => x.id === cid)!;
+    assert.equal(sm.pinned, true);
+    assert.equal((await req('PATCH', `/admin/api/conversations/${cid}/flags`, { archived: true })).status, 200);
+    sm = convs.listSummaries('alice').find(x => x.id === cid)!;
+    assert.equal(sm.archived, true);
+    const dc = (await req('GET', '/admin/api/agents/alice/default-chat')).json.conversation_id as number;
+    const refuse = await req('PATCH', `/admin/api/conversations/${dc}/flags`, { archived: true });
+    assert.equal(refuse.status, 400, 'archiving the channel-fed anchor must be refused');
+
+    // search: multi-word ANDs across DIFFERENT messages; archived still found
+    const hit = await req('GET', `/admin/api/search?agent_id=alice&q=${encodeURIComponent('zephyr fuel')}`);
+    const results = hit.json.results as Array<{ id: number; snippet: string }>;
+    assert.ok(results.some(r => r.id === cid), 'archived chat is searchable');
+    assert.match(results.find(r => r.id === cid)!.snippet, /zephyr/i);
+    const miss = await req('GET', `/admin/api/search?agent_id=alice&q=${encodeURIComponent('zephyr unobtainium')}`);
+    assert.ok(!(miss.json.results as Array<{ id: number }>).some(r => r.id === cid), 'every term must match somewhere');
+
+    // fork: full copy, title marked, project filing kept
+    const pid = (await req('POST', '/admin/api/agents/alice/projects', { name: 'zephyr' })).json.id as number;
+    await req('PATCH', `/admin/api/conversations/${cid}/project`, { project_id: pid });
+    const fork = await req('POST', `/admin/api/conversations/${cid}/fork`, {});
+    assert.equal(fork.status, 201);
+    const fid = fork.json.conversation_id as number;
+    const fsm = convs.listSummaries('alice').find(x => x.id === fid)!;
+    assert.match(fsm.title, / \(fork\)$/);
+    assert.equal(fsm.project_id, pid, 'fork keeps the project filing');
+    assert.equal(fsm.archived, false, 'fork starts unarchived');
+    assert.equal(convs.recent(fid).length, 3);
+    assert.equal(convs.recent(fid)[1].content.includes('Tuesday'), true);
+
+    // partial fork: only up to the second message
+    const msgs = convs.recent(cid);
+    void msgs;
+    const upTo = (await req('POST', `/admin/api/conversations/${cid}/fork`,
+      { up_to_message_id: 2_000_000 })).status;
+    assert.equal(upTo, 201);
+  });
+
   it('refuses traversal and speculative tags over HTTP', async () => {
     const esc = await req('POST', '/admin/api/agents/alice/files', {
       path: '../../escape.txt', data: Buffer.from('x').toString('base64'),

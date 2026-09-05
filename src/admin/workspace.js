@@ -192,6 +192,10 @@ let filesLoaded = false;
 let filesLoading = false;
 let convoId = null;         // the open chat
 let searchQuery = '';
+/** Server-side hits for the current query; null = not searching. */
+let searchHits = null;
+let searchSeq = 0;
+let showArchived = false;
 let sending = false;
 let attachments = [];       // pasted/dropped/picked but not yet sent
 const inFlight = new Set(); // conversation ids someone is mid-turn on
@@ -383,35 +387,74 @@ const CHAT_GROUPS = [
   { label: 'Older', max: Infinity },
 ];
 
+/** Query the server for matches in message BODIES — the client filter only
+ *  sees titles. Sequenced so a stale response can't overwrite a newer one. */
+async function runDeepSearch() {
+  const q = searchQuery;
+  if (!q || q.length < 2 || !agentId) { searchHits = null; return; }
+  const seq = ++searchSeq;
+  try {
+    const r = await api('GET', `/admin/api/search?agent_id=${encodeURIComponent(agentId)}&q=${encodeURIComponent(q)}`);
+    if (seq !== searchSeq || searchQuery !== q) return;
+    searchHits = r.results || [];
+    renderSidebar();
+  } catch { /* search is best-effort; the client filter already ran */ }
+}
+
 function renderChatList() {
   const target = $('side-chats');
+
+  // Deep-search mode: server hits (titles AND bodies, archived included),
+  // each with a snippet of where it matched.
+  if (searchQuery && searchHits) {
+    if (!searchHits.length) { target.innerHTML = '<div class="side-empty">no match</div>'; return; }
+    target.innerHTML = '<div class="side-group">Search results</div>'
+      + searchHits.map(c => chatRowHtml(c, { snippet: c.snippet })).join('');
+    return;
+  }
+
   // Filed chats live under their project; the default chat is pinned above.
   const list = convos
     .filter(c => c.id !== defaultChat?.conversation_id && c.project_id == null)
     .filter(c => matchesSearch(c.title || '(new chat)'));
-  if (!list.length) {
+  if (!list.length && !convos.some(c => c.archived)) {
     target.innerHTML = convos.length
       ? '<div class="side-empty">no match</div>'
       : '<div class="side-empty">No chats yet.</div>';
     return;
   }
+  const live = list.filter(c => !c.archived);
+  const pinned = live.filter(c => c.pinned);
+  const rest = live.filter(c => !c.pinned);
+  const archived = list.filter(c => c.archived);
+
   const now = Date.now() / 1000;
   const buckets = CHAT_GROUPS.map(g => ({ ...g, rows: [] }));
-  for (const c of list) {
+  for (const c of rest) {
     const age = now - (c.started_at || 0);
     (buckets.find(b => age < b.max) ?? buckets[buckets.length - 1]).rows.push(c);
   }
-  target.innerHTML = buckets.filter(b => b.rows.length).map(b =>
-    `<div class="side-group">${b.label}</div>` + b.rows.map(chatRowHtml).join(''),
+  let html = '';
+  if (pinned.length) html += '<div class="side-group">Pinned</div>' + pinned.map(c => chatRowHtml(c)).join('');
+  html += buckets.filter(b => b.rows.length).map(b =>
+    `<div class="side-group">${b.label}</div>` + b.rows.map(c => chatRowHtml(c)).join(''),
   ).join('');
+  if (archived.length) {
+    html += `<button type="button" class="side-group side-group-toggle" data-action="toggle-archived">`
+      + `Archived (${archived.length}) ${showArchived ? '▾' : '▸'}</button>`;
+    if (showArchived) html += archived.map(c => chatRowHtml(c)).join('');
+  }
+  target.innerHTML = html || '<div class="side-empty">No chats yet.</div>';
 }
 
-function chatRowHtml(c) {
+function chatRowHtml(c, opts = {}) {
   const active = isChatOpen(c.id) ? ' active' : '';
-  const title = c.title?.trim() ? c.title : '(new chat)';
+  const title = (c.pinned ? '📌 ' : '') + (c.title?.trim() ? c.title : '(new chat)');
+  const snippet = opts.snippet
+    ? `<span class="side-item-snippet">${esc(opts.snippet)}</span>` : '';
   return `<div class="side-row">
     <button type="button" class="side-item${active}" data-action="open-chat" data-cid="${c.id}">
-      <span class="side-item-title">${esc(title)}</span>
+      <span class="side-item-title">${esc(title)}</span>${snippet}
       <span class="side-item-age">${fmtAge(c.started_at)}</span>
     </button>
   </div>`;
@@ -443,9 +486,14 @@ function renderChatHead() {
 
   const isDefault = convoId === defaultChat?.conversation_id;
   $('chat-menu-wrap').classList.toggle('hidden', !convoId);
-  // Renaming the default chat is fine; deleting the anchor is refused
-  // server-side too — hiding the option just keeps the menu honest.
+  // Renaming the default chat is fine; deleting/archiving the anchor is
+  // refused server-side too — hiding the options just keeps the menu honest.
   $('chat-menu-delete').classList.toggle('hidden', isDefault);
+  $('chat-menu-archive').classList.toggle('hidden', isDefault);
+  $('chat-menu-pin').classList.toggle('hidden', isDefault);
+  const cRow = convos.find(x => x.id === convoId);
+  $('chat-menu-pin').textContent = cRow?.pinned ? 'Unpin' : 'Pin';
+  $('chat-menu-archive').textContent = cRow?.archived ? 'Unarchive' : 'Archive';
 
   // The default chat is the pinned always-first thread — filing it under a
   // project would leave it in two places at once, so it isn't offered.
@@ -567,7 +615,8 @@ function renderTranscript(messages) {
       const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>');
       const copy = m.content
         ? `<button type="button" class="msg-copy" data-action="copy-msg" data-idx="${i}" aria-label="Copy message">copy</button>` : '';
-      return `<div class="msg ${esc(m.role)}">${byline}${body}${atts}${copy}</div>`;
+      const when = m.created_at ? ` title="${esc(new Date(m.created_at * 1000).toLocaleString())}"` : '';
+      return `<div class="msg ${esc(m.role)}"${when}>${byline}${body}${atts}${copy}</div>`;
     }).join('');
   }
   if (convoId !== null && inFlight.has(convoId)) ensurePendingBubble();
@@ -1376,6 +1425,53 @@ const ACTIONS = {
   'toggle-chat-menu': () => {
     $('chat-menu').classList.toggle('open');
   },
+  'toggle-archived': () => { showArchived = !showArchived; renderSidebar(); },
+  'pin-chat': async () => {
+    closeMenus();
+    const c = convos.find(x => x.id === convoId);
+    if (!c) return;
+    try {
+      await api('PATCH', `/admin/api/conversations/${convoId}/flags`, { pinned: !c.pinned });
+      c.pinned = !c.pinned;
+      renderChatHead(); renderSidebar();
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  'archive-chat': async () => {
+    closeMenus();
+    const c = convos.find(x => x.id === convoId);
+    if (!c) return;
+    try {
+      await api('PATCH', `/admin/api/conversations/${convoId}/flags`, { archived: !c.archived });
+      c.archived = !c.archived;
+      renderChatHead(); renderSidebar();
+      toast(c.archived ? 'archived — still searchable' : 'unarchived');
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  'fork-chat': async () => {
+    closeMenus();
+    if (!convoId) return;
+    try {
+      const r = await api('POST', `/admin/api/conversations/${convoId}/fork`, {});
+      await loadAgentContext();
+      go(`/a/${encodeURIComponent(agentId)}/c/${r.conversation_id}`);
+      toast('forked');
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  'export-chat': () => {
+    closeMenus();
+    if (!lastRendered.length) { toast('nothing to export'); return; }
+    const title = convoTitle(convoId);
+    const lines = [`# ${title}`, ''];
+    for (const m of lastRendered) {
+      lines.push(`## ${m.role}${m.caller_label ? ` (${m.caller_label})` : ''}`, '', m.content, '');
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${title.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) || 'chat'}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
   'rename-chat': async () => {
     closeMenus();
     if (!convoId) return;
@@ -1495,7 +1591,8 @@ composer.addEventListener('drop', (e) => {
 
 $('side-search').addEventListener('input', debounce((e) => {
   searchQuery = e.target.value.trim().toLowerCase();
-  renderSidebar();
+  renderSidebar();          // instant client-side pass
+  runDeepSearch();          // then the server pass over message bodies
 }, 120));
 
 window.addEventListener('hashchange', () => { onRoute(); });

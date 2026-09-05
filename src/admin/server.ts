@@ -1436,6 +1436,45 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   const TitleBody = z.object({ title: z.string().trim().max(120).nullable() }).strict();
+  const FlagsBody = z.object({
+    pinned: z.boolean().optional(),
+    archived: z.boolean().optional(),
+  }).strict().refine(b => b.pinned !== undefined || b.archived !== undefined, { message: 'nothing to change' });
+  const ForkBody = z.object({ up_to_message_id: z.number().int().positive().optional() }).strict();
+
+  app.patch('/admin/api/conversations/:cid/flags', (req: Request, res: Response) => {
+    const body = parseBody(req, res, FlagsBody);
+    if (!body) return;
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    // Archiving the default chat would hide the thread its channel feeds.
+    if (body.archived === true && conversations.isHumanAnchor(cid)) {
+      res.status(400).json({ error: 'the default chat cannot be archived' });
+      return;
+    }
+    res.status(conversations.setFlags(cid, body) ? 200 : 404).json({ ok: true });
+  });
+
+  app.post('/admin/api/conversations/:cid/fork', (req: Request, res: Response) => {
+    const body = parseBody(req, res, ForkBody) ?? {};
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid)) { res.status(400).json({ error: 'cid must be integer' }); return; }
+    const id = conversations.fork(cid, body.up_to_message_id);
+    if (id === null) { res.status(404).json({ error: 'no such conversation' }); return; }
+    res.status(201).json({ conversation_id: id });
+  });
+
+  // Server-side search over one agent's chats: titles AND message bodies,
+  // multi-word ANDed across the chat. Archived chats are included — archive
+  // means out of the list, not forgotten.
+  app.get('/admin/api/search', (req: Request, res: Response) => {
+    const agentId = typeof req.query.agent_id === 'string' ? req.query.agent_id : '';
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!agentId || !q) { res.json({ results: [] }); return; }
+    const limit = clampLimit(req.query.limit, 30, 100);
+    res.json({ results: conversations.searchSummaries(agentId, q, limit) });
+  });
+
 
   // Rename a chat. Null (or empty after trim) reverts to the derived title.
   app.patch('/admin/api/conversations/:cid/title', (req: Request, res: Response) => {

@@ -13,6 +13,8 @@ export interface MessageAttachment {
 export interface ConversationMessage {
   role: MessageRole;
   content: string;
+  /** Unix seconds. Present on rows read back from the store. */
+  created_at?: number;
   /** Who produced this turn. Null for legacy rows / assistant turns / system
    *  injections; for user turns it's 'admin-ui', a bearer token's name (or
    *  OAuth client_id), or the calling agent's id. */
@@ -42,6 +44,15 @@ export interface ConversationSummary {
   title: string;
   /** Workspace project this conversation is filed under; null = unfiled. */
   project_id: number | null;
+  pinned: boolean;
+  /** Archived chats leave the sidebar list but remain searchable. */
+  archived: boolean;
+}
+
+/** One server-side search hit: the summary plus where the match was found. */
+export interface SearchHit extends ConversationSummary {
+  /** A fragment of the first matching message; empty for title-only matches. */
+  snippet: string;
 }
 
 /** 'human' = caller_agent_id IS NULL; 'agent' = inter-agent threads; 'all' = both. */
@@ -88,6 +99,21 @@ export interface ConversationStore {
   setProject(conversation_id: number, project_id: number | null): boolean;
   /** Operator-set title; null reverts to deriving from the first user turn. */
   setTitle(conversation_id: number, title: string | null): boolean;
+  /** Pin/unpin, archive/unarchive. Only the provided flags change. */
+  setFlags(conversation_id: number, flags: { pinned?: boolean; archived?: boolean }): boolean;
+  /**
+   * Search one agent's human chats by title AND message bodies. Multi-word
+   * queries AND across the chat, order-independent — different words may
+   * match different messages. Archived chats are included by design: archive
+   * means "out of the list", not "forgotten".
+   */
+  searchSummaries(agent_id: string, q: string, limit?: number): SearchHit[];
+  /**
+   * Copy a conversation (optionally only up to a message id) into a fresh one
+   * with " (fork)" appended to its title. Keeps the project filing. Returns
+   * the new conversation id, or null for an unknown conversation.
+   */
+  fork(conversation_id: number, up_to_message_id?: number): number | null;
   /** True when this is the agent's canonical human thread — the anchor
    *  telegram and bare asks share. Never creates one. */
   isHumanAnchor(conversation_id: number): boolean;
@@ -168,7 +194,7 @@ export class SqliteConversationStore implements ConversationStore {
     // order with the most recent turn at the end.
     const rows = this.db
       .prepare(
-        `SELECT id, role, content, caller_label FROM messages
+        `SELECT id, role, content, caller_label, created_at FROM messages
          WHERE conversation_id = ?
          ORDER BY id DESC
          LIMIT ?`,
@@ -232,6 +258,97 @@ export class SqliteConversationStore implements ConversationStore {
     return r.changes > 0;
   }
 
+  setFlags(conversation_id: number, flags: { pinned?: boolean; archived?: boolean }): boolean {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (flags.pinned !== undefined) { sets.push('pinned = ?'); params.push(flags.pinned ? 1 : 0); }
+    if (flags.archived !== undefined) { sets.push('archived = ?'); params.push(flags.archived ? 1 : 0); }
+    if (!sets.length) return false;
+    params.push(conversation_id);
+    return this.db.prepare(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0;
+  }
+
+  searchSummaries(agent_id: string, q: string, limit = 30): SearchHit[] {
+    const terms = [...new Set(q.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, 8);
+    if (!terms.length) return [];
+    // LIKE with explicit escaping so a literal % or _ in the query stays literal.
+    const like = (t: string) => '%' + t.replace(/[\\%_]/g, c => '\\' + c) + '%';
+    const perTerm = terms.map(() =>
+      `(COALESCE(c.title, '') LIKE ? ESCAPE '\\' OR EXISTS (
+          SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))`).join(' AND ');
+    const params: unknown[] = [agent_id];
+    for (const t of terms) { params.push(like(t), like(t)); }
+    params.push(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT c.id FROM conversations c
+         WHERE c.agent_id = ? AND c.caller_agent_id IS NULL AND ${perTerm}
+         ORDER BY c.id DESC LIMIT ?`,
+      )
+      .all(...params) as Array<{ id: number }>;
+    if (!rows.length) return [];
+    const ids = new Set(rows.map(r => r.id));
+    const summaries = this.listSummaries(agent_id, 10_000, 'human').filter(sm => ids.has(sm.id));
+    // One fragment per hit: the first message matching the first term.
+    const snippetStmt = this.db.prepare(
+      `SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' ORDER BY id ASC LIMIT 1`,
+    );
+    return summaries.map(sm => {
+      const row = snippetStmt.get(sm.id, like(terms[0])) as { content: string } | undefined;
+      let snippet = '';
+      if (row) {
+        const flat = row.content.replace(/\s+/g, ' ').trim();
+        const at = flat.toLowerCase().indexOf(terms[0]);
+        const start = Math.max(0, at - 40);
+        snippet = (start > 0 ? '…' : '') + flat.slice(start, start + 140) + (flat.length > start + 140 ? '…' : '');
+      }
+      return { ...sm, snippet };
+    });
+  }
+
+  fork(conversation_id: number, up_to_message_id?: number): number | null {
+    const src = this.db
+      .prepare('SELECT agent_id, project_id, title FROM conversations WHERE id = ?')
+      .get(conversation_id) as { agent_id: string; project_id: number | null; title: string | null } | undefined;
+    if (!src) return null;
+    let newId = 0;
+    this.db.transaction(() => {
+      // Materialize the display title so the fork keeps its name even though
+      // its own first message may differ from the source's.
+      let base = src.title?.trim() ?? '';
+      if (!base) {
+        const first = this.db
+          .prepare(`SELECT content FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`)
+          .get(conversation_id) as { content: string } | undefined;
+        const oneLine = (first?.content ?? '').replace(/\s+/g, ' ').trim();
+        base = oneLine.length > 60 ? oneLine.slice(0, 57) + '…' : oneLine;
+      }
+      const r = this.db
+        .prepare('INSERT INTO conversations (agent_id, project_id, title) VALUES (?, ?, ?)')
+        .run(src.agent_id, src.project_id, base ? `${base} (fork)` : '(fork)');
+      newId = Number(r.lastInsertRowid);
+      const msgs = this.db
+        .prepare(
+          `SELECT id, role, content, caller_label, created_at FROM messages
+           WHERE conversation_id = ?${up_to_message_id != null ? ' AND id <= ?' : ''} ORDER BY id ASC`,
+        )
+        .all(...(up_to_message_id != null ? [conversation_id, up_to_message_id] : [conversation_id])) as
+        Array<{ id: number; role: string; content: string; caller_label: string | null; created_at: number }>;
+      const insMsg = this.db.prepare(
+        'INSERT INTO messages (conversation_id, role, content, caller_label, created_at) VALUES (?, ?, ?, ?, ?)',
+      );
+      const insAtt = this.db.prepare(
+        'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) ' +
+        'SELECT ?, ?, media_type, data FROM message_attachments WHERE message_id = ? ORDER BY id ASC',
+      );
+      for (const m of msgs) {
+        const nm = Number(insMsg.run(newId, m.role, m.content, m.caller_label, m.created_at).lastInsertRowid);
+        insAtt.run(nm, newId, m.id);
+      }
+    })();
+    return newId;
+  }
+
   isHumanAnchor(conversation_id: number): boolean {
     const row = this.db
       .prepare('SELECT agent_id, caller_agent_id FROM conversations WHERE id = ?')
@@ -276,7 +393,7 @@ export class SqliteConversationStore implements ConversationStore {
     involves?: string,
   ): ConversationSummary[] {
     const baseSql = `
-      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id, c.title AS custom_title,
+      SELECT c.id, c.agent_id, c.caller_agent_id, c.started_at, c.ended_at, c.project_id, c.pinned, c.archived, c.title AS custom_title,
              (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
              COALESCE(
                (SELECT m.content FROM messages m
@@ -296,13 +413,19 @@ export class SqliteConversationStore implements ConversationStore {
     else if (kind === 'agent') where.push('c.caller_agent_id IS NOT NULL');
     const sql = `${baseSql}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY c.id DESC LIMIT ?`;
     params.push(limit);
-    type Row = Omit<ConversationSummary, 'title'> & { first_user_msg: string; custom_title: string | null };
+    type Row = Omit<ConversationSummary, 'title' | 'pinned' | 'archived'>
+      & { first_user_msg: string; custom_title: string | null; pinned: number; archived: number };
     const rows = this.db.prepare(sql).all(...params) as Row[];
     return rows.map(r => {
-      const { first_user_msg, custom_title, ...rest } = r;
+      const { first_user_msg, custom_title, pinned, archived, ...rest } = r;
       const oneLine = first_user_msg.replace(/\s+/g, ' ').trim();
       const derived = oneLine.length > 60 ? oneLine.slice(0, 57) + '…' : oneLine;
-      return { ...rest, title: custom_title?.trim() ? custom_title.trim() : derived };
+      return {
+        ...rest,
+        pinned: pinned === 1,
+        archived: archived === 1,
+        title: custom_title?.trim() ? custom_title.trim() : derived,
+      };
     });
   }
 }
