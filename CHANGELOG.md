@@ -6,6 +6,15 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-09-05
+
+### Fixed
+
+- The installer no longer tries to install an `update-ritsu` shortcut. The
+  step could abort the script partway through — after building but before
+  restarting the service — leaving the new version on disk but not running.
+  Re-running `scripts/install.sh` from a clone is the supported update path.
+
 ## [0.12.0] — 2026-09-05
 
 ### Added
