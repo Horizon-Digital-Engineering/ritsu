@@ -74,7 +74,7 @@ function param(v: string | string[] | undefined): string {
 /** Crude but safe page-to-text: scripts/styles dropped, tags to spaces, a few
  *  entities decoded, whitespace collapsed. Extraction quality is not the goal
  *  — the result is fenced context, not rendered content. */
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   return html
     // Element CONTENT removal keys on the opening tag boundary and tolerates
     // attributes/whitespace in the closer; the general tag strip below then
@@ -93,7 +93,10 @@ function htmlToText(html: string): string {
 }
 
 export function clampLimit(raw: unknown, fallback: number, max: number): number {
-  const n = Number(raw ?? fallback);
+  let n: number;
+  // Number(Symbol) throws; nothing HTTP hands us can be one, but a guard
+  // function has no business being the thing that crashes.
+  try { n = Number(raw ?? fallback); } catch { return fallback; }
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(Math.floor(n), 1), max);
 }
