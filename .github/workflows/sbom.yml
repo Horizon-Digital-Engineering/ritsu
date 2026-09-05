@@ -7,7 +7,6 @@ on:
         required: true
   release:
     types: [published]
-  workflow_dispatch:
 
 # Default-deny at the top level so the workflow can't accidentally use
 # a write-scoped token outside the one job that needs it. Scorecard's
