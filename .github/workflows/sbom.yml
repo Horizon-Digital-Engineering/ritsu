@@ -1,8 +1,12 @@
 name: SBOM
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to (re)generate + sign SBOMs for'
+        required: true
   release:
     types: [published]
-  workflow_dispatch:
 
 # Default-deny at the top level so the workflow can't accidentally use
 # a write-scoped token outside the one job that needs it. Scorecard's
@@ -84,6 +88,7 @@ jobs:
           set -eo pipefail
           for f in ritsu-*-sbom.*.json; do
             cosign sign-blob --yes \
+            --new-bundle-format=false \
               --output-signature "${f}.sig" \
               --output-certificate "${f}.pem" \
               "$f"
