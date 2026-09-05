@@ -21,9 +21,11 @@ const RUNS = { numRuns: 300 };
 const wsSrc = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', 'admin', 'workspace.js'), 'utf8');
 const mdSrc = wsSrc.slice(wsSrc.indexOf('// MD-PURE-START'), wsSrc.indexOf('// MD-PURE-END'));
-const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,
+const esc = (s: string) => s.replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
+// The renderer under test is a browser script; the marker-delimited slice is
+// pure (esc is its only dependency), so evaluating it here is the seam.
+// eslint-disable-next-line @typescript-eslint/no-implied-eval, @typescript-eslint/no-unsafe-call
 const md = new Function('esc', `${mdSrc}; return md;`)(esc) as (raw: string) => string;
 
 /** Tags md() is allowed to emit — anything else reaching '<' is an escape. */
@@ -99,13 +101,13 @@ describe('property: fenceUntrusted', () => {
       const out = fenceUntrusted(source, content);
       const begin = /<<<UNTRUSTED ([0-9a-f]{18})/.exec(out);
       assert.ok(begin, 'opening marker present');
-      const nonce = begin![1];
+      const nonce = begin[1];
       assert.ok(out.includes(`UNTRUSTED ${nonce}>>>`), 'matching closer present');
       // The content body between the markers must not contain a well-formed
       // marker of its own — planted ones get defanged. The marker string also
       // appears earlier in the fence's own instruction sentence, so the REAL
       // opener is the LAST occurrence.
-      const bodyStart = out.lastIndexOf(begin![0]) + begin![0].length;
+      const bodyStart = out.lastIndexOf(begin[0]) + begin[0].length;
       const body = out.slice(bodyStart, out.lastIndexOf(`UNTRUSTED ${nonce}>>>`));
       assert.equal(/<<<\s*UNTRUSTED/i.test(body), false, 'no forged opener inside');
     }), RUNS);
