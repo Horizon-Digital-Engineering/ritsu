@@ -51,6 +51,8 @@ describe('property: md() containment', () => {
     ), { maxLength: 30 }).map(a => a.join(''));
     fc.assert(fc.property(hostile, (input) => {
       const out = md(input);
+      // The literal is the PROBE: the assertion demands its absence.
+      // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
       assert.equal(out.includes('<script'), false);
       assert.equal(out.includes('<img'), false);
       assert.equal(/href="javascript/i.test(out), false);
