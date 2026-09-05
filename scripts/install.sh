@@ -137,15 +137,6 @@ note "generate:  claude setup-token       (on any machine, needs a subscription)
 note "then save it under API Keys in the admin UI"
 note "agents cannot dispatch until one is stored" 
 
-bold "==> Update shortcut"
-sudo install -o root -g root -m 755 /dev/stdin /usr/local/bin/update-ritsu <<'SHIM'
-#!/usr/bin/env bash
-# Pull latest ritsu, rebuild, restart. Wraps the canonical script.
-exec sudo bash /opt/ritsu/scripts/update.sh "$@"
-SHIM
-note "/usr/local/bin/update-ritsu installed — future updates: sudo update-ritsu"
-note "to run it without a password prompt, add a scoped sudoers rule for that one path"
-
 bold "==> Start"
 sudo systemctl enable "${SERVICE_NAME}" >/dev/null
 sudo systemctl restart "${SERVICE_NAME}"
@@ -165,5 +156,5 @@ note "admin healthz:  $(curl -s "http://127.0.0.1:${admin_port:-7334}/healthz" |
 bold "==> Done"
 note "logs:    sudo journalctl -u ${SERVICE_NAME} -f"
 note "env:     sudo \$EDITOR ${ENV_FILE}  &&  sudo systemctl restart ${SERVICE_NAME}"
-note "update:  bash ${INSTALL_DIR}/scripts/update.sh"
+note "update:  git pull && bash scripts/install.sh   (from your clone — this script is the update path)"
 note "admin:   ssh-tunnel localhost:${admin_port:-7334} then open http://localhost:${admin_port:-7334}/admin"
