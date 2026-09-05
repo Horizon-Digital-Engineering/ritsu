@@ -18,6 +18,7 @@ import { statSync, readdirSync, existsSync, mkdirSync, unlinkSync } from 'node:f
 import { join, dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase, type Db } from './db.js';
+import { SqliteMemoryBackend } from './memory/sqlite-backend.js';
 import { logger } from './util/log.js';
 
 export interface BackupInfo { name: string; size: number; created_at: number }
@@ -166,23 +167,53 @@ export class BackupManager {
  * portability path, and it exists so the JSON format is genuinely round-trippable
  * rather than write-only.
  *
- * Returns the per-table row counts actually inserted.
+ * Returns the per-table row counts actually inserted plus the tables that were
+ * NOT imported. A non-empty table the current schema doesn't have is fatal by
+ * default — silently dropping data is how a migration loses 180 memory records
+ * without an error — and only `allowSkip` downgrades that to a reported skip.
  */
-export function importJson(file: ExportFile, destPath: string): Record<string, number> {
-  if (file.format !== EXPORT_FORMAT) {
+export function importJson(
+  file: ExportFile,
+  destPath: string,
+  opts: { allowSkip?: boolean } = {},
+): { counts: Record<string, number>; skipped: string[] } {
+  // Exports from before the format field existed ARE the version-1 shape —
+  // the stamp was added without changing the layout. Anything else is refused.
+  const format = file.format ?? EXPORT_FORMAT;
+  if (format !== EXPORT_FORMAT) {
     throw new Error(`unrecognised export format '${String(file.format)}' (expected ${EXPORT_FORMAT})`);
   }
   if (existsSync(destPath)) throw new Error(`refusing to overwrite ${destPath}`);
   const db = openDatabase(destPath);
   try {
+    // Tables created lazily at boot (not by openDatabase's migrations) must
+    // exist BEFORE the copy, or their rows vanish as "unknown". The memory
+    // backend's raw_records is the big one. Plugin tables need their plugin's
+    // own migration and stay unknown here — reported below, never dropped
+    // silently.
+    new SqliteMemoryBackend(db);
+
     const known = new Set((db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as Array<{ name: string }>).map(r => r.name));
+    const skipped = Object.entries(file.tables)
+      .filter(([t, rows]) => !known.has(t) && Array.isArray(rows) && rows.length > 0)
+      .map(([t]) => t);
+    if (skipped.length && !opts.allowSkip) {
+      throw new Error(
+        `export contains data for tables this database does not have: ${skipped.join(', ')}. ` +
+        'These are usually plugin tables — install the plugins and re-import, or pass ' +
+        '--skip-unknown to import everything else and drop these.',
+      );
+    }
     const counts: Record<string, number> = {};
     db.transaction(() => {
+      // Rows arrive in export-table order (alphabetical), which violates FK
+      // order (message_attachments before messages) and can never satisfy
+      // self-referential FKs (a conversation whose parent sorts later). Defer
+      // enforcement to commit and verify the finished graph explicitly.
+      db.exec('PRAGMA defer_foreign_keys = ON');
       for (const [table, rows] of Object.entries(file.tables)) {
-        // A table the current schema no longer has is skipped, not fatal — an
-        // older export must still yield everything today's schema can hold.
         if (!known.has(table) || !Array.isArray(rows) || rows.length === 0) continue;
         const cols = Object.keys(rows[0] as Record<string, unknown>);
         const stmt = db.prepare(
@@ -192,8 +223,13 @@ export function importJson(file: ExportFile, destPath: string): Record<string, n
         for (const row of rows) stmt.run(...cols.map(c => decodeBlob((row as Record<string, unknown>)[c])));
         counts[table] = rows.length;
       }
+      const violations = db.prepare('PRAGMA foreign_key_check').all() as Array<{ table: string }>;
+      if (violations.length) {
+        const tables = [...new Set(violations.map(v => v.table))].join(', ');
+        throw new Error(`import left ${violations.length} dangling foreign-key reference(s) in: ${tables}`);
+      }
     })();
-    return counts;
+    return { counts, skipped };
   } finally {
     db.close();
   }

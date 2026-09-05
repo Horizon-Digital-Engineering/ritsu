@@ -43,6 +43,9 @@ export const backupCommand: Command = {
     '  ritsu backup list                list snapshots',
     '  ritsu backup export <file>       write a JSON export (your data, no secrets)',
     '  ritsu backup import <file> <db>  rebuild a NEW database from a JSON export',
+    '                                   (--skip-unknown drops tables this schema',
+    '                                   lacks, e.g. from uninstalled plugins;',
+    '                                   without it such data is a hard error)',
     '  ritsu backup prune [--keep N]    keep the newest N snapshots (default 14)',
     '  ritsu backup restore <file>      replace the live DB with a snapshot',
     '                                   (STOP the service first: sudo ritsu service ... )',
@@ -82,9 +85,14 @@ export const backupCommand: Command = {
         try { parsed = JSON.parse(readFileSync(file, 'utf8')) as ExportFile; }
         catch (e) { process.stderr.write(`not valid JSON: ${(e as Error).message}\n`); return 1; }
         try {
-          const counts = importJson(parsed, resolve(dest));
+          const { counts, skipped } = importJson(parsed, resolve(dest), {
+            allowSkip: ctx.flags['skip-unknown'] !== undefined,
+          });
           const total = Object.values(counts).reduce((a, b) => a + b, 0);
           for (const [t, n] of Object.entries(counts)) process.stdout.write(`  ${t}: ${n}\n`);
+          for (const t of skipped) {
+            process.stderr.write(`  ! SKIPPED ${t} — table not in this database (rows NOT imported)\n`);
+          }
           process.stdout.write(
             `imported ${total} rows into ${resolve(dest)}\n` +
             'NOTE: credentials, tokens and the audit log are not in an export — this is a\n' +
