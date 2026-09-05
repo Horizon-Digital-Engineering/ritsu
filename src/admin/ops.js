@@ -98,6 +98,31 @@ async function api(method, path, body) {
   return json;
 }
 
+/** Parse complete SSE frames out of `buf`, invoking onEvent per data payload.
+ *  Returns the unconsumed remainder (a partial frame, if any). */
+function drainSseFrames(buf, onEvent) {
+  let idx;
+  while ((idx = buf.indexOf('\n\n')) >= 0) {
+    const chunk = buf.slice(0, idx);
+    buf = buf.slice(idx + 2);
+    const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('\n');
+    if (!data) continue;
+    try { onEvent(JSON.parse(data)); } catch { /* skip malformed frame */ }
+  }
+  return buf;
+}
+
+async function readSseBody(r, onEvent) {
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buf = drainSseFrames(buf + decoder.decode(value, { stream: true }), onEvent);
+  }
+}
+
 /** Authenticated SSE consumer (EventSource can't send headers). Reconnects
  *  after 2s on anything but an abort; onState reports live/dead for the dot. */
 async function sseFetch(path, onEvent, signal, onState) {
@@ -107,30 +132,24 @@ async function sseFetch(path, onEvent, signal, onState) {
       if (r.status === 401) { clearAdminToken(); await ensureAdminToken('Admin token rejected — paste again.'); continue; }
       if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
       onState?.(true);
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const chunk = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('\n');
-          if (!data) continue;
-          try { onEvent(JSON.parse(data)); } catch { /* skip malformed frame */ }
-        }
-      }
+      await readSseBody(r, onEvent);
       throw new Error('sse stream ended');
     } catch (e) {
       if (signal.aborted) return;
       onState?.(false);
       console.warn('sse reconnect in 2s:', e?.message ?? e);
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(res => setTimeout(res, 2000));
     }
   }
+}
+
+/** Replace a container's content with one inert text note. Built as a DOM
+ *  node with textContent, so even a hostile error string is just text. */
+function showNote(el, msg, className = 'empty-note') {
+  const div = document.createElement('div');
+  div.className = className;
+  div.textContent = msg;
+  el.replaceChildren(div);
 }
 
 function setLive(on) {
@@ -286,7 +305,7 @@ async function loadPendingApprovals() {
       : '<div class="empty-note">Nothing waiting — every agent is unblocked.</div>';
     setPendingCount(approvals.length);
   } catch (e) {
-    $('approvals-pending').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('approvals-pending'), e.message);
   }
 }
 
@@ -307,7 +326,7 @@ async function loadDecidedApprovals() {
       ? approvals.map(a => approvalStampHtml(a)).join('')
       : '<div class="empty-note">No decisions yet.</div>';
   } catch (e) {
-    $('approvals-decided').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('approvals-decided'), e.message);
   }
 }
 
@@ -369,8 +388,9 @@ function denialReasonLabel(r) {
 function denialRowHtml(d) {
   const cls = d.reason === 'escalation' ? ' denial-escalation' : '';
   const detail = d.detail ? `<span class="denial-detail">${esc(d.detail)}</span>` : '';
+  const shortMsg = d.message && d.message.length > 160 ? `${d.message.slice(0, 160)}…` : d.message;
   const msg = d.message
-    ? `<div class="denial-msg" title="${esc(d.message)}">“${esc(d.message.length > 160 ? d.message.slice(0, 160) + '…' : d.message)}”</div>`
+    ? `<div class="denial-msg" title="${esc(d.message)}">“${esc(shortMsg)}”</div>`
     : '';
   return `<div class="denial-row${cls}">`
     + '<div class="denial-head">'
@@ -391,7 +411,7 @@ async function loadDenials() {
       ? denials.map(denialRowHtml).join('')
       : '<div class="empty-note">No blocked calls.</div>';
   } catch (e) {
-    $('denials-list').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('denials-list'), e.message);
   }
 }
 
@@ -423,7 +443,7 @@ async function loadJobs() {
           </div>`).join('')
       : '<div class="empty-note">No scheduled jobs.</div>';
   } catch (e) {
-    $('jobs-list').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('jobs-list'), e.message);
   }
 }
 
@@ -439,14 +459,17 @@ async function loadChannels() {
           </div>`).join('')
       : '<div class="empty-note">No channels connected.</div>';
   } catch (e) {
-    $('channels-list').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('channels-list'), e.message);
   }
 }
 
 async function loadHealth() {
   try {
     const { checks } = await api('GET', '/admin/api/health');
-    const dotFor = (c) => c.status === 'ok' ? 'ok' : c.status === 'skip' ? 'off' : 'err';
+    const dotFor = (c) => {
+      if (c.status === 'ok') return 'ok';
+      return c.status === 'skip' ? 'off' : 'err';
+    };
     $('health-list').innerHTML = checks.map(c =>
       `<div class="status-row">
         <span class="status-dot ${dotFor(c)}"></span>
@@ -457,7 +480,7 @@ async function loadHealth() {
     $('rail-health-dot').className = `rail-health ${worst}`;
     $('rail-health-dot').title = worst === 'ok' ? 'All health checks passing' : 'A health check is failing';
   } catch (e) {
-    $('health-list').innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    showNote($('health-list'), e.message);
     $('rail-health-dot').className = 'rail-health warn';
   }
 }
@@ -468,10 +491,11 @@ const TAIL_MAX = 400;
 let tailWarnOnly = false;
 
 function logLineHtml(ev) {
-  const t = (ev.t || '').slice(11, 19);
-  const { t: _t, level, msg, ...extra } = ev;
+  const time = (ev.t || '').slice(11, 19);
+  const extra = { ...ev };
+  delete extra.t; delete extra.level; delete extra.msg;
   const extraStr = Object.keys(extra).length ? ' ' + JSON.stringify(extra) : '';
-  return `<div class="log-line ${esc(level)}" data-level="${esc(level)}"><span class="lt">${esc(t)}</span> ${esc(level)} ${esc(msg)}${esc(extraStr)}</div>`;
+  return `<div class="log-line ${esc(ev.level)}" data-level="${esc(ev.level)}"><span class="lt">${esc(time)}</span> ${esc(ev.level)} ${esc(ev.msg)}${esc(extraStr)}</div>`;
 }
 
 function appendLogLine(ev) {
@@ -491,7 +515,7 @@ async function loadRecentLogs() {
     tail.innerHTML = list.map(logLineHtml).join('');
     tail.scrollTop = tail.scrollHeight;
   } catch (e) {
-    $('log-tail').innerHTML = `<div class="log-line error">${esc(e.message)}</div>`;
+    showNote($('log-tail'), e.message, 'log-line error');
   }
 }
 
@@ -546,4 +570,4 @@ async function boot() {
   setInterval(() => { loadPendingApprovals(); loadDecidedApprovals(); }, 90_000);
 }
 
-boot();
+await boot();

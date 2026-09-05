@@ -98,7 +98,7 @@
       <h2 class="admin-login-title">ritsu</h2>
       <p id="admin-login-msg" class="admin-login-msg">Sign in with your admin token.</p>
       <input id="admin-login-user" type="text" name="username" autocomplete="username" value="ritsu"
-             readonly tabindex="-1" class="hidden">
+             readonly tabindex="-1" class="hidden" aria-label="Username" aria-hidden="true">
       <label for="admin-login-token" class="admin-login-label">Admin token</label>
       <input id="admin-login-token" name="password" type="password" autocomplete="current-password"
              placeholder="rt_…" required spellcheck="false" class="admin-login-input">
@@ -106,6 +106,6 @@
     </form>
   </div>
 
-<script src="/admin/ops.js" defer></script>
+<script src="/admin/ops.js" type="module"></script>
 </body>
 </html>
