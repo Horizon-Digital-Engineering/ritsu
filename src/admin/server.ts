@@ -79,29 +79,42 @@ function param(v: string | string[] | undefined): string {
  * tolerates attributes/whitespace, and an opener with no closer is left in
  * place for the generic tag strip to eat.
  */
+const TAG_WORD_CHAR = /[a-z0-9_]/;
+
+/** End index of the container's `</tag ...>` closer at-or-after `from`, or -1.
+ *  The closer's tag name must end at a word boundary; attributes tolerated. */
+function containerCloseEnd(html: string, lower: string, close: string, from: number): number {
+  let c = from;
+  while (c < html.length) {
+    const e = lower.indexOf(close, c);
+    if (e === -1) return -1;
+    const after = lower[e + close.length];
+    if (after !== undefined && TAG_WORD_CHAR.test(after)) { c = e + 1; continue; }
+    return html.indexOf('>', e + close.length);
+  }
+  return -1;
+}
+
+/** End index of the removable `<tag ...>...</tag ...>` container opening at
+ *  `s`, or -1 when the open tag is malformed or never closed. */
+function containerEnd(html: string, lower: string, tag: string, s: number): number {
+  const openLen = tag.length + 1;
+  const boundary = lower[s + openLen];
+  if (boundary === undefined || TAG_WORD_CHAR.test(boundary)) return -1;
+  const gt = html.indexOf('>', s + openLen);
+  if (gt === -1) return -1;
+  return containerCloseEnd(html, lower, `</${tag}`, gt + 1);
+}
+
 function stripContainers(html: string, tag: string): string {
   const lower = html.toLowerCase();
   const open = `<${tag}`;
-  const close = `</${tag}`;
-  const wordChar = /[a-z0-9_]/;
   let out = '';
   let i = 0;
   while (i < html.length) {
     const s = lower.indexOf(open, i);
     if (s === -1) { out += html.slice(i); break; }
-    const boundary = lower[s + open.length];
-    const gt = boundary !== undefined && !wordChar.test(boundary) ? html.indexOf('>', s + open.length) : -1;
-    let closedAt = -1;
-    for (let c = gt === -1 ? -1 : gt + 1; c !== -1 && c < html.length;) {
-      const e = lower.indexOf(close, c);
-      if (e === -1) break;
-      const after = lower[e + close.length];
-      if (after !== undefined && wordChar.test(after)) { c = e + 1; continue; }
-      const egt = html.indexOf('>', e + close.length);
-      if (egt === -1) break;
-      closedAt = egt;
-      break;
-    }
+    const closedAt = containerEnd(html, lower, tag, s);
     if (closedAt === -1) {
       // Not a removable container here — emit one char and rescan, exactly
       // like the regex engine advancing past a failed match position.

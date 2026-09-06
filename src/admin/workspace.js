@@ -668,20 +668,25 @@ const THINK_RE = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi;
  *  [{start, end, lang, body}] with `end` just past the closing backticks;
  *  `padAfterLang` additionally eats horizontal whitespace after the language
  *  word (the artifact scanner's historical tolerance). */
+function fenceBodyStart(text, s, padAfterLang) {
+  let p = s + 3;
+  while (p < text.length && /[\w+.-]/.test(text[p])) p++;
+  const lang = text.slice(s + 3, p);
+  if (padAfterLang) while (p < text.length && text[p] !== '\n' && /\s/.test(text[p])) p++;
+  if (text[p] === '\n') p++;
+  return { lang, bodyAt: p };
+}
+
 function scanFences(text, padAfterLang = false) {
   const out = [];
   let i = 0;
   for (;;) {
     const s = text.indexOf('```', i);
     if (s === -1) break;
-    let p = s + 3;
-    while (p < text.length && /[A-Za-z0-9_+.-]/.test(text[p])) p++;
-    const lang = text.slice(s + 3, p);
-    if (padAfterLang) while (p < text.length && text[p] !== '\n' && /\s/.test(text[p])) p++;
-    if (text[p] === '\n') p++;
-    const e = text.indexOf('```', p);
+    const { lang, bodyAt } = fenceBodyStart(text, s, padAfterLang);
+    const e = text.indexOf('```', bodyAt);
     if (e === -1) break;
-    out.push({ start: s, end: e + 3, lang, body: text.slice(p, e) });
+    out.push({ start: s, end: e + 3, lang, body: text.slice(bodyAt, e) });
     i = e + 3;
   }
   return out;
@@ -2114,35 +2119,102 @@ function applyPromptText(text) {
 // ---- prompt variables -------------------------------------------------------
 // {{name}} | {{name|type}} | {{name|type:prop="a,b"}}
 const VAR_TYPES = new Set(['text', 'textarea', 'select', 'number', 'checkbox', 'date']);
-// Whitespace tolerance lives in code (trim), not the pattern: \s* wrapping a
-// lazy class was ambiguous enough to backtrack super-linearly.
-const varRe = () => /\{\{([^}|]*)(?:\|\s*([A-Za-z]+)\s*(?::([^}]*))?)?\}\}/g;
+
+/** One {{...}} token's parts, or null when the inner text isn't a variable
+ *  (empty name, or a pipe whose type token isn't purely alphabetic — those
+ *  stay literal, as the old pattern refused them). */
+function parseVarToken(inner) {
+  const pipe = inner.indexOf('|');
+  if (pipe === -1) {
+    const bare = inner.trim();
+    return bare ? { name: bare, type: 'text', propsRaw: '' } : null;
+  }
+  const name = inner.slice(0, pipe).trim();
+  const rest = inner.slice(pipe + 1);
+  const colon = rest.indexOf(':');
+  const typeTok = (colon === -1 ? rest : rest.slice(0, colon)).trim();
+  if (!name || !/^[A-Za-z]+$/.test(typeTok)) return null;
+  return { name, type: typeTok.toLowerCase(), propsRaw: colon === -1 ? '' : rest.slice(colon + 1) };
+}
+
+/** Linear scan for {{...}} variable tokens — no regex, no backtracking. */
+function scanVarTokens(content) {
+  const out = [];
+  let i = 0;
+  for (;;) {
+    const s = content.indexOf('{{', i);
+    if (s === -1) break;
+    const e = content.indexOf('}}', s + 2);
+    if (e === -1) break;
+    const parsed = parseVarToken(content.slice(s + 2, e));
+    if (parsed) out.push({ start: s, end: e + 2, ...parsed });
+    i = e + 2;
+  }
+  return out;
+}
+
+/** prop="a,b" | prop=[a,b] | prop=bare — hand-parsed; an unclosed quote or
+ *  bracket drops that pair, like the old pattern's failure to match. */
+function readPropValue(raw, k) {
+  if (raw[k] === '"') {
+    const e = raw.indexOf('"', k + 1);
+    return e === -1 ? null : { value: raw.slice(k + 1, e), next: e + 1 };
+  }
+  if (raw[k] === '[') {
+    const e = raw.indexOf(']', k + 1);
+    return e === -1 ? null : { value: raw.slice(k + 1, e), next: e + 1 };
+  }
+  let e = k;
+  while (e < raw.length && !/[\s,]/.test(raw[e])) e++;
+  return e === k ? null : { value: raw.slice(k, e), next: e };
+}
+
+function parseVarProps(raw) {
+  const props = {};
+  let i = 0;
+  while (i < raw.length) {
+    while (i < raw.length && /[\s,]/.test(raw[i])) i++;
+    let j = i;
+    while (j < raw.length && /\w/.test(raw[j])) j++;
+    if (j === i) { i++; continue; }
+    const key = raw.slice(i, j);
+    let k = j;
+    while (k < raw.length && /\s/.test(raw[k])) k++;
+    if (raw[k] !== '=') { i = j + 1; continue; }
+    k++;
+    while (k < raw.length && /\s/.test(raw[k])) k++;
+    const read = readPropValue(raw, k);
+    if (!read) { i = k + 1; continue; }
+    props[key] = read.value.trim();
+    i = read.next;
+  }
+  return props;
+}
 
 function parseVars(content) {
   const out = [];
   const seen = new Set();
-  const re = varRe();
-  let m;
-  while ((m = re.exec(content)) !== null) {
-    const name = m[1].trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    const type = (m[2] || 'text').toLowerCase();
-    const props = {};
-    // prop="a,b" | prop=[a,b] | prop=bare
-    for (const pm of String(m[3] || '').matchAll(/([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\]|([^",[\s][^,\s]*))/g)) {
-      props[pm[1]] = String(pm[2] ?? pm[3] ?? pm[4] ?? '').trim();
-    }
-    out.push({ name, type: VAR_TYPES.has(type) ? type : 'text', props });
+  for (const tok of scanVarTokens(content)) {
+    if (seen.has(tok.name)) continue;
+    seen.add(tok.name);
+    out.push({ name: tok.name, type: VAR_TYPES.has(tok.type) ? tok.type : 'text', props: parseVarProps(tok.propsRaw) });
   }
   return out;
 }
 
 function substituteVars(content, values) {
-  return content.replace(varRe(), (whole, rawName) => {
-    const k = rawName.trim();
-    return Object.prototype.hasOwnProperty.call(values, k) ? values[k] : whole;
-  });
+  const toks = scanVarTokens(content);
+  if (!toks.length) return content;
+  let out = '';
+  let last = 0;
+  for (const t of toks) {
+    out += content.slice(last, t.start);
+    out += Object.prototype.hasOwnProperty.call(values, t.name)
+      ? values[t.name]
+      : content.slice(t.start, t.end);
+    last = t.end;
+  }
+  return out + content.slice(last);
 }
 
 function varInputFor(v) {
