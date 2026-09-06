@@ -30,6 +30,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # TypeScript majors are blocked upstream, not here: typescript-eslint's
+      # peer range tops out below 6.1 on every channel including canary, and
+      # TS 7 is the native-compiler generation their typed linting has to be
+      # re-architected for. Until their peer range admits the new major,
+      # npm ci itself fails and the PR can never go green. Delete this rule
+      # when typescript-eslint ships support.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     labels:
       - "deps"
 
