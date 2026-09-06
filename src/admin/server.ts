@@ -71,23 +71,75 @@ function param(v: string | string[] | undefined): string {
  * table (attachments included), and `?limit=abc` reaches the driver as NaN
  * and 500s on a datatype mismatch.
  */
+/**
+ * Remove `<tag ...>content</tag ...>` containers (script/style) with a linear
+ * scan — the lazy-regex version backtracks super-linearly on adversarial
+ * unclosed tags, and this runs on fetched pages. Semantics match the regex it
+ * replaces: the open tag name must end at a word boundary, the closer
+ * tolerates attributes/whitespace, and an opener with no closer is left in
+ * place for the generic tag strip to eat.
+ */
+const TAG_WORD_CHAR = /[a-z0-9_]/;
+
+/** End index of the container's `</tag ...>` closer at-or-after `from`, or -1.
+ *  The closer's tag name must end at a word boundary; attributes tolerated. */
+function containerCloseEnd(html: string, lower: string, close: string, from: number): number {
+  let c = from;
+  while (c < html.length) {
+    const e = lower.indexOf(close, c);
+    if (e === -1) return -1;
+    const after = lower[e + close.length];
+    if (after !== undefined && TAG_WORD_CHAR.test(after)) { c = e + 1; continue; }
+    return html.indexOf('>', e + close.length);
+  }
+  return -1;
+}
+
+/** End index of the removable `<tag ...>...</tag ...>` container opening at
+ *  `s`, or -1 when the open tag is malformed or never closed. */
+function containerEnd(html: string, lower: string, tag: string, s: number): number {
+  const openLen = tag.length + 1;
+  const boundary = lower[s + openLen];
+  if (boundary === undefined || TAG_WORD_CHAR.test(boundary)) return -1;
+  const gt = html.indexOf('>', s + openLen);
+  if (gt === -1) return -1;
+  return containerCloseEnd(html, lower, `</${tag}`, gt + 1);
+}
+
+function stripContainers(html: string, tag: string): string {
+  const lower = html.toLowerCase();
+  const open = `<${tag}`;
+  let out = '';
+  let i = 0;
+  while (i < html.length) {
+    const s = lower.indexOf(open, i);
+    if (s === -1) { out += html.slice(i); break; }
+    const closedAt = containerEnd(html, lower, tag, s);
+    if (closedAt === -1) {
+      // Not a removable container here — emit one char and rescan, exactly
+      // like the regex engine advancing past a failed match position.
+      out += html.slice(i, s + 1);
+      i = s + 1;
+    } else {
+      out += html.slice(i, s) + ' ';
+      i = closedAt + 1;
+    }
+  }
+  return out;
+}
+
 /** Crude but safe page-to-text: scripts/styles dropped, tags to spaces, a few
  *  entities decoded, whitespace collapsed. Extraction quality is not the goal
  *  — the result is fenced context, not rendered content. */
 export function htmlToText(html: string): string {
-  return html
-    // Element CONTENT removal keys on the opening tag boundary and tolerates
-    // attributes/whitespace in the closer; the general tag strip below then
-    // eats any straggler markup, so a malformed closer can't smuggle content.
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
+  return stripContainers(stripContainers(html, 'script'), 'style')
     .replace(/<[^>]*>/g, ' ')
     // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
     // characters "&lt;" rather than a freshly minted "<".
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"').replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -297,6 +349,23 @@ function validateChannelConfig(kind: string, config: unknown): unknown {
 /** Redact secrets before returning a channel row to the client — bot tokens
  *  must never round-trip through the API. Pure transform; module-scope so
  *  closure overhead doesn't compound across the channel handlers. */
+/** Secrets are unwritable without a master key. Answering with the reason
+ *  beats a 500 whose cause is only visible in the journal. */
+function keyMissing(res: Response): boolean {
+  const st = masterKeyStatus();
+  if (st.ok) return false;
+  res.status(503).json({ error: st.detail ?? 'no master key — secrets cannot be stored' });
+  return true;
+}
+
+function setNoCache(res: Response): void {
+  // Mobile Safari is notoriously eager to serve stale assets across
+  // ritsu releases; these headers force a fresh fetch on every visit.
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
 function redactChannel<T extends { config: unknown } | null>(row: T): T {
   if (!row) return row;
   const config = row.config && typeof row.config === 'object'
@@ -440,14 +509,6 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
 export function createAdminApp(deps: AdminDeps) {
   const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects, skills, prompts } = deps;
 
-  /** Secrets are unwritable without a master key. Answering with the reason
-   *  beats a 500 whose cause is only visible in the journal. */
-  function keyMissing(res: Response): boolean {
-    const st = masterKeyStatus();
-    if (st.ok) return false;
-    res.status(503).json({ error: st.detail ?? 'no master key — secrets cannot be stored' });
-    return true;
-  }
   const app = express();
   app.disable('x-powered-by');
   // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
@@ -800,10 +861,12 @@ export function createAdminApp(deps: AdminDeps) {
     const dir = join(__dirname, 'vendor');
     const out = new Map<string, { data: Buffer; type: string }>();
     if (!existsSync(dir)) return out;
-    const typeOf = (n: string) =>
-      n.endsWith('.js') ? 'application/javascript'
-        : n.endsWith('.css') ? 'text/css'
-          : n.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream';
+    const typeOf = (n: string): string => {
+      if (n.endsWith('.js')) return 'application/javascript';
+      if (n.endsWith('.css')) return 'text/css';
+      if (n.endsWith('.woff2')) return 'font/woff2';
+      return 'application/octet-stream';
+    };
     for (const name of readdirSync(dir)) {
       const fp = join(dir, name);
       if (statSync(fp).isFile() && /\.(js|css)$/.test(name)) {
@@ -833,13 +896,6 @@ export function createAdminApp(deps: AdminDeps) {
     res.type(hit.type).send(hit.data);
   });
 
-  function setNoCache(res: Response): void {
-    // Mobile Safari is notoriously eager to serve stale assets across
-    // ritsu releases; these headers force a fresh fetch on every visit.
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-  }
 
   app.get('/admin', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

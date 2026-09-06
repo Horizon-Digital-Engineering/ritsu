@@ -196,12 +196,86 @@ export function buildMemoryTools(deps: RaToolDeps): RaTool[] {
   ];
 }
 
+/** Confused-deputy guard (parity with agent-comms-mcp): refuse to route
+ *  through a callee holding capabilities the caller lacks, so a caller
+ *  can't borrow a peer's manage_agents to mint a wider-permission agent.
+ *  Returns a denial message, or null when the call may proceed (no
+ *  escalation, or the operator approved it). */
+async function raRefuseOrApproveEscalation(
+  deps: RaToolDeps,
+  def: AgentDefinition | null,
+  target: string,
+  message: string,
+): Promise<string | null> {
+  const { agentId, defStore, denials, approvals, conversationId } = deps;
+  const targetDef = await defStore.read(target);
+  const escalated = callerEscalatesTo(def?.capabilities ?? [], targetDef?.capabilities ?? []);
+  if (escalated.length === 0) return null;
+
+  // crm/social agents are injection-exposed → always hard-deny, ignoring
+  // escalation_approvable. Otherwise, if the caller opted in and we have
+  // an approval store, route to the operator instead of hard-denying.
+  const injectionExposed = (def?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
+  if (!def?.escalation_approvable || injectionExposed || !approvals) {
+    const note = injectionExposed && def?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
+    logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
+    denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: conversationId ?? null });
+    return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
+      `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
+  }
+  // If the loop already gated this exact call the operator has decided
+  // once; asking again for the same action is noise they have to clear.
+  if (deps.gatedTools?.includes('agent_comms_ask_agent')) {
+    logger.info('ra.comms.escalation-already-gated', { caller: agentId, target, escalated });
+  } else {
+    logger.info('ra.comms.escalation-approval', { caller: agentId, target, escalated });
+    const decision = await approvals.request({
+      agentId,
+      conversationId: conversationId ?? null,
+      toolName: 'agent_comms_ask_agent',
+      args: { agent_id: target, message, _escalation: { capabilities: escalated } },
+    });
+    if (decision.state === 'rejected') {
+      denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
+      return decision.reason?.trim()
+        ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
+        : `Operator rejected this escalated call to ${target}.`;
+    }
+  }
+  // approved → continue to the normal call path.
+  return null;
+}
+
+/** Cycle + depth guard over the shared call chain. Returns the refusal
+ *  message, or null when the chain is still within bounds. */
+function raRefuseChainViolation(
+  deps: RaToolDeps,
+  target: string,
+  message: string,
+  ctx: { depth: number; chain: string[] },
+): string | null {
+  const { agentId, denials, conversationId } = deps;
+  if (ctx.chain.includes(target)) {
+    const chain = [...ctx.chain, target].join(' → ');
+    logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
+    denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain, message, conversationId: conversationId ?? null });
+    return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
+  }
+  if (ctx.depth >= MAX_CALL_DEPTH) {
+    const chain = [...ctx.chain, target].join(' → ');
+    logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
+    denials?.record({ caller: agentId, target, reason: 'depth', detail: chain, message, conversationId: conversationId ?? null });
+    return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
+  }
+  return null;
+}
+
 /** Agent comms: ask_agent + list_agents. Allowlist enforcement is
  *  re-read at call time (admin edits take effect immediately) and the
  *  AsyncLocalStorage call-depth guard from agent-comms-mcp is shared so
  *  ritsu-agent → claude-direct loops are bounded too. */
 export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
-  const { agentId, defStore, conversations, host, denials, approvals, conversationId } = deps;
+  const { agentId, defStore, conversations, host, denials, conversationId } = deps;
   return [
     {
       name: 'agent_comms_ask_agent',
@@ -231,60 +305,14 @@ export function buildAgentCommsTools(deps: RaToolDeps): RaTool[] {
           return buildDenialMessage(agentId, target, allowed);
         }
 
-        // Confused-deputy guard (parity with agent-comms-mcp): refuse to route
-        // through a callee holding capabilities the caller lacks, so a caller
-        // can't borrow a peer's manage_agents to mint a wider-permission agent.
-        const targetDef = await defStore.read(target);
-        const escalated = callerEscalatesTo(def?.capabilities ?? [], targetDef?.capabilities ?? []);
-        if (escalated.length > 0) {
-          // crm/social agents are injection-exposed → always hard-deny, ignoring
-          // escalation_approvable. Otherwise, if the caller opted in and we have
-          // an approval store, route to the operator instead of hard-denying.
-          const injectionExposed = (def?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
-          if (!def?.escalation_approvable || injectionExposed || !approvals) {
-            const note = injectionExposed && def?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
-            logger.warn('ra.comms.denied', { caller: agentId, target, reason: 'escalation', escalated });
-            denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: conversationId ?? null });
-            return `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${agentId} does not. ` +
-              `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`;
-          }
-          // If the loop already gated this exact call the operator has decided
-          // once; asking again for the same action is noise they have to clear.
-          if (deps.gatedTools?.includes('agent_comms_ask_agent')) {
-            logger.info('ra.comms.escalation-already-gated', { caller: agentId, target, escalated });
-          } else {
-            logger.info('ra.comms.escalation-approval', { caller: agentId, target, escalated });
-            const decision = await approvals.request({
-              agentId,
-              conversationId: conversationId ?? null,
-              toolName: 'agent_comms_ask_agent',
-              args: { agent_id: target, message, _escalation: { capabilities: escalated } },
-            });
-            if (decision.state === 'rejected') {
-              denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
-              return decision.reason?.trim()
-                ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
-                : `Operator rejected this escalated call to ${target}.`;
-            }
-          }
-          // approved → continue to the normal call path below.
-        }
+        const escalationDenied = await raRefuseOrApproveEscalation(deps, def, target, message);
+        if (escalationDenied) return escalationDenied;
 
         // Shared call-depth guard with agent-comms-mcp so mixed-runtime chains
         // (ritsu-agent → claude-sdk → ritsu-agent → …) are bounded together.
         const ctx = currentCallContext() ?? { depth: 0, chain: [agentId] };
-        if (ctx.chain.includes(target)) {
-          const chain = [...ctx.chain, target].join(' → ');
-          logger.warn('ra.comms.cycle', { caller: agentId, target, chain });
-          denials?.record({ caller: agentId, target, reason: 'cycle', detail: chain, message, conversationId: conversationId ?? null });
-          return `call cycle detected: ${chain}. Stop and answer with what you already know.`;
-        }
-        if (ctx.depth >= MAX_CALL_DEPTH) {
-          const chain = [...ctx.chain, target].join(' → ');
-          logger.warn('ra.comms.depth-exceeded', { caller: agentId, target, chain });
-          denials?.record({ caller: agentId, target, reason: 'depth', detail: chain, message, conversationId: conversationId ?? null });
-          return `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`;
-        }
+        const chainDenied = raRefuseChainViolation(deps, target, message, ctx);
+        if (chainDenied) return chainDenied;
         const nextCtx = { depth: ctx.depth + 1, chain: [...ctx.chain, target] };
         // Canonical (caller, target) thread, derived server-side — never
         // model-supplied (a model-chosen thread id was a spoofing vector).

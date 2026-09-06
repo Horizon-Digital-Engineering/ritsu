@@ -43,7 +43,7 @@ a:hover { text-decoration: underline; }
 code, pre { font-family: var(--mono); }
 pre {
   background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
-  padding: 8px 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  padding: 8px 10px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   margin: 0;
 }
 
@@ -337,8 +337,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   -webkit-overflow-scrolling: touch;
 }
 .msg {
+  position: relative;
   padding: 9px 13px; border-radius: 10px; max-width: 100%;
-  white-space: pre-wrap; word-break: break-word; font-size: 0.9rem; line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9rem; line-height: 1.55;
 }
 .msg.user { background: var(--panel-2); align-self: flex-end; max-width: 78%; }
 .msg.assistant { background: #1b2533; align-self: flex-start; max-width: 88%; }
@@ -384,6 +385,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 /* ---- composer ------------------------------------------------------- */
 .composer {
+  position: relative;
   border-top: 1px solid var(--line); background: var(--panel);
   padding: 10px 20px calc(10px + env(safe-area-inset-bottom, 0px));
   display: flex; flex-direction: column; gap: 7px;
@@ -426,15 +428,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .approval-card.stale-7d  { border-left-color: hsl(0, 80%, 58%); }
 .approval-card.escalation { border-left-color: var(--danger); }
 .approval-escalation-banner {
-  background: rgba(178, 34, 51, 0.14); border: 1px solid var(--danger);
-  color: #ff9aa6; border-radius: 6px; padding: 7px 10px;
+  background: #31222f; border: 1px solid var(--danger);
+  color: #ffb6c0; border-radius: 6px; padding: 7px 10px;
   font-size: 0.8rem; line-height: 1.45;
 }
 .approval-escalation-banner code, .approval-escalation-banner strong { color: inherit; }
 .approval-main { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
 .approval-icon { font-size: 1.05rem; line-height: 1.3; flex: 0 0 auto; }
 .approval-body { min-width: 0; flex: 1; }
-.approval-title { font-weight: 600; word-break: break-word; font-family: var(--mono); font-size: 0.86rem; }
+.approval-title { font-weight: 600; overflow-wrap: anywhere; font-family: var(--mono); font-size: 0.86rem; }
 .approval-meta { color: var(--muted); font-size: 0.76rem; margin-top: 2px; }
 .approval-detail-toggle {
   background: transparent; border: 0; color: var(--muted); cursor: pointer;
@@ -445,7 +447,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   margin: 6px 0 0; padding: 8px 10px; background: var(--bg);
   border: 1px solid var(--line); border-radius: 4px;
   font-family: var(--mono); font-size: 0.76rem;
-  white-space: pre-wrap; word-break: break-word;
+  white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 220px; overflow: auto;
 }
 .approval-reason {
@@ -461,7 +463,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .approval-highlights { margin: 8px 0 2px; display: flex; flex-direction: column; gap: 4px; }
 .hl-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; font-size: 0.82rem; align-items: start; }
 .hl-label { color: var(--muted); text-transform: uppercase; font-size: 0.66rem; letter-spacing: 0.05em; padding-top: 3px; }
-.hl-val { word-break: break-word; white-space: pre-wrap; }
+.hl-val { overflow-wrap: anywhere; white-space: pre-wrap; }
 .hl-row.critical .hl-val { font-weight: 600; }
 .bad-char {
   background: hsl(0, 80%, 90%); color: hsl(0, 75%, 32%);
@@ -483,7 +485,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .approval-stamp-mark { font-weight: 700; }
 .approval-stamp.ok  .approval-stamp-mark { color: hsl(140, 60%, 65%); }
 .approval-stamp.rej .approval-stamp-mark { color: hsl(0, 75%, 70%); }
-.approval-stamp-body { color: var(--fg); min-width: 0; word-break: break-word; }
+.approval-stamp-body { color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
 .approval-when { color: var(--muted); font-size: 0.74rem; margin-left: auto; }
 
 /* ---- files table ---------------------------------------------------- */
@@ -569,7 +571,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 
 /* ---- markdown in assistant messages ---- */
-.msg { position: relative; }
 .msg h2, .msg h3, .msg h4, .msg h5 { margin: 0.55em 0 0.3em; line-height: 1.25; font-weight: 650; }
 .msg h2 { font-size: 1.15rem; } .msg h3 { font-size: 1.06rem; } .msg h4, .msg h5 { font-size: 1rem; }
 .msg ul, .msg ol { margin: 0.35em 0; padding-left: 1.4em; }
@@ -659,7 +660,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .reasoning > summary:hover { color: var(--fg); }
 .reasoning-body {
   padding: 2px 10px 9px; color: var(--muted);
-  white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5;
 }
 
 /* ---- mermaid + katex ------------------------------------------------ */
@@ -691,7 +692,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .msg-tool.artifact-open { color: var(--accent); }
 
 /* ---- composer palette ------------------------------------------------ */
-.composer { position: relative; }
 .palette {
   display: none;
   position: absolute; left: 20px; right: 20px; bottom: calc(100% - 4px);
@@ -756,7 +756,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .hp-row { display: flex; gap: 7px; margin-bottom: 5px; }
 .hp-row:last-child { margin-bottom: 0; }
 .hp-role { flex: 0 0 auto; color: var(--muted); font-family: var(--mono); font-size: 0.7rem; padding-top: 1px; }
-.hp-text { min-width: 0; color: var(--fg); word-break: break-word; }
+.hp-text { min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
 .hp-empty { color: var(--muted); }
 
 /* ---- project instructions + inherit badge ---------------------------- */

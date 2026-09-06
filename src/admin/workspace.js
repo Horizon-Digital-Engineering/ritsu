@@ -136,6 +136,32 @@ async function api(method, path, body) {
  * text/event-stream wire format. Caller aborts the signal to stop the loop;
  * anything else reconnects after 2s.
  */
+/** Emit every complete event in buf; returns the unconsumed tail. */
+function sseDrainBuffer(buf, onEvent) {
+  let idx;
+  while ((idx = buf.indexOf('\n\n')) !== -1) {
+    const raw = buf.slice(0, idx);
+    buf = buf.slice(idx + 2);
+    const dataLines = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
+    if (!dataLines.length) continue;
+    try { onEvent(JSON.parse(dataLines.join('\n'))); }
+    catch { /* malformed payload — skip, keep the stream alive */ }
+  }
+  return buf;
+}
+
+async function sseReadBody(body, onEvent, signal) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    buf = sseDrainBuffer(buf, onEvent);
+  }
+}
+
 async function sseFetch(path, onEvent, signal) {
   while (!signal.aborted) {
     try {
@@ -144,23 +170,7 @@ async function sseFetch(path, onEvent, signal) {
         signal,
       });
       if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (!signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const raw = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const dataLines = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
-          if (!dataLines.length) continue;
-          try { onEvent(JSON.parse(dataLines.join('\n'))); }
-          catch { /* malformed payload — skip, keep the stream alive */ }
-        }
-      }
+      await sseReadBody(r.body, onEvent, signal);
     } catch (e) {
       if (signal.aborted) return;
       console.warn('sse reconnect in 2s:', e?.message ?? e);
@@ -207,7 +217,10 @@ let ctxSeq = 0;
 let txSeq = 0;
 
 // ---- routing ---------------------------------------------------------------
-const chatPath = (id, cid) => `/a/${encodeURIComponent(id)}${cid ? `/c/${cid}` : ''}`;
+const chatPath = (id, cid) => {
+  const tail = cid ? `/c/${cid}` : '';
+  return `/a/${encodeURIComponent(id)}${tail}`;
+};
 const projectPath = (id, pid) => `/a/${encodeURIComponent(id)}/p/${pid}`;
 const filesPath = (id) => `/a/${encodeURIComponent(id)}/files`;
 const skillsPath = (id) => `/a/${encodeURIComponent(id)}/skills`;
@@ -650,14 +663,39 @@ async function reloadTranscript() {
  */
 const THINK_RE = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi;
 
+/** Linear scan for ```lang fences. Replaces lazy-regex parsing, which
+ *  backtracks super-linearly on unclosed fences in hostile input. Returns
+ *  [{start, end, lang, body}] with `end` just past the closing backticks;
+ *  `padAfterLang` additionally eats horizontal whitespace after the language
+ *  word (the artifact scanner's historical tolerance). */
+function fenceBodyStart(text, s, padAfterLang) {
+  let p = s + 3;
+  while (p < text.length && /[\w+.-]/.test(text[p])) p++;
+  const lang = text.slice(s + 3, p);
+  if (padAfterLang) while (p < text.length && text[p] !== '\n' && /\s/.test(text[p])) p++;
+  if (text[p] === '\n') p++;
+  return { lang, bodyAt: p };
+}
+
+function scanFences(text, padAfterLang = false) {
+  const out = [];
+  let i = 0;
+  for (;;) {
+    const s = text.indexOf('```', i);
+    if (s === -1) break;
+    const { lang, bodyAt } = fenceBodyStart(text, s, padAfterLang);
+    const e = text.indexOf('```', bodyAt);
+    if (e === -1) break;
+    out.push({ start: s, end: e + 3, lang, body: text.slice(bodyAt, e) });
+    i = e + 3;
+  }
+  return out;
+}
+
 /** Byte ranges covered by a ``` fence. Math extraction runs before the fence
  *  lift, so it consults these to leave TeX-shaped text inside code alone. */
 function fenceRanges(text) {
-  const out = [];
-  const re = /```[A-Za-z0-9_+.-]*\n?[\s\S]*?```/g;
-  let m;
-  while ((m = re.exec(text)) !== null) out.push([m.index, m.index + m[0].length]);
-  return out;
+  return scanFences(text).map(f => [f.start, f.end]);
 }
 
 /** A fenced block. `mermaid` keeps its source as the visible body: that is
@@ -709,10 +747,19 @@ function md(raw) {
   });
 
   const blocks = [];
-  text = text.replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push({ lang, code });
-    return `\uE000B${blocks.length - 1}\uE000`;
-  });
+  {
+    const lifted = scanFences(text);
+    if (lifted.length) {
+      let rebuilt = '';
+      let last = 0;
+      for (const f of lifted) {
+        blocks.push({ lang: f.lang, code: f.body });
+        rebuilt += text.slice(last, f.start) + `\uE000B${blocks.length - 1}\uE000`;
+        last = f.end;
+      }
+      text = rebuilt + text.slice(last);
+    }
+  }
   text = esc(text);
   text = text.replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
   text = text
@@ -725,7 +772,7 @@ function md(raw) {
     .replace(/(^|[^*])\*([^*\s][^*\n]*?)\*(?!\*)/g, '$1<em>$2</em>');
   // esc() ran first, so a quote in the URL is already &quot; and cannot
   // break out of the attribute; the ^https? anchor shuts out javascript: etc.
-  text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+  text = text.replace(/\[([^[\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   text = text
     .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
@@ -868,10 +915,9 @@ function renderPath() {
       const m = node.msg;
       const byline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label)
         ? `<div class="msg-byline">${esc(m.caller_label)}</div>` : '';
-      const atts = m.attachments?.length
-        ? `<div class="msg-atts">${m.attachments.map(a =>
-            `<img class="att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${esc(a.data)}" alt="attachment">`).join('')}</div>`
-        : '';
+      const attImgs = (m.attachments || []).map(a =>
+        `<img class="att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${esc(a.data)}" alt="attachment">`).join('');
+      const atts = attImgs ? `<div class="msg-atts">${attImgs}</div>` : '';
       // Assistant turns render as markdown; user turns stay literal text —
       // what the operator typed is what they see.
       const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>');
@@ -1026,7 +1072,7 @@ const ATTACH_MAX = 4;
 const ATTACH_MAX_EDGE_DEFAULT = 1568;
 const ATTACH_MAX_EDGE_HIRES = 2576;
 const ATTACH_MAX_B64 = 6_800_000;   // ~5MB binary; the server enforces the same
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const ATTACH_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 // Best-effort guess. Unknown models default to "capable" so we don't nag; the
 // hint only fires for models we are fairly sure are text-only.
 const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|grok|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
@@ -1051,7 +1097,7 @@ function blobToBase64(blob) {
 // Decode → downscale → re-encode, bounding the payload. GIFs pass through
 // untouched so animation survives (canvas would flatten them).
 async function processImageFile(file) {
-  if (!ATTACH_TYPES.includes(file.type)) throw new Error('unsupported image type (png/jpeg/webp/gif only)');
+  if (!ATTACH_TYPES.has(file.type)) throw new Error('unsupported image type (png/jpeg/webp/gif only)');
   if (file.type === 'image/gif') {
     const data = await blobToBase64(file);
     if (data.length > ATTACH_MAX_B64) throw new Error('gif too large (max ~5MB)');
@@ -1351,9 +1397,7 @@ function renderProjectView(pid) {
   if (!filesLoaded) {
     filesHtml = '<div class="empty">loading…</div>';
   } else if (tagged.length) {
-    filesHtml = `<div class="table-wrap"><table class="ftable">
-      <thead><tr><th>Path</th><th>Size</th><th>Modified</th><th></th></tr></thead>
-      <tbody>${tagged.map(f => `<tr>
+    const taggedRows = tagged.map(f => `<tr>
         <td class="path-cell">${esc(f.rel)}</td>
         <td class="num-cell">${fmtBytes(f.size)}</td>
         <td class="num-cell">${fmtAge(f.mtime)}</td>
@@ -1361,7 +1405,10 @@ function renderProjectView(pid) {
           <button type="button" data-action="download-file" data-path="${esc(f.path)}" title="Download">Download</button>
           <button type="button" data-action="untag-file" data-path="${esc(f.path)}" title="Remove from this project">Untag</button>
         </td>
-      </tr>`).join('')}</tbody></table></div>`;
+      </tr>`).join('');
+    filesHtml = `<div class="table-wrap"><table class="ftable">
+      <thead><tr><th>Path</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody>${taggedRows}</tbody></table></div>`;
   } else {
     filesHtml = '<div class="empty">No files tagged here yet — tag one from the Files view.</div>';
   }
@@ -1462,8 +1509,9 @@ async function showFilesView() {
 
 function renderFilesView() {
   const target = $('view-files');
+  const plural = files.length === 1 ? '' : 's';
   const sub = hasWorkspaces
-    ? `${files.length} file${files.length === 1 ? '' : 's'} across this agent's workspace roots`
+    ? `${files.length} file${plural} across this agent's workspace roots`
     : 'no workspace roots';
   const head = `<div class="view-head">
       <div class="view-title-wrap">
@@ -1549,6 +1597,24 @@ async function downloadFile(path) {
   } catch (e) { toast(`download failed: ${e.message}`, 'err'); }
 }
 
+/** POST one file into the workspace; a name collision confirms then overwrites. */
+async function uploadOneFile(name, path, data) {
+  try {
+    await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: false });
+    return true;
+  } catch (e) {
+    if (/file exists/i.test(e.message) && confirm(`${path} already exists. Overwrite it?`)) {
+      try {
+        await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
+        return true;
+      } catch (e2) { toast(`${name}: ${e2.message}`, 'err'); }
+    } else if (!/file exists/i.test(e.message)) {
+      toast(`${name}: ${e.message}`, 'err');
+    }
+    return false;
+  }
+}
+
 async function uploadFiles(fileList) {
   const list = Array.from(fileList || []);
   if (!list.length) return;
@@ -1560,19 +1626,7 @@ async function uploadFiles(fileList) {
     let data;
     try { data = await blobToBase64(f); }
     catch { toast(`${name}: could not read file`, 'err'); continue; }
-    try {
-      await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: false });
-      wrote++;
-    } catch (e) {
-      if (/file exists/i.test(e.message) && confirm(`${path} already exists. Overwrite it?`)) {
-        try {
-          await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
-          wrote++;
-        } catch (e2) { toast(`${name}: ${e2.message}`, 'err'); }
-      } else if (!/file exists/i.test(e.message)) {
-        toast(`${name}: ${e.message}`, 'err');
-      }
-    }
+    if (await uploadOneFile(name, path, data)) wrote++;
   }
   if (wrote) toast(`uploaded ${wrote} file${wrote === 1 ? '' : 's'}`);
   await loadFiles();
@@ -1836,9 +1890,10 @@ function renderMermaid(root) {
 function artifactsIn(content) {
   const src = String(content ?? '');
   const found = [];
-  const fence = /```(html|svg)[^\S\n]*\n?([\s\S]*?)```/gi;
-  let m;
-  while ((m = fence.exec(src)) !== null) found.push({ kind: m[1].toLowerCase(), code: m[2].trim() });
+  for (const f of scanFences(src, true)) {
+    const kind = f.lang.toLowerCase();
+    if (kind === 'html' || kind === 'svg') found.push({ kind, code: f.body.trim() });
+  }
   if (!found.length) {
     const doc = src.match(/<!doctype html[\s\S]*<\/html>/i)
       || src.match(/<html[\s>][\s\S]*<\/html>/i)
@@ -1967,29 +2022,36 @@ function closePalette() {
   paletteRows = [];
 }
 
+function paletteAgentRows(filter) {
+  const rows = [];
+  for (const a of agents) {
+    if (!filter || a.id.toLowerCase().includes(filter) || (a.name || '').toLowerCase().includes(filter)) {
+      rows.push({ kind: 'agent', label: `@${a.id}`, desc: a.name || '', id: a.id });
+    }
+  }
+  return rows;
+}
+
+function paletteSlashRows(filter) {
+  const rows = [];
+  for (const b of PALETTE_BUILTINS) {
+    if (b.name.startsWith(filter)) rows.push({ kind: 'builtin', label: `/${b.name}`, desc: b.desc, action: b.action });
+  }
+  for (const p of savedPrompts) {
+    if (!filter || p.name.toLowerCase().includes(filter)) {
+      rows.push({ kind: 'prompt', label: `/${p.name}`, desc: p.agent_id ? '' : 'all agents', id: p.id });
+    }
+  }
+  return rows;
+}
+
 /** Re-derive the palette from the composer's current text. */
 function syncPalette() {
   const v = $('ask-input').value;
   const lead = v.slice(0, 1);
   if ((lead !== '/' && lead !== '@') || v.includes('\n')) { closePalette(); return; }
   const filter = v.slice(1).trim().toLowerCase();
-  const rows = [];
-  if (lead === '@') {
-    for (const a of agents) {
-      if (!filter || a.id.toLowerCase().includes(filter) || (a.name || '').toLowerCase().includes(filter)) {
-        rows.push({ kind: 'agent', label: `@${a.id}`, desc: a.name || '', id: a.id });
-      }
-    }
-  } else {
-    for (const b of PALETTE_BUILTINS) {
-      if (b.name.startsWith(filter)) rows.push({ kind: 'builtin', label: `/${b.name}`, desc: b.desc, action: b.action });
-    }
-    for (const p of savedPrompts) {
-      if (!filter || p.name.toLowerCase().includes(filter)) {
-        rows.push({ kind: 'prompt', label: `/${p.name}`, desc: p.agent_id ? '' : 'all agents', id: p.id });
-      }
-    }
-  }
+  const rows = lead === '@' ? paletteAgentRows(filter) : paletteSlashRows(filter);
   // Nothing matches any more — the operator is writing a message that merely
   // starts with "/" or "@", so get out of the way and let Enter send it.
   if (!rows.length) { closePalette(); return; }
@@ -2056,34 +2118,127 @@ function applyPromptText(text) {
 
 // ---- prompt variables -------------------------------------------------------
 // {{name}} | {{name|type}} | {{name|type:prop="a,b"}}
-const VAR_TYPES = ['text', 'textarea', 'select', 'number', 'checkbox', 'date'];
-const varRe = () => /\{\{\s*([^}|]+?)\s*(?:\|\s*([A-Za-z]+)\s*(?::\s*([^}]*?))?)?\s*\}\}/g;
+const VAR_TYPES = new Set(['text', 'textarea', 'select', 'number', 'checkbox', 'date']);
+
+/** One {{...}} token's parts, or null when the inner text isn't a variable
+ *  (empty name, or a pipe whose type token isn't purely alphabetic — those
+ *  stay literal, as the old pattern refused them). */
+function parseVarToken(inner) {
+  const pipe = inner.indexOf('|');
+  if (pipe === -1) {
+    const bare = inner.trim();
+    return bare ? { name: bare, type: 'text', propsRaw: '' } : null;
+  }
+  const name = inner.slice(0, pipe).trim();
+  const rest = inner.slice(pipe + 1);
+  const colon = rest.indexOf(':');
+  const typeTok = (colon === -1 ? rest : rest.slice(0, colon)).trim();
+  if (!name || !/^[A-Za-z]+$/.test(typeTok)) return null;
+  return { name, type: typeTok.toLowerCase(), propsRaw: colon === -1 ? '' : rest.slice(colon + 1) };
+}
+
+/** Linear scan for {{...}} variable tokens — no regex, no backtracking. */
+function scanVarTokens(content) {
+  const out = [];
+  let i = 0;
+  for (;;) {
+    const s = content.indexOf('{{', i);
+    if (s === -1) break;
+    const e = content.indexOf('}}', s + 2);
+    if (e === -1) break;
+    const parsed = parseVarToken(content.slice(s + 2, e));
+    if (parsed) out.push({ start: s, end: e + 2, ...parsed });
+    i = e + 2;
+  }
+  return out;
+}
+
+/** prop="a,b" | prop=[a,b] | prop=bare — hand-parsed; an unclosed quote or
+ *  bracket drops that pair, like the old pattern's failure to match. */
+function readPropValue(raw, k) {
+  if (raw[k] === '"') {
+    const e = raw.indexOf('"', k + 1);
+    return e === -1 ? null : { value: raw.slice(k + 1, e), next: e + 1 };
+  }
+  if (raw[k] === '[') {
+    const e = raw.indexOf(']', k + 1);
+    return e === -1 ? null : { value: raw.slice(k + 1, e), next: e + 1 };
+  }
+  let e = k;
+  while (e < raw.length && !/[\s,]/.test(raw[e])) e++;
+  return e === k ? null : { value: raw.slice(k, e), next: e };
+}
+
+function parseVarProps(raw) {
+  const props = {};
+  let i = 0;
+  while (i < raw.length) {
+    while (i < raw.length && /[\s,]/.test(raw[i])) i++;
+    let j = i;
+    while (j < raw.length && /\w/.test(raw[j])) j++;
+    if (j === i) { i++; continue; }
+    const key = raw.slice(i, j);
+    let k = j;
+    while (k < raw.length && /\s/.test(raw[k])) k++;
+    if (raw[k] !== '=') { i = j + 1; continue; }
+    k++;
+    while (k < raw.length && /\s/.test(raw[k])) k++;
+    const read = readPropValue(raw, k);
+    if (!read) { i = k + 1; continue; }
+    props[key] = read.value.trim();
+    i = read.next;
+  }
+  return props;
+}
 
 function parseVars(content) {
   const out = [];
   const seen = new Set();
-  const re = varRe();
-  let m;
-  while ((m = re.exec(content)) !== null) {
-    const name = m[1].trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    const type = (m[2] || 'text').toLowerCase();
-    const props = {};
-    // prop="a,b" | prop=[a,b] | prop=bare
-    for (const pm of String(m[3] || '').matchAll(/([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\]|([^,\s]+))/g)) {
-      props[pm[1]] = String(pm[2] ?? pm[3] ?? pm[4] ?? '').trim();
-    }
-    out.push({ name, type: VAR_TYPES.includes(type) ? type : 'text', props });
+  for (const tok of scanVarTokens(content)) {
+    if (seen.has(tok.name)) continue;
+    seen.add(tok.name);
+    out.push({ name: tok.name, type: VAR_TYPES.has(tok.type) ? tok.type : 'text', props: parseVarProps(tok.propsRaw) });
   }
   return out;
 }
 
 function substituteVars(content, values) {
-  return content.replace(varRe(), (whole, rawName) => {
-    const k = rawName.trim();
-    return Object.prototype.hasOwnProperty.call(values, k) ? values[k] : whole;
-  });
+  const toks = scanVarTokens(content);
+  if (!toks.length) return content;
+  let out = '';
+  let last = 0;
+  for (const t of toks) {
+    out += content.slice(last, t.start);
+    out += Object.prototype.hasOwnProperty.call(values, t.name)
+      ? values[t.name]
+      : content.slice(t.start, t.end);
+    last = t.end;
+  }
+  return out + content.slice(last);
+}
+
+function varInputFor(v) {
+  let input;
+  if (v.type === 'textarea') {
+    input = document.createElement('textarea');
+    input.rows = 4;
+  } else if (v.type === 'select') {
+    input = document.createElement('select');
+    for (const opt of String(v.props.options || '').split(',').map(o => o.trim()).filter(Boolean)) {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      input.appendChild(o);
+    }
+  } else {
+    input = document.createElement('input');
+    let inputType = 'text';
+    if (v.type === 'number' || v.type === 'checkbox' || v.type === 'date') inputType = v.type;
+    input.type = inputType;
+  }
+  input.dataset.var = v.name;
+  input.dataset.vtype = v.type;
+  return input;
 }
 
 function openVarForm(prompt_, vars) {
@@ -2098,24 +2253,7 @@ function openVarForm(prompt_, vars) {
       field.className = v.type === 'checkbox' ? 'field-row' : 'field';
       const label = document.createElement('label');
       label.textContent = v.name;
-      let input;
-      if (v.type === 'textarea') {
-        input = document.createElement('textarea');
-        input.rows = 4;
-      } else if (v.type === 'select') {
-        input = document.createElement('select');
-        for (const opt of String(v.props.options || '').split(',').map(o => o.trim()).filter(Boolean)) {
-          const o = document.createElement('option');
-          o.value = opt;
-          o.textContent = opt;
-          input.appendChild(o);
-        }
-      } else {
-        input = document.createElement('input');
-        input.type = v.type === 'number' ? 'number' : v.type === 'checkbox' ? 'checkbox' : v.type === 'date' ? 'date' : 'text';
-      }
-      input.dataset.var = v.name;
-      input.dataset.vtype = v.type;
+      const input = varInputFor(v);
       if (v.type === 'checkbox') { field.appendChild(input); field.appendChild(label); }
       else { field.appendChild(label); field.appendChild(input); }
       host.appendChild(field);
@@ -2132,7 +2270,8 @@ function applyVarForm() {
   if (!p) { closeModal(); return; }
   const values = {};
   for (const el of card.querySelectorAll('[data-var]')) {
-    values[el.dataset.var] = el.dataset.vtype === 'checkbox' ? (el.checked ? 'yes' : 'no') : el.value;
+    const checked = el.checked ? 'yes' : 'no';
+    values[el.dataset.var] = el.dataset.vtype === 'checkbox' ? checked : el.value;
   }
   closeModal();
   applyPromptText(substituteVars(p.content, values));
@@ -2487,7 +2626,8 @@ const ACTIONS = {
     const title = convoTitle(convoId);
     const lines = [`# ${title}`, ''];
     for (const m of lastRendered) {
-      lines.push(`## ${m.role}${m.caller_label ? ` (${m.caller_label})` : ''}`, '', m.content, '');
+      const caller = m.caller_label ? ` (${m.caller_label})` : '';
+      lines.push(`## ${m.role}${caller}`, '', m.content, '');
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
     const a = document.createElement('a');
@@ -2749,4 +2889,4 @@ async function boot() {
   await onRoute();
 }
 
-boot();
+await boot();

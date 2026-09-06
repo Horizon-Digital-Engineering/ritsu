@@ -37,7 +37,9 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_PROPOSAL_POLL_MS = 60000;
 
 function stripTrailingSlash(s: string): string {
-  return s.replace(/\/+$/, '');
+  let end = s.length;
+  while (end > 0 && s[end - 1] === '/') end--;
+  return s.slice(0, end);
 }
 
 /**
@@ -61,7 +63,8 @@ export function loadMemoryConfig(secrets: Pick<SecretStore, 'get'>): MemoryConfi
     return { mode: 'sqlite' };
   }
   // Credentials present: honor the stored mode, defaulting to the safe dual-run.
-  const mode: MemoryMode = rawMode === 'sqlite' ? 'sqlite' : rawMode === 'flashback' ? 'flashback' : 'dual';
+  let mode: MemoryMode = 'dual';
+  if (rawMode === 'sqlite' || rawMode === 'flashback') mode = rawMode;
   if (mode === 'sqlite') return { mode };
   const timeoutMs = Number(secrets.get(FLASHBACK_NS, 'timeout_ms') ?? '') || DEFAULT_TIMEOUT_MS;
   const proposalPollMs = Number(secrets.get(FLASHBACK_NS, 'proposal_poll_ms') ?? '') || DEFAULT_PROPOSAL_POLL_MS;

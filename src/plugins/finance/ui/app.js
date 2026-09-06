@@ -24,15 +24,19 @@ async function loadAccounts() {
   try {
     const { accounts, netWorth } = await api('GET', `${F}/accounts`);
     if (nw) {
+      const typeRows = netWorth.byType.map(t => `<tr><td>${esc(t.type)}</td><td class="num">${money(t.total, netWorth.currency)}</td><td class="muted">${t.accounts} acct</td></tr>`).join('');
       nw.innerHTML = accounts.length
         ? `<div class="fin-nw"><span class="fin-nw-net">${money(netWorth.net, netWorth.currency)}</span>
              <span class="fin-nw-sub">assets ${money(netWorth.assets, netWorth.currency)} · liabilities ${money(netWorth.liabilities, netWorth.currency)}</span></div>
-           <table><tbody>${netWorth.byType.map(t => `<tr><td>${esc(t.type)}</td><td class="num">${money(t.total, netWorth.currency)}</td><td class="muted">${t.accounts} acct</td></tr>`).join('')}</tbody></table>`
+           <table><tbody>${typeRows}</tbody></table>`
         : '<p class="muted">No accounts yet. Connect a bank below.</p>';
     }
+    const acctRows = accounts.map(a => {
+      const mask = a.mask ? ` <span class="muted">••${esc(a.mask)}</span>` : '';
+      return `<tr><td>${esc(a.name)}${mask}</td><td class="muted">${esc(a.type)}/${esc(a.subtype)}</td><td class="num">${money(a.current_balance, a.iso_currency)}</td></tr>`;
+    }).join('');
     el.innerHTML = accounts.length
-      ? `<table><thead><tr><th>Account</th><th>Type</th><th class="num">Balance</th></tr></thead><tbody>${accounts.map(a =>
-          `<tr><td>${esc(a.name)}${a.mask ? ` <span class="muted">••${esc(a.mask)}</span>` : ''}</td><td class="muted">${esc(a.type)}/${esc(a.subtype)}</td><td class="num">${money(a.current_balance, a.iso_currency)}</td></tr>`).join('')}</tbody></table>`
+      ? `<table><thead><tr><th>Account</th><th>Type</th><th class="num">Balance</th></tr></thead><tbody>${acctRows}</tbody></table>`
       : '<p class="muted">No accounts yet.</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
@@ -54,12 +58,17 @@ async function loadStatus() {
       el.querySelector('#fin-config-form').addEventListener('submit', saveConfig);
       return;
     }
-    const items = s.items.map(i =>
-      `<tr><td>${esc(i.institution_name || i.item_id)}</td><td class="${i.status === 'error' ? 'err' : 'ok'}">${esc(i.status)}${i.error ? ` — ${esc(i.error)}` : ''}</td>
-         <td><button data-action="fin-unlink" data-id="${esc(i.item_id)}" class="danger">Unlink</button></td></tr>`).join('');
+    const items = s.items.map(i => {
+      const err = i.error ? ` — ${esc(i.error)}` : '';
+      return `<tr><td>${esc(i.institution_name || i.item_id)}</td><td class="${i.status === 'error' ? 'err' : 'ok'}">${esc(i.status)}${err}</td>
+         <td><button data-action="fin-unlink" data-id="${esc(i.item_id)}" class="danger">Unlink</button></td></tr>`;
+    }).join('');
+    const itemsTable = s.items.length
+      ? `<table><thead><tr><th>Institution</th><th>Status</th><th></th></tr></thead><tbody>${items}</tbody></table>`
+      : '<p class="muted">No banks linked yet.</p>';
     el.innerHTML = `
       <p class="muted">Plaid: <strong>${esc(s.env)}</strong>. Read-only — Ritsu can never move money.</p>
-      ${s.items.length ? `<table><thead><tr><th>Institution</th><th>Status</th><th></th></tr></thead><tbody>${items}</tbody></table>` : '<p class="muted">No banks linked yet.</p>'}
+      ${itemsTable}
       <div class="form-actions" style="margin-top:10px">
         ${s.env === 'sandbox' ? '<button data-action="fin-link-sandbox">Link sandbox bank</button>' : ''}
         <button data-action="fin-link-start">Link a bank (Hosted Link)</button>
@@ -145,9 +154,10 @@ function renderReportingPane(pane) {
 function bars(rows, key, label) {
   if (!rows.length) return '<p class="muted">(none)</p>';
   const max = Math.max(...rows.map(r => r[key]));
-  return `<table>${rows.map(r => `<tr><td>${esc(label(r))}</td>
+  const rowsHtml = rows.map(r => `<tr><td>${esc(label(r))}</td>
     <td class="fin-bar-cell"><span class="fin-bar" style="width:${max ? Math.round((r[key] / max) * 100) : 0}%"></span></td>
-    <td class="num">${money(r[key])}</td></tr>`).join('')}</table>`;
+    <td class="num">${money(r[key])}</td></tr>`).join('');
+  return `<table>${rowsHtml}</table>`;
 }
 
 async function loadReport() {
@@ -157,14 +167,19 @@ async function loadReport() {
     document.getElementById('fin-bycat').innerHTML = bars(r.byCategory, 'total', x => x.category);
     document.getElementById('fin-bymonth').innerHTML = bars(r.byMonth, 'total', x => x.month);
     document.getElementById('fin-merchants').innerHTML = bars(r.topMerchants, 'total', x => `${x.merchant} (${x.count})`);
+    const subRows = r.subscriptions.map(s => `<tr><td>${esc(s.merchant)}</td><td class="muted">${esc(s.cadence)}</td><td class="num">${money(s.avgAmount)}</td></tr>`).join('');
     document.getElementById('fin-subs').innerHTML = r.subscriptions.length
-      ? `<table><tbody>${r.subscriptions.map(s => `<tr><td>${esc(s.merchant)}</td><td class="muted">${esc(s.cadence)}</td><td class="num">${money(s.avgAmount)}</td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${subRows}</tbody></table>`
       : '<p class="muted">(none detected)</p>';
-    document.getElementById('fin-budgets').innerHTML = r.budgets.length
-      ? `<table><tbody>${r.budgets.map(b => `<tr><td>${esc(b.category)}</td>
+    const budgetRows = r.budgets.map(b => {
+      const state = b.over ? `over ${money(-b.remaining)}` : `${money(b.remaining)} left`;
+      return `<tr><td>${esc(b.category)}</td>
           <td class="num">${money(b.spent)} / ${money(b.limit)}</td>
-          <td class="${b.over ? 'err' : 'ok'}">${b.over ? `over ${money(-b.remaining)}` : `${money(b.remaining)} left`}</td>
-          <td><button data-action="fin-del-target" data-cat="${esc(b.category)}">×</button></td></tr>`).join('')}</tbody></table>`
+          <td class="${b.over ? 'err' : 'ok'}">${state}</td>
+          <td><button data-action="fin-del-target" data-cat="${esc(b.category)}">×</button></td></tr>`;
+    }).join('');
+    document.getElementById('fin-budgets').innerHTML = r.budgets.length
+      ? `<table><tbody>${budgetRows}</tbody></table>`
       : '<p class="muted">No targets set. Add one below.</p>';
   } catch (e) {
     document.getElementById('fin-bycat').textContent = `error: ${e.message}`;

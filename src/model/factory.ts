@@ -109,9 +109,20 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   // saving a new token in the UI takes effect without restarting the service.
   const token = opts.secrets?.get(CLAUDE_NS, 'oauth_token')?.trim();
   if (token) out.oauthToken = token;
+  copyAgentIdentity(opts, out);
+  copyToolWiring(opts, out);
+  return out;
+}
+
+function copyAgentIdentity(opts: DispatcherOpts, out: ClaudeDirectOpts): void {
   if (opts.cwd        !== undefined) out.cwd        = opts.cwd;
   if (opts.tools      !== undefined) out.tools      = opts.tools;
   if (opts.workspaces !== undefined) out.workspaces = opts.workspaces;
+  if (opts.agentId    !== undefined) out.agentId    = opts.agentId;
+  if (opts.plugins    !== undefined) out.plugins    = opts.plugins;
+}
+
+function copyToolWiring(opts: DispatcherOpts, out: ClaudeDirectOpts): void {
   if (opts.memory     !== undefined) out.memory     = opts.memory;
   if (opts.comms      !== undefined) out.comms      = opts.comms;
   if (opts.admin      !== undefined) out.admin      = opts.admin;
@@ -122,9 +133,6 @@ function claudeOptsFrom(opts: DispatcherOpts): ClaudeDirectOpts {
   if (opts.scheduler  !== undefined) out.scheduler  = opts.scheduler;
   if (opts.skillsLookup !== undefined) out.skillsLookup = opts.skillsLookup;
   if (opts.history    !== undefined) out.history    = opts.history;
-  if (opts.agentId    !== undefined) out.agentId    = opts.agentId;
-  if (opts.plugins    !== undefined) out.plugins    = opts.plugins;
-  return out;
 }
 
 /** Project DispatcherOpts → RitsuAgentDispatcher constructor args; throws if

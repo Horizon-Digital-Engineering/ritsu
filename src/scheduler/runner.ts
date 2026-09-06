@@ -185,22 +185,7 @@ export class SchedulerRunner {
 
     const gate = await this.evaluateTrigger(job);
     if (gate.status !== 'fire') {
-      // A decline still updates the baseline. A change-detector that only
-      // persists on a fire can never move its reference point, so once it
-      // declines it declines forever.
-      if (gate.status === 'declined' && gate.state !== undefined) {
-        try { this.store.setTriggerState(job.id, gate.state); }
-        catch (err) { logger.warn('scheduler.trigger-state-rejected', { job: job.id, err: (err as Error).message }); }
-      }
-      const status: RunStatus = gate.status === 'declined' ? 'skipped' : 'gate_error';
-      this.store.finishRun(runId, this.now(), status, null, gate.error ?? null);
-      this.store.recordOutcome(job.id, dueAt, status);
-      if (status === 'gate_error') {
-        // A broken gate is a broken job. Recording it as a skip meant a typo'd
-        // command silenced a job forever while resetting its failure streak.
-        await this.alertFailure(job, `trigger failed: ${gate.error ?? 'unknown'}`, this.now());
-        this.maybeAutoDisable(job);
-      }
+      await this.finishGatedRun(job, runId, dueAt, gate);
       return;
     }
 
@@ -222,22 +207,55 @@ export class SchedulerRunner {
     this.store.recordOutcome(job.id, dueAt, result.status);
 
     if (result.status === 'ok') {
-      if (gate.state !== undefined) {
-        try { this.store.setTriggerState(job.id, gate.state); }
-        catch (err) {
-          // Leaving it unset would make the gate permanently stateless and
-          // re-fire every tick — the exact outcome the cap exists to prevent.
-          logger.error('scheduler.trigger-state-rejected', { job: job.id, err: (err as Error).message });
-          this.store.finishRun(runId, this.now(), 'error', result.output || null, (err as Error).message);
-          this.store.recordOutcome(job.id, dueAt, 'error');
-          // Every other error path alerts; this one silently left the gate
-          // stateless, which makes it re-fire every tick.
-          await this.alertFailure(job, `trigger state rejected: ${(err as Error).message}`, this.now());
-          this.maybeAutoDisable(job);
-        }
-      }
+      await this.persistTriggerState(job, runId, dueAt, gate.state, result);
     } else {
       await this.alertFailure(job, result.error ?? 'unknown error', finishedAt);
+      this.maybeAutoDisable(job);
+    }
+  }
+
+  private async finishGatedRun(
+    job: Job,
+    runId: number,
+    dueAt: number,
+    gate: { status: 'fire' | 'declined' | 'error'; state?: unknown; error?: string },
+  ): Promise<void> {
+    // A decline still updates the baseline. A change-detector that only
+    // persists on a fire can never move its reference point, so once it
+    // declines it declines forever.
+    if (gate.status === 'declined' && gate.state !== undefined) {
+      try { this.store.setTriggerState(job.id, gate.state); }
+      catch (err) { logger.warn('scheduler.trigger-state-rejected', { job: job.id, err: (err as Error).message }); }
+    }
+    const status: RunStatus = gate.status === 'declined' ? 'skipped' : 'gate_error';
+    this.store.finishRun(runId, this.now(), status, null, gate.error ?? null);
+    this.store.recordOutcome(job.id, dueAt, status);
+    if (status === 'gate_error') {
+      // A broken gate is a broken job. Recording it as a skip meant a typo'd
+      // command silenced a job forever while resetting its failure streak.
+      await this.alertFailure(job, `trigger failed: ${gate.error ?? 'unknown'}`, this.now());
+      this.maybeAutoDisable(job);
+    }
+  }
+
+  private async persistTriggerState(
+    job: Job,
+    runId: number,
+    dueAt: number,
+    state: unknown,
+    result: PayloadResult,
+  ): Promise<void> {
+    if (state === undefined) return;
+    try { this.store.setTriggerState(job.id, state); }
+    catch (err) {
+      // Leaving it unset would make the gate permanently stateless and
+      // re-fire every tick — the exact outcome the cap exists to prevent.
+      logger.error('scheduler.trigger-state-rejected', { job: job.id, err: (err as Error).message });
+      this.store.finishRun(runId, this.now(), 'error', result.output || null, (err as Error).message);
+      this.store.recordOutcome(job.id, dueAt, 'error');
+      // Every other error path alerts; this one silently left the gate
+      // stateless, which makes it re-fire every tick.
+      await this.alertFailure(job, `trigger state rejected: ${(err as Error).message}`, this.now());
       this.maybeAutoDisable(job);
     }
   }
@@ -448,7 +466,11 @@ function runCommand(
       killTree();
       out += outDecoder.end();
       finish(() => {
-        if (code !== 0) { reject(new Error(`exit ${code}${err ? `: ${err.trim().slice(0, 500)}` : ''}`)); return; }
+        if (code !== 0) {
+          const detail = err ? `: ${err.trim().slice(0, 500)}` : '';
+          reject(new Error(`exit ${code}${detail}`));
+          return;
+        }
         resolve(truncated ? out + '\n…truncated' : out);
       });
     });

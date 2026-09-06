@@ -29,6 +29,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import type { AgentDefinition } from '../../admin/schema.js';
 import type { AgentDefinitionStore } from '../../agent-definition-store.js';
 import type { ConversationStore } from '../../conversation-store.js';
 import { gateMcpTool, type McpGateContext } from './approval-gate.js';
@@ -154,6 +155,97 @@ export function buildDenialMessage(caller: string, target: string, allowed: stri
   return msg;
 }
 
+interface CommsToolResult { [x: string]: unknown; content: Array<{ type: 'text'; text: string }> }
+
+function textResult(text: string): CommsToolResult {
+  return { content: [{ type: 'text', text }] };
+}
+
+/**
+ * Confused-deputy guard: refuse to route through an agent with
+ * capabilities the caller doesn't already have. Otherwise A could
+ * prompt-inject B (which has manage_agents) into minting a new
+ * agent with whatever permissions A wanted.
+ *
+ * Returns a denial result, or null when the call may proceed (no
+ * escalation, or the operator approved it).
+ */
+async function refuseOrApproveEscalation(
+  callerAgentId: string,
+  callerDef: AgentDefinition | null,
+  deps: AgentCommsDeps,
+  gate: McpGateContext | null,
+  target: string,
+  message: string,
+): Promise<CommsToolResult | null> {
+  const targetDef = await deps.defStore.read(target);
+  const escalated = callerEscalatesTo(callerDef?.capabilities ?? [], targetDef?.capabilities ?? []);
+  if (escalated.length === 0) return null;
+
+  // crm/social agents read untrusted content → injection-exposed.
+  // They ALWAYS hard-deny escalation, ignoring escalation_approvable:
+  // a prompt-injected agent must not be able to escalate even with an
+  // operator click. Otherwise, if the caller opted into approvable
+  // escalation and we have an approval gate, route to the operator.
+  const injectionExposed = (callerDef?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
+  if (!callerDef?.escalation_approvable || injectionExposed || gate === null) {
+    const note = injectionExposed && callerDef?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
+    logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
+    deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: gate?.conversationId ?? null });
+    return textResult(
+      `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${callerAgentId} does not. ` +
+        `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`,
+    );
+  }
+  // Opt-in approvable escalation: block on operator approval. Approve →
+  // fall through and make the call; reject → deny with the reason.
+  logger.info('comms.escalation-approval', { caller: callerAgentId, target, escalated });
+  const decision = await gate.approvals.request({
+    agentId: callerAgentId,
+    conversationId: gate.conversationId,
+    toolName: COMMS_TOOL_NAMES[0],
+    args: { agent_id: target, message, _escalation: { capabilities: escalated } },
+  });
+  if (decision.state === 'rejected') {
+    deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: gate.conversationId });
+    const why = decision.reason?.trim()
+      ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
+      : `Operator rejected this escalated call to ${target}.`;
+    return textResult(why);
+  }
+  // approved → continue to the normal call path.
+  return null;
+}
+
+/**
+ * Cycle guard: if `target` is already in the chain, we're about to
+ * loop. The depth cap eventually breaks this but only after burning
+ * tokens on the way down. Refuse up front. Also enforces the depth cap.
+ */
+function refuseChainViolation(
+  callerAgentId: string,
+  deps: AgentCommsDeps,
+  gate: McpGateContext | null,
+  target: string,
+  message: string,
+  ctx: CallContext,
+): CommsToolResult | null {
+  if (ctx.chain.includes(target)) {
+    const chain = [...ctx.chain, target].join(' → ');
+    logger.warn('comms.cycle', { caller: callerAgentId, target, chain });
+    deps.denials?.record({ caller: callerAgentId, target, reason: 'cycle', detail: chain, message, conversationId: gate?.conversationId ?? null });
+    return textResult(`call cycle detected: ${chain}. Stop and answer with what you already know.`);
+  }
+
+  if (ctx.depth >= MAX_CALL_DEPTH) {
+    const chain = [...ctx.chain, target].join(' → ');
+    logger.warn('comms.depth-exceeded', { caller: callerAgentId, target, chain });
+    deps.denials?.record({ caller: callerAgentId, target, reason: 'depth', detail: chain, message, conversationId: gate?.conversationId ?? null });
+    return textResult(`call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`);
+  }
+  return null;
+}
+
 export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, gate: McpGateContext | null = null) {
   return createSdkMcpServer({
     name: COMMS_MCP_NAME,
@@ -181,78 +273,13 @@ export function buildAgentCommsMcp(callerAgentId: string, deps: AgentCommsDeps, 
             };
           }
 
-          // Confused-deputy guard: refuse to route through an agent with
-          // capabilities the caller doesn't already have. Otherwise A could
-          // prompt-inject B (which has manage_agents) into minting a new
-          // agent with whatever permissions A wanted.
-          const targetDef = await deps.defStore.read(target);
-          const escalated = callerEscalatesTo(callerDef?.capabilities ?? [], targetDef?.capabilities ?? []);
-          if (escalated.length > 0) {
-            // crm/social agents read untrusted content → injection-exposed.
-            // They ALWAYS hard-deny escalation, ignoring escalation_approvable:
-            // a prompt-injected agent must not be able to escalate even with an
-            // operator click. Otherwise, if the caller opted into approvable
-            // escalation and we have an approval gate, route to the operator.
-            const injectionExposed = (callerDef?.capabilities ?? []).some(c => c === 'crm' || c === 'social');
-            if (!callerDef?.escalation_approvable || injectionExposed || gate === null) {
-              const note = injectionExposed && callerDef?.escalation_approvable ? ' (injection-exposed: approval not offered)' : '';
-              logger.warn('comms.denied', { caller: callerAgentId, target, reason: 'escalation', escalated });
-              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')}${note}`, message, conversationId: gate?.conversationId ?? null });
-              return {
-                content: [{
-                  type: 'text',
-                  text: `denied: ${target} holds capabilities (${escalated.join(', ')}) that ${callerAgentId} does not. ` +
-                    `Calls that would let the callee act with elevated capabilities on the caller's behalf are refused.`,
-                }],
-              };
-            }
-            // Opt-in approvable escalation: block on operator approval. Approve →
-            // fall through and make the call; reject → deny with the reason.
-            logger.info('comms.escalation-approval', { caller: callerAgentId, target, escalated });
-            const decision = await gate.approvals.request({
-              agentId: callerAgentId,
-              conversationId: gate.conversationId,
-              toolName: COMMS_TOOL_NAMES[0],
-              args: { agent_id: target, message, _escalation: { capabilities: escalated } },
-            });
-            if (decision.state === 'rejected') {
-              deps.denials?.record({ caller: callerAgentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: gate.conversationId });
-              const why = decision.reason?.trim()
-                ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
-                : `Operator rejected this escalated call to ${target}.`;
-              return { content: [{ type: 'text', text: why }] };
-            }
-            // approved → continue to the normal call path below.
-          }
+          const escalationDenied = await refuseOrApproveEscalation(callerAgentId, callerDef, deps, gate, target, message);
+          if (escalationDenied) return escalationDenied;
 
           const ctx = currentCallContext() ?? { depth: 0, chain: [callerAgentId] };
 
-          // Cycle guard: if `target` is already in the chain, we're about to
-          // loop. The depth cap eventually breaks this but only after burning
-          // tokens on the way down. Refuse up front.
-          if (ctx.chain.includes(target)) {
-            const chain = [...ctx.chain, target].join(' → ');
-            logger.warn('comms.cycle', { caller: callerAgentId, target, chain });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'cycle', detail: chain, message, conversationId: gate?.conversationId ?? null });
-            return {
-              content: [{
-                type: 'text',
-                text: `call cycle detected: ${chain}. Stop and answer with what you already know.`,
-              }],
-            };
-          }
-
-          if (ctx.depth >= MAX_CALL_DEPTH) {
-            const chain = [...ctx.chain, target].join(' → ');
-            logger.warn('comms.depth-exceeded', { caller: callerAgentId, target, chain });
-            deps.denials?.record({ caller: callerAgentId, target, reason: 'depth', detail: chain, message, conversationId: gate?.conversationId ?? null });
-            return {
-              content: [{
-                type: 'text',
-                text: `call depth exceeded (max ${MAX_CALL_DEPTH}): ${chain}. Stop and answer with what you already know.`,
-              }],
-            };
-          }
+          const chainDenied = refuseChainViolation(callerAgentId, deps, gate, target, message, ctx);
+          if (chainDenied) return chainDenied;
 
           // Concurrency cap on the caller. Refuse if this agent already has
           // MAX_PER_CALLER_INFLIGHT outstanding calls; a single agent can't

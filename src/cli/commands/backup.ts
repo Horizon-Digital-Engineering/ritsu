@@ -28,8 +28,115 @@ function fsManager(): BackupManager {
 }
 
 function looksLikeSqlite(file: string): boolean {
-  try { return readFileSync(file, { encoding: 'latin1' }).slice(0, 16) === SQLITE_MAGIC; }
+  try { return readFileSync(file, { encoding: 'latin1' }).startsWith(SQLITE_MAGIC); }
   catch { return false; }
+}
+
+function runCreate(): number {
+  const info = manager().createBackup();
+  process.stdout.write(`created ${info.name} (${(info.size / 1024).toFixed(0)} KB)\n`);
+  return 0;
+}
+
+function runList(): number {
+  const rows = fsManager().listBackups();
+  if (!rows.length) { process.stdout.write('(no backups yet)\n'); return 0; }
+  for (const r of rows) {
+    process.stdout.write(`${new Date(r.created_at * 1000).toISOString()}  ${(r.size / 1024).toFixed(0).padStart(7)} KB  ${r.name}\n`);
+  }
+  return 0;
+}
+
+function runExport(ctx: CommandContext): number {
+  const out = ctx.positional[0];
+  if (!out) { process.stderr.write('usage: ritsu backup export <file>\n'); return 2; }
+  writeFileSync(resolve(out), JSON.stringify(manager().exportJson(), null, 2));
+  process.stdout.write(`exported to ${resolve(out)}\n`);
+  return 0;
+}
+
+function runImport(ctx: CommandContext): number {
+  const [src, dest] = ctx.positional;
+  if (!src || !dest) {
+    process.stderr.write('usage: ritsu backup import <export.json> <new.db>\n');
+    return 2;
+  }
+  const file = resolve(src);
+  if (!existsSync(file)) { process.stderr.write(`no such file: ${file}\n`); return 1; }
+  let parsed: ExportFile;
+  try { parsed = JSON.parse(readFileSync(file, 'utf8')) as ExportFile; }
+  catch (e) { process.stderr.write(`not valid JSON: ${(e as Error).message}\n`); return 1; }
+  try {
+    const { counts, skipped } = importJson(parsed, resolve(dest), {
+      allowSkip: ctx.flags['skip-unknown'] !== undefined,
+    });
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    for (const [t, n] of Object.entries(counts)) process.stdout.write(`  ${t}: ${n}\n`);
+    for (const t of skipped) {
+      process.stderr.write(`  ! SKIPPED ${t} — table not in this database (rows NOT imported)\n`);
+    }
+    process.stdout.write(
+      `imported ${total} rows into ${resolve(dest)}\n` +
+      'NOTE: credentials, tokens and the audit log are not in an export — this is a\n' +
+      'portability copy, not a restore. For a full restore use: ritsu backup restore <file.db>\n',
+    );
+    return 0;
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    return 1;
+  }
+}
+
+function runPrune(ctx: CommandContext): number {
+  const keep = Number(ctx.flags.keep ?? 14) || 14;
+  const removed = fsManager().prune(keep);
+  process.stdout.write(`pruned ${removed} (kept newest ${keep})\n`);
+  return 0;
+}
+
+function runRestore(ctx: CommandContext): number {
+  const src = ctx.positional[0];
+  if (!src) { process.stderr.write('usage: ritsu backup restore <file>\n'); return 2; }
+  const file = resolve(src);
+  if (!existsSync(file)) { process.stderr.write(`no such file: ${file}\n`); return 1; }
+  if (!looksLikeSqlite(file)) { process.stderr.write(`not a SQLite database: ${file}\n`); return 1; }
+  const cfg = loadConfig();
+  // Safety net: snapshot the CURRENT db before overwriting it. This one
+  // opens the live database, so it must happen BEFORE the sidecars are
+  // cleared — and its connection is why they exist at all.
+  try { manager().createBackup(); } catch { /* current db may be absent on a fresh box */ }
+
+  copyFileSync(file, cfg.dbPath);
+  // The database runs in WAL mode, so the old -wal and -shm sit beside
+  // the file we just replaced. SQLite would replay that stale log onto
+  // the restored database on next open: at best the restore silently
+  // does nothing, at worst the result fails integrity_check outright.
+  // The snapshot is self-contained, so the sidecars have nothing to add.
+  for (const sidecar of [`${cfg.dbPath}-wal`, `${cfg.dbPath}-shm`]) {
+    try { if (existsSync(sidecar)) unlinkSync(sidecar); }
+    catch (e) {
+      process.stderr.write(`could not remove ${sidecar}: ${(e as Error).message}\n`);
+      process.stderr.write('the restored database may be overwritten by a stale write-ahead log\n');
+      return 1;
+    }
+  }
+
+  // Verify rather than assume: a restore that reports success and hands
+  // back a corrupt database is worse than one that fails loudly, because
+  // this is the path taken when things have already gone wrong.
+  const bad = integrityError(cfg.dbPath);
+  if (bad) {
+    process.stderr.write(`restored file failed integrity check: ${bad}\n`);
+    process.stderr.write('the previous database was snapshotted first; see: ritsu backup list\n');
+    return 1;
+  }
+
+  process.stdout.write(
+    `restored ${file} -> ${cfg.dbPath} (${(statSync(cfg.dbPath).size / 1024).toFixed(0)} KB, integrity ok)\n` +
+    'restart the service to load it:  sudo ritsu service restart\n' +
+    'NOTE: if the service was running during restore, restart is required for a clean load.\n',
+  );
+  return 0;
 }
 
 export const backupCommand: Command = {
@@ -53,107 +160,12 @@ export const backupCommand: Command = {
   run: async (ctx: CommandContext): Promise<number> => {
     switch (ctx.subcommand) {
       case null:
-      case 'create': {
-        const info = manager().createBackup();
-        process.stdout.write(`created ${info.name} (${(info.size / 1024).toFixed(0)} KB)\n`);
-        return 0;
-      }
-      case 'list': {
-        const rows = fsManager().listBackups();
-        if (!rows.length) { process.stdout.write('(no backups yet)\n'); return 0; }
-        for (const r of rows) {
-          process.stdout.write(`${new Date(r.created_at * 1000).toISOString()}  ${(r.size / 1024).toFixed(0).padStart(7)} KB  ${r.name}\n`);
-        }
-        return 0;
-      }
-      case 'export': {
-        const out = ctx.positional[0];
-        if (!out) { process.stderr.write('usage: ritsu backup export <file>\n'); return 2; }
-        writeFileSync(resolve(out), JSON.stringify(manager().exportJson(), null, 2));
-        process.stdout.write(`exported to ${resolve(out)}\n`);
-        return 0;
-      }
-      case 'import': {
-        const [src, dest] = ctx.positional;
-        if (!src || !dest) {
-          process.stderr.write('usage: ritsu backup import <export.json> <new.db>\n');
-          return 2;
-        }
-        const file = resolve(src);
-        if (!existsSync(file)) { process.stderr.write(`no such file: ${file}\n`); return 1; }
-        let parsed: ExportFile;
-        try { parsed = JSON.parse(readFileSync(file, 'utf8')) as ExportFile; }
-        catch (e) { process.stderr.write(`not valid JSON: ${(e as Error).message}\n`); return 1; }
-        try {
-          const { counts, skipped } = importJson(parsed, resolve(dest), {
-            allowSkip: ctx.flags['skip-unknown'] !== undefined,
-          });
-          const total = Object.values(counts).reduce((a, b) => a + b, 0);
-          for (const [t, n] of Object.entries(counts)) process.stdout.write(`  ${t}: ${n}\n`);
-          for (const t of skipped) {
-            process.stderr.write(`  ! SKIPPED ${t} — table not in this database (rows NOT imported)\n`);
-          }
-          process.stdout.write(
-            `imported ${total} rows into ${resolve(dest)}\n` +
-            'NOTE: credentials, tokens and the audit log are not in an export — this is a\n' +
-            'portability copy, not a restore. For a full restore use: ritsu backup restore <file.db>\n',
-          );
-          return 0;
-        } catch (e) {
-          process.stderr.write(`${(e as Error).message}\n`);
-          return 1;
-        }
-      }
-      case 'prune': {
-        const keep = Number(ctx.flags.keep ?? 14) || 14;
-        const removed = fsManager().prune(keep);
-        process.stdout.write(`pruned ${removed} (kept newest ${keep})\n`);
-        return 0;
-      }
-      case 'restore': {
-        const src = ctx.positional[0];
-        if (!src) { process.stderr.write('usage: ritsu backup restore <file>\n'); return 2; }
-        const file = resolve(src);
-        if (!existsSync(file)) { process.stderr.write(`no such file: ${file}\n`); return 1; }
-        if (!looksLikeSqlite(file)) { process.stderr.write(`not a SQLite database: ${file}\n`); return 1; }
-        const cfg = loadConfig();
-        // Safety net: snapshot the CURRENT db before overwriting it. This one
-        // opens the live database, so it must happen BEFORE the sidecars are
-        // cleared — and its connection is why they exist at all.
-        try { manager().createBackup(); } catch { /* current db may be absent on a fresh box */ }
-
-        copyFileSync(file, cfg.dbPath);
-        // The database runs in WAL mode, so the old -wal and -shm sit beside
-        // the file we just replaced. SQLite would replay that stale log onto
-        // the restored database on next open: at best the restore silently
-        // does nothing, at worst the result fails integrity_check outright.
-        // The snapshot is self-contained, so the sidecars have nothing to add.
-        for (const sidecar of [`${cfg.dbPath}-wal`, `${cfg.dbPath}-shm`]) {
-          try { if (existsSync(sidecar)) unlinkSync(sidecar); }
-          catch (e) {
-            process.stderr.write(`could not remove ${sidecar}: ${(e as Error).message}\n`);
-            process.stderr.write('the restored database may be overwritten by a stale write-ahead log\n');
-            return 1;
-          }
-        }
-
-        // Verify rather than assume: a restore that reports success and hands
-        // back a corrupt database is worse than one that fails loudly, because
-        // this is the path taken when things have already gone wrong.
-        const bad = integrityError(cfg.dbPath);
-        if (bad) {
-          process.stderr.write(`restored file failed integrity check: ${bad}\n`);
-          process.stderr.write('the previous database was snapshotted first; see: ritsu backup list\n');
-          return 1;
-        }
-
-        process.stdout.write(
-          `restored ${file} -> ${cfg.dbPath} (${(statSync(cfg.dbPath).size / 1024).toFixed(0)} KB, integrity ok)\n` +
-          'restart the service to load it:  sudo ritsu service restart\n' +
-          'NOTE: if the service was running during restore, restart is required for a clean load.\n',
-        );
-        return 0;
-      }
+      case 'create': return runCreate();
+      case 'list': return runList();
+      case 'export': return runExport(ctx);
+      case 'import': return runImport(ctx);
+      case 'prune': return runPrune(ctx);
+      case 'restore': return runRestore(ctx);
       default:
         process.stderr.write(`unknown subcommand '${ctx.subcommand}'\n`);
         return 2;

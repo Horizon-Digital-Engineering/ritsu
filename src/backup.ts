@@ -54,12 +54,17 @@ function backupDirFor(dbPath: string, override?: string): string {
  *  and by the pre-migration snapshot, which has no manager yet. */
 function vacuumInto(db: Pick<Db, 'exec'>, dir: string): BackupInfo {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const stamp = new Date().toISOString().replaceAll(/[:.]/g, '-');
   // VACUUM INTO refuses to overwrite; disambiguate same-millisecond collisions.
   let name = `ritsu-${stamp}.db`;
   let dest = join(dir, name);
-  for (let n = 1; existsSync(dest); n++) { name = `ritsu-${stamp}-${n}.db`; dest = join(dir, name); }
-  db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+  let collision = 1;
+  while (existsSync(dest)) {
+    name = `ritsu-${stamp}-${collision}.db`;
+    dest = join(dir, name);
+    collision++;
+  }
+  db.exec(`VACUUM INTO '${dest.replaceAll("'", "''")}'`);
   // A truncated snapshot still counts toward keep-N and would displace a good
   // one, so it is unlinked rather than kept.
   const bad = integrityError(dest);
@@ -216,10 +221,9 @@ export function importJson(
       for (const [table, rows] of Object.entries(file.tables)) {
         if (!known.has(table) || !Array.isArray(rows) || rows.length === 0) continue;
         const cols = Object.keys(rows[0] as Record<string, unknown>);
-        const stmt = db.prepare(
-          `INSERT OR REPLACE INTO "${table}" (${cols.map(c => `"${c}"`).join(', ')}) ` +
-          `VALUES (${cols.map(() => '?').join(', ')})`,
-        );
+        const colList = cols.map(c => '"' + c + '"').join(', ');
+        const holes = cols.map(() => '?').join(', ');
+        const stmt = db.prepare(`INSERT OR REPLACE INTO "${table}" (${colList}) VALUES (${holes})`);
         for (const row of rows) stmt.run(...cols.map(c => decodeBlob((row as Record<string, unknown>)[c])));
         counts[table] = rows.length;
       }

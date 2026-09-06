@@ -69,46 +69,70 @@ export function toGeminiRequest(
   const callNames = new Map<string, string>();
 
   for (const m of messages) {
-    if (m.role === 'system') {
-      const t = textOf(m.content);
-      if (t) systemParts.push(t);
-      continue;
-    }
-    if (m.role === 'assistant') {
-      const parts: Part[] = [];
-      const t = textOf(m.content);
-      if (t) parts.push({ text: t });
-      for (const call of m.tool_calls ?? []) {
-        callNames.set(call.id, call.function.name);
-        parts.push({
-          functionCall: {
-            ...(call.id.startsWith(SYNTH_ID_PREFIX) ? {} : { id: call.id }),
-            name: call.function.name,
-            args: parseArgs(call.function.arguments),
-          },
-        });
-      }
-      if (parts.length > 0) contents.push({ role: 'model', parts });
-      continue;
-    }
-    if (m.role === 'tool') {
-      const id = m.tool_call_id;
-      contents.push({
-        role: 'user',
-        parts: [{
-          functionResponse: {
-            ...(id && !id.startsWith(SYNTH_ID_PREFIX) ? { id } : {}),
-            name: (id ? callNames.get(id) : undefined) ?? 'unknown',
-            response: { output: textOf(m.content) },
-          },
-        }],
-      });
-      continue;
-    }
-    const parts = userParts(m.content);
-    if (parts.length > 0) contents.push({ role: 'user', parts });
+    appendMessage(m, systemParts, contents, callNames);
   }
 
+  const config = buildConfig(systemParts, tools, options);
+  return Object.keys(config).length > 0 ? { model, contents, config } : { model, contents };
+}
+
+/** Render one transcript turn into `systemParts`/`contents`. */
+function appendMessage(
+  m: RaMessage,
+  systemParts: string[],
+  contents: Content[],
+  callNames: Map<string, string>,
+): void {
+  if (m.role === 'system') {
+    const t = textOf(m.content);
+    if (t) systemParts.push(t);
+    return;
+  }
+  if (m.role === 'assistant') {
+    const parts = assistantParts(m, callNames);
+    if (parts.length > 0) contents.push({ role: 'model', parts });
+    return;
+  }
+  if (m.role === 'tool') {
+    contents.push(toolResponseContent(m, callNames));
+    return;
+  }
+  const parts = userParts(m.content);
+  if (parts.length > 0) contents.push({ role: 'user', parts });
+}
+
+function assistantParts(m: RaMessage, callNames: Map<string, string>): Part[] {
+  const parts: Part[] = [];
+  const t = textOf(m.content);
+  if (t) parts.push({ text: t });
+  for (const call of m.tool_calls ?? []) {
+    callNames.set(call.id, call.function.name);
+    parts.push({
+      functionCall: {
+        ...(call.id.startsWith(SYNTH_ID_PREFIX) ? {} : { id: call.id }),
+        name: call.function.name,
+        args: parseArgs(call.function.arguments),
+      },
+    });
+  }
+  return parts;
+}
+
+function toolResponseContent(m: RaMessage, callNames: Map<string, string>): Content {
+  const id = m.tool_call_id;
+  return {
+    role: 'user',
+    parts: [{
+      functionResponse: {
+        ...(id && !id.startsWith(SYNTH_ID_PREFIX) ? { id } : {}),
+        name: (id ? callNames.get(id) : undefined) ?? 'unknown',
+        response: { output: textOf(m.content) },
+      },
+    }],
+  };
+}
+
+function buildConfig(systemParts: string[], tools: RaTool[], options?: RaProviderOptions): GenerateContentConfig {
   const config: GenerateContentConfig = {};
   if (systemParts.length > 0) config.systemInstruction = systemParts.join('\n\n');
   if (options?.temperature !== undefined) config.temperature = options.temperature;
@@ -122,8 +146,7 @@ export function toGeminiRequest(
       })),
     }];
   }
-
-  return Object.keys(config).length > 0 ? { model, contents, config } : { model, contents };
+  return config;
 }
 
 /** Translate a generateContent response back into the loop's shape.

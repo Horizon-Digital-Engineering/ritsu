@@ -71,7 +71,10 @@ function defineTools(ctx: PluginToolContext): void {
     handler: () => {
       const accts = store.listAccounts();
       if (!accts.length) return text('(no accounts linked yet)');
-      return text(accts.map(a => `${a.name}${a.mask ? ` ••${a.mask}` : ''} [${a.type}/${a.subtype}] — ${money(a.current_balance, a.iso_currency)}`).join('\n'));
+      return text(accts.map(a => {
+        const mask = a.mask ? ` ••${a.mask}` : '';
+        return `${a.name}${mask} [${a.type}/${a.subtype}] — ${money(a.current_balance, a.iso_currency)}`;
+      }).join('\n'));
     },
   });
 
@@ -127,8 +130,10 @@ function defineTools(ctx: PluginToolContext): void {
       if (!targets.length) return text('(no category targets set)');
       const month = currentMonth();
       const lines = budgetStatus(spendByCategory(inMonth(store.transactionsSince(`${month}-01`), month)), targets);
-      return text(`Budget status for ${month}:\n` + lines.map(l =>
-        `  ${l.category}: ${money(l.spent)} / ${money(l.limit)} — ${l.over ? `OVER by ${money(-l.remaining)}` : `${money(l.remaining)} left`}`).join('\n'));
+      return text(`Budget status for ${month}:\n` + lines.map(l => {
+        const state = l.over ? `OVER by ${money(-l.remaining)}` : `${money(l.remaining)} left`;
+        return `  ${l.category}: ${money(l.spent)} / ${money(l.limit)} — ${state}`;
+      }).join('\n'));
     },
   });
 }

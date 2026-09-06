@@ -12,7 +12,7 @@ import type {
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 export class FakeMemoryBackend implements MemoryBackend {
-  private rows: RawRecord[] = [];
+  private readonly rows: RawRecord[] = [];
 
   async record(rec: RawRecordInput): Promise<{ id: string }> {
     const id = randomUUID();

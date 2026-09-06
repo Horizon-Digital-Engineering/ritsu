@@ -65,21 +65,9 @@ export function checkToolUse(
     return { ok: true };  // no filesystem implication
   }
 
-  // For commands, target = cwd (the agent's working dir). For file tools,
-  // target = the file_path/path arg, resolved absolute against cwd.
-  const cwd = workspaces[0]?.path;
-  const rawPath = (input.file_path ?? input.path) as string | undefined;
-  let target: string | undefined;
-  if (toolName === 'Bash') {
-    target = cwd;
-  } else if (rawPath) {
-    if (!cwd && !rawPath.startsWith('/')) {
-      return { ok: false, reason: `${toolName}: relative path with no workspace cwd` };
-    }
-    target = cwd ? resolve(cwd, rawPath) : rawPath;
-  } else {
-    target = cwd;
-  }
+  const resolved = resolveTarget(toolName, input, workspaces);
+  if (resolved.deny) return resolved.deny;
+  const target = resolved.target;
 
   if (!target) {
     return { ok: false, reason: `${toolName}: no workspace and no target path` };
@@ -88,22 +76,55 @@ export function checkToolUse(
   // Pseudo-FS deny-list runs before the workspace check so even a
   // misconfigured workspace that happens to overlap with `/proc/...`
   // can't grant read on those trees.
-  for (const root of PSEUDO_FS_ROOTS) {
-    if (target === root || target.startsWith(root + sep)) {
-      return { ok: false, reason: `${toolName}: ${root} tree is denied (pseudo-filesystem)` };
-    }
+  const deniedRoot = pseudoFsDeniedRoot(target);
+  if (deniedRoot) {
+    return { ok: false, reason: `${toolName}: ${deniedRoot} tree is denied (pseudo-filesystem)` };
   }
 
-  // Allow if any workspace covers target with the needed permission.
-  for (const ws of workspaces) {
-    if (isUnder(target, ws.path) && ws.permissions.includes(needed)) {
-      return { ok: true };
-    }
+  if (anyWorkspaceGrants(target, workspaces, needed)) {
+    return { ok: true };
   }
   return {
     ok: false,
     reason: `${toolName}: no workspace grants '${needed}' on '${target}'`,
   };
+}
+
+/** For commands, target = cwd (the agent's working dir). For file tools,
+ *  target = the file_path/path arg, resolved absolute against cwd. */
+function resolveTarget(
+  toolName: string,
+  input: Record<string, unknown>,
+  workspaces: Workspace[],
+): { target?: string; deny?: AuthCheck } {
+  const cwd = workspaces[0]?.path;
+  const rawPath = (input.file_path ?? input.path) as string | undefined;
+  if (toolName === 'Bash') {
+    return { target: cwd };
+  }
+  if (rawPath) {
+    if (!cwd && !rawPath.startsWith('/')) {
+      return { deny: { ok: false, reason: `${toolName}: relative path with no workspace cwd` } };
+    }
+    return { target: cwd ? resolve(cwd, rawPath) : rawPath };
+  }
+  return { target: cwd };
+}
+
+/** The pseudo-FS root `path` falls under, or null when it's clear of them all. */
+function pseudoFsDeniedRoot(path: string): string | null {
+  for (const root of PSEUDO_FS_ROOTS) {
+    if (path === root || path.startsWith(root + sep)) return root;
+  }
+  return null;
+}
+
+/** True when any workspace covers `target` with the needed permission. */
+function anyWorkspaceGrants(target: string, workspaces: Workspace[], needed: Permission): boolean {
+  for (const ws of workspaces) {
+    if (isUnder(target, ws.path) && ws.permissions.includes(needed)) return true;
+  }
+  return false;
 }
 
 /** True iff `target` is the workspace path or a descendant of it. Uses
