@@ -10,11 +10,11 @@ import type { ApprovalStore } from '../approval-store.js';
 import { checkToolUse } from '../tools/permissions.js';
 import type { McpGateContext } from '../tools/mcp-internal/approval-gate.js';
 import { assembleMcp, type McpProvider, type SdkMcpServer } from '../tools/mcp-gateway.js';
-import { schedulerProvider, skillsProvider, historyProvider } from '../tools/builtin-providers.js';
-import type { JobStore } from '../scheduler/store.js';
 import {
+  schedulerProvider, skillsProvider, historyProvider,
   memoryProvider, commsProvider, adminProvider, monitorProvider, emailProvider, socialProvider,
 } from '../tools/builtin-providers.js';
+import type { JobStore } from '../scheduler/store.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import type { AgentCommsDeps } from '../tools/mcp-internal/agent-comms.js';
 import type { AgentAdminDeps } from '../tools/mcp-internal/agent-admin.js';
@@ -347,7 +347,7 @@ async function enforceBuiltinTool(
     logger.warn('tool.denied', { tool: toolName, reason: result.reason });
     return { ok: false, message: result.reason };
   }
-  if (gating && gating.gatedTools.includes(toolName)) {
+  if (gating?.gatedTools.includes(toolName)) {
     logger.info('approval.gate', { agent_id: gating.agentId, tool: toolName, conversation_id: conversationId });
     const decision = await gating.store.request({ agentId: gating.agentId, conversationId, toolName, args: input });
     if (decision.state === 'rejected') {
@@ -388,7 +388,7 @@ export function buildPreToolUseHook(
       : {};
     logger.info('tool.check', {
       tool: toolName,
-      gated: !!(gating && gating.gatedTools.includes(toolName)),
+      gated: !!gating?.gatedTools.includes(toolName),
       via: 'pretooluse-hook',
     });
     const verdict = await enforceBuiltinTool(toolName, toolInput, workspaces, gating, conversationId);

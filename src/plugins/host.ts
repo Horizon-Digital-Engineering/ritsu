@@ -21,7 +21,7 @@ import { resolveExtractor } from '../ingestion/extractors.js';
 export function assertScopedSql(sql: string, ns: string): void {
   const prefix = `plugin_${ns}_`;
   if (/--|\/\*|\*\//.test(sql)) throw new Error(`ScopedDb(${ns}): SQL comments are not allowed`);
-  const banned = sql.match(/\b(ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b/i);
+  const banned = /\b(ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b/i.exec(sql);
   if (banned) throw new Error(`ScopedDb(${ns}): '${banned[1].toUpperCase()}' is not allowed`);
   // Drop single-quoted string literals so their contents can't be mistaken for
   // (or hide) a table identifier. Double-quoted identifiers stay — those ARE
@@ -36,7 +36,7 @@ export function assertScopedSql(sql: string, ns: string): void {
   // Keywords that can follow FROM/INTO/UPDATE in valid SQL without naming a
   // table (e.g. the `DO UPDATE SET` of an upsert) — not table references.
   const NON_TABLE = new Set(['set', 'select', 'values']);
-  const re = /\b(?:from|join|into|update|table)\s+("?)([A-Za-z_][A-Za-z0-9_]*)\1/gi;
+  const re = /\b(?:from|join|into|update|table)\s+("?)([a-z_]\w*)\1/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(norm)) !== null) {
     const name = m[2];

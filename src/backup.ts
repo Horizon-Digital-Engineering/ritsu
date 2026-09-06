@@ -182,10 +182,7 @@ export function importJson(
   destPath: string,
   opts: { allowSkip?: boolean } = {},
 ): { counts: Record<string, number>; skipped: string[] } {
-  // Exports from before the format field existed ARE the version-1 shape —
-  // the stamp was added without changing the layout. Anything else is refused.
-  const format = file.format ?? EXPORT_FORMAT;
-  if (format !== EXPORT_FORMAT) {
+  if (file.format !== EXPORT_FORMAT) {
     throw new Error(`unrecognised export format '${String(file.format)}' (expected ${EXPORT_FORMAT})`);
   }
   if (existsSync(destPath)) throw new Error(`refusing to overwrite ${destPath}`);

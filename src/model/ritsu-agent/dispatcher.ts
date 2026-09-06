@@ -174,7 +174,7 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
     // A self-gated tool has already promised to ask; gating here too would put
     // two identical cards in front of the operator for one action.
     const gate = tool.selfGated ? null : this.opts.approval;
-    if (gate && gate.gatedTools.includes(call.function.name)) {
+    if (gate?.gatedTools.includes(call.function.name)) {
       logger.info('ra.approval.gate', { agent_id: gate.agentId, tool: call.function.name, conversation_id: conversationId });
       const decision = await gate.store.request({
         agentId: gate.agentId,

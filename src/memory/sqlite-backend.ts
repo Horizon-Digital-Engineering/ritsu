@@ -201,7 +201,7 @@ export class SqliteMemoryBackend implements MemoryBackend {
     let added = true;
     while (added) {
       added = false;
-      for (const rid of [...seen.keys()]) {
+      for (const rid of seen.keys()) {
         // .all(): a branch has MULTIPLE rows superseding the same id; .get()
         // would grab only one and silently drop the siblings.
         const newers = this.db.prepare('SELECT * FROM raw_records WHERE supersedes = ?').all(rid) as RawRow[];

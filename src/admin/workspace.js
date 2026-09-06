@@ -455,7 +455,7 @@ function renderChatList() {
   const buckets = CHAT_GROUPS.map(g => ({ ...g, rows: [] }));
   for (const c of rest) {
     const age = now - (c.started_at || 0);
-    (buckets.find(b => age < b.max) ?? buckets[buckets.length - 1]).rows.push(c);
+    (buckets.find(b => age < b.max) ?? buckets.at(-1)).rows.push(c);
   }
   let html = '';
   if (pinned.length) html += '<div class="side-group">Pinned</div>' + pinned.map(c => chatRowHtml(c)).join('');
@@ -591,7 +591,7 @@ function markChatRead(cid) {
 // ---- edit / regenerate / continue -------------------------------------------
 function startEdit(idx) {
   const m = lastRendered[idx];
-  if (!m || m.role !== 'user') return;
+  if (m?.role !== 'user') return;
   // Sending from here forks a sibling under the SAME parent, so the original
   // turn (and everything under it) stays reachable through the ‹ › arrows.
   editing = { parent_message_id: m.parent_message_id ?? null };
@@ -776,15 +776,15 @@ function md(raw) {
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   text = text
     .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
-    .replace(/<\/blockquote>\n<blockquote>/g, '<br>');
+    .replaceAll('</blockquote>\n<blockquote>', '<br>');
   text = text.replace(/(?:^|\n)((?:[-*] .+(?:\n|$))+)/g, (m, body) =>
     '\n<ul>' + body.trim().split('\n').map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('') + '</ul>\n');
   text = text.replace(/(?:^|\n)((?:\d+\. .+(?:\n|$))+)/g, (m, body) =>
     '\n<ol>' + body.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('') + '</ol>\n');
   text = text.replace(/^(?:---+|\*\*\*+)$/gm, '<hr>');
-  text = text.replace(/\n{2,}/g, '\uE000P\uE000').replace(/\n/g, '<br>');
+  text = text.replaceAll(/\n{2,}/g, '\uE000P\uE000').replaceAll('\n', '<br>');
   text = text
-    .replace(/\uE000P\uE000/g, '<div class="md-gap"></div>')
+    .replaceAll('\uE000P\uE000', '<div class="md-gap"></div>')
     .replace(/(<\/(?:h2|h3|h4|h5|ul|ol|blockquote)>|<hr>)<br>/g, '$1')
     .replace(/<br>(<(?:h2|h3|h4|h5|ul|ol|blockquote|hr)[ >])/g, '$1');
   text = text.replace(/\uE000B(\d+)\uE000(?:<br>)?/g, (_, i) => codeBlockHtml(blocks[+i]));
@@ -920,7 +920,7 @@ function renderPath() {
       const atts = attImgs ? `<div class="msg-atts">${attImgs}</div>` : '';
       // Assistant turns render as markdown; user turns stay literal text —
       // what the operator typed is what they see.
-      const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>');
+      const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replaceAll('\n', '<br>');
       const copy = m.content
         ? `<button type="button" class="msg-copy" data-action="copy-msg" data-idx="${i}" aria-label="Copy message">copy</button>` : '';
       const when = m.created_at ? ` title="${esc(new Date(m.created_at * 1000).toLocaleString())}"` : '';
@@ -1086,7 +1086,7 @@ function blobToBase64(blob) {
     const r = new FileReader();
     r.onerror = () => reject(new Error('failed to read file'));
     r.onload = () => {
-      const s = String(r.result);
+      const s = typeof r.result === 'string' ? r.result : '';
       const comma = s.indexOf(',');
       resolve(comma >= 0 ? s.slice(comma + 1) : s);
     };
@@ -1607,7 +1607,7 @@ async function uploadOneFile(name, path, data) {
       try {
         await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
         return true;
-      } catch (e2) { toast(`${name}: ${e2.message}`, 'err'); }
+      } catch (error_) { toast(`${name}: ${error_.message}`, 'err'); }
     } else if (!/file exists/i.test(e.message)) {
       toast(`${name}: ${e.message}`, 'err');
     }
@@ -1895,12 +1895,12 @@ function artifactsIn(content) {
     if (kind === 'html' || kind === 'svg') found.push({ kind, code: f.body.trim() });
   }
   if (!found.length) {
-    const doc = src.match(/<!doctype html[\s\S]*<\/html>/i)
-      || src.match(/<html[\s>][\s\S]*<\/html>/i)
-      || src.match(/<!doctype html[\s\S]*$/i);
+    const doc = /<!doctype html[\s\S]*<\/html>/i.exec(src)
+      || /<html[\s>][\s\S]*<\/html>/i.exec(src)
+      || /<!doctype html[\s\S]*$/i.exec(src);
     if (doc) found.push({ kind: 'html', code: doc[0].trim() });
     else {
-      const svg = src.match(/<svg[\s>][\s\S]*?<\/svg>/i);
+      const svg = /<svg[\s>][\s\S]*?<\/svg>/i.exec(src);
       if (svg) found.push({ kind: 'svg', code: svg[0].trim() });
     }
   }
@@ -2066,7 +2066,7 @@ function syncPalette() {
 function renderPalette() {
   const el = $('palette');
   el.innerHTML = paletteRows.map((r, i) =>
-    `<button type="button" role="option" aria-selected="${i === paletteIdx}"`
+    `<button type="button" role="menuitem" aria-selected="${i === paletteIdx}"`
     + ` class="palette-row${i === paletteIdx ? ' active' : ''}${r.kind === 'manage' ? ' palette-foot' : ''}"`
     + ` data-action="palette-pick" data-i="${i}">`
     + `<span class="palette-name">${esc(r.label)}</span>`
@@ -2169,24 +2169,31 @@ function readPropValue(raw, k) {
   return e === k ? null : { value: raw.slice(k, e), next: e };
 }
 
+/** One `key = value` pair starting at `i`; always advances `next`. */
+function readPropPair(raw, i) {
+  let j = i;
+  while (j < raw.length && /\w/.test(raw[j])) j++;
+  if (j === i) return { next: i + 1 };
+  const key = raw.slice(i, j);
+  let k = j;
+  while (k < raw.length && /\s/.test(raw[k])) k++;
+  if (raw[k] !== '=') return { next: j + 1 };
+  k++;
+  while (k < raw.length && /\s/.test(raw[k])) k++;
+  const read = readPropValue(raw, k);
+  if (!read) return { next: k + 1 };
+  return { next: read.next, key, value: read.value.trim() };
+}
+
 function parseVarProps(raw) {
   const props = {};
   let i = 0;
   while (i < raw.length) {
     while (i < raw.length && /[\s,]/.test(raw[i])) i++;
-    let j = i;
-    while (j < raw.length && /\w/.test(raw[j])) j++;
-    if (j === i) { i++; continue; }
-    const key = raw.slice(i, j);
-    let k = j;
-    while (k < raw.length && /\s/.test(raw[k])) k++;
-    if (raw[k] !== '=') { i = j + 1; continue; }
-    k++;
-    while (k < raw.length && /\s/.test(raw[k])) k++;
-    const read = readPropValue(raw, k);
-    if (!read) { i = k + 1; continue; }
-    props[key] = read.value.trim();
-    i = read.next;
+    if (i >= raw.length) break;
+    const pair = readPropPair(raw, i);
+    if (pair.key !== undefined) props[pair.key] = pair.value;
+    i = pair.next;
   }
   return props;
 }
@@ -2209,7 +2216,7 @@ function substituteVars(content, values) {
   let last = 0;
   for (const t of toks) {
     out += content.slice(last, t.start);
-    out += Object.prototype.hasOwnProperty.call(values, t.name)
+    out += Object.hasOwn(values, t.name)
       ? values[t.name]
       : content.slice(t.start, t.end);
     last = t.end;

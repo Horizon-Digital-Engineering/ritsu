@@ -252,6 +252,10 @@ async function loadDashboard() {
       open: tasks.filter(t => t.project_id === p.id && t.status !== 'done').length,
       total: tasks.filter(t => t.project_id === p.id).length,
     }));
+    const perProjRows = perProj.map(p => `<tr><td>${esc(p.name)}</td><td class="pj-num">${p.open}</td><td class="pj-num">${p.total}</td></tr>`).join('');
+    const perProjHtml = perProj.length
+      ? `<table style="margin-top:14px"><thead><tr><th>project</th><th class="pj-num">open</th><th class="pj-num">total</th></tr></thead><tbody>${perProjRows}</tbody></table>`
+      : '<p class="txt-muted" style="margin-top:10px">No projects yet.</p>';
     el.innerHTML = `
       <div class="pj-stats">
         <span class="pj-stat"><b>${projects.length}</b> projects <span class="txt-muted">(${enabled} enabled)</span></span>
@@ -261,7 +265,7 @@ async function loadDashboard() {
         <span class="pj-stat"><b>${by.backlog}</b> backlog</span>
         <span class="pj-stat txt-muted"><b>${by.done}</b> done</span>
       </div>
-      ${perProj.length ? `<table style="margin-top:14px"><thead><tr><th>project</th><th class="pj-num">open</th><th class="pj-num">total</th></tr></thead><tbody>${perProj.map(p => `<tr><td>${esc(p.name)}</td><td class="pj-num">${p.open}</td><td class="pj-num">${p.total}</td></tr>`).join('')}</tbody></table>` : '<p class="txt-muted" style="margin-top:10px">No projects yet.</p>'}`;
+      ${perProjHtml}`;
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
 

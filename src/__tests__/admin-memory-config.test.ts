@@ -54,6 +54,7 @@ describe('GET /admin/api/memory', () => {
     adminToken = tokens.mint('test-admin', 'admin').token;
 
     const app = createAdminApp({
+    db,
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'),
       channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),

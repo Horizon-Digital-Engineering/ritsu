@@ -53,6 +53,7 @@ describe('admin /ask pre-auth DoS ordering (SEC-4)', () => {
     adminToken = tokens.mint('test-admin', 'admin').token;
 
     const app = createAdminApp({
+    db,
       defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
       approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db),
       oauth, projects: new ProjectStore(db), skills: new SkillStore(db), prompts: new PromptStore(db),

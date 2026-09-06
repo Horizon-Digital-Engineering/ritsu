@@ -1,7 +1,6 @@
 import type { MemoryStore } from '../memory-store.js';
-import type { ConversationStore, ConversationMessage } from '../conversation-store.js';
+import type { ConversationStore, ConversationMessage, MessageAttachment } from '../conversation-store.js';
 import type { ChatMessage, ChatRequest, ChatContentBlock, DispatcherKind, ModelDispatcher } from '../model/dispatcher.js';
-import type { MessageAttachment } from '../conversation-store.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { MemoryService } from '../memory/service.js';
 import type { Scope } from '../memory/backend.js';
@@ -473,8 +472,8 @@ export abstract class AgentBase {
     // history — we just appended it). Images ride along only on the turn they
     // were sent; we don't replay them into later turns to keep token cost flat.
     if (attachments) {
-      const last = history[history.length - 1];
-      if (last && last.role === 'user') {
+      const last = history.at(-1);
+      if (last?.role === 'user') {
         // Providers reject empty text blocks, so an image-only turn gets a
         // minimal prompt the model can act on.
         const text = (typeof last.content === 'string' ? last.content : '') || 'Please look at the attached image(s).';

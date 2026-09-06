@@ -229,6 +229,7 @@ describe('workspace API routes', () => {
     workspaces.upsert({ agent_id: 'alice', path: wsRoot, permissions: ['read'] } as never);
 
     const app = createAdminApp({
+    db,
       defStore, host, tokens, apiKeys: new ApiKeyStore(db), workspaces,
       pluginHost: new PluginHost(db, secrets),
       memory: new SqliteMemoryStore(db),

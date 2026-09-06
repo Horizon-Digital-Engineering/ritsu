@@ -208,7 +208,7 @@ async function canonicalizeAllowMissing(abs: string): Promise<CanonicalResult> {
     try {
       const real = await realpath(candidate);
       // Reassemble: <existing-canonical>/<missing-suffix>
-      const suffix = trailing.reverse().join(sep);
+      const suffix = trailing.toReversed().join(sep);
       return { ok: true, canonical: suffix ? resolve(real, suffix) : real };
     } catch (err) {
       const e = err as NodeJS.ErrnoException;

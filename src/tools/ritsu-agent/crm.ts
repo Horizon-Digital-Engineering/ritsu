@@ -133,10 +133,10 @@ export function buildEmailTools(deps: CrmToolDeps): RaTool[] {
         properties: {
           // CRLF is rejected on every header-bound field so a model cannot
           // inject extra headers (Bcc:, etc.).
-          to: { type: 'string', minLength: 3, maxLength: 320, pattern: '^[^\\r\\n@]*@[^\\r\\n]*$', description: 'recipient address' },
-          subject: { type: 'string', minLength: 1, maxLength: 998, pattern: '^[^\\r\\n]*$', description: 'subject line' },
+          to: { type: 'string', minLength: 3, maxLength: 320, pattern: String.raw`^[^\r\n@]*@[^\r\n]*$`, description: 'recipient address' },
+          subject: { type: 'string', minLength: 1, maxLength: 998, pattern: String.raw`^[^\r\n]*$`, description: 'subject line' },
           body: { type: 'string', minLength: 1, maxLength: 100000, description: 'plain-text body of the email' },
-          in_reply_to: { type: 'string', maxLength: 998, pattern: '^[^\\r\\n]*$', description: 'optional Message-ID this replies to (threads it)' },
+          in_reply_to: { type: 'string', maxLength: 998, pattern: String.raw`^[^\r\n]*$`, description: 'optional Message-ID this replies to (threads it)' },
         },
       },
       handler: async (args) => {

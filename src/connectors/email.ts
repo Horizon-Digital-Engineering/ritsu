@@ -170,7 +170,7 @@ export async function readInbox(
         from: formatSender(fromAddr),
         subject: env?.subject ?? '(no subject)',
         date: env?.date ? new Date(env.date).toISOString() : '',
-        seen: msg.flags?.has('\\Seen') ?? false,
+        seen: msg.flags?.has(String.raw`\Seen`) ?? false,
       });
     }
     // fetch returns ascending sequence; newest last → reverse for newest-first.
