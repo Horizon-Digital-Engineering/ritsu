@@ -63,7 +63,10 @@ function tableExists(db: Db, table: string): boolean {
 }
 
 class Merger {
-  readonly report: MergeReport = { tables: {}, skippedTables: [], skippedAgents: [], notes: [], dryRun: false };
+  readonly report: MergeReport = {
+    tables: Object.create(null) as Record<string, TableReport>,
+    skippedTables: [], skippedAgents: [], notes: [], dryRun: false,
+  };
   /** old integer id → new integer id, per remapped table. */
   private readonly idMaps = new Map<string, Map<number, number>>();
   private readonly selected: Set<string> | null;
@@ -79,6 +82,8 @@ class Merger {
   private wantsAgent(id: unknown): boolean { return !this.selected || this.selected.has(String(id)); }
 
   private table(table: string): TableReport {
+    // The report is keyed by names from an uploaded file — a null-prototype
+    // object keeps "__proto__" and friends inert data instead of pollution.
     this.report.tables[table] ??= { inserted: 0, skipped: 0 };
     return this.report.tables[table];
   }
@@ -88,7 +93,9 @@ class Merger {
     const raw = this.file.tables[table];
     if (!Array.isArray(raw)) return [];
     const rows = raw.map(r => {
-      const out: Row = {};
+      // Keys come from an uploaded file — a null-prototype target makes
+      // "__proto__" a plain own property instead of prototype pollution.
+      const out: Row = Object.create(null) as Row;
       for (const [k, v] of Object.entries(r as Row)) out[k] = decodeBlob(v);
       return out;
     });
@@ -162,7 +169,7 @@ class Merger {
     for (const row of this.rows('agent_workspaces')) {
       if (!this.wantsAgent(row.agent_id)) continue;
       const dupe = this.live.prepare('SELECT 1 FROM agent_workspaces WHERE agent_id = ? AND path = ?')
-        .get(row.agent_id as string, row.path as string) !== undefined;
+        .get(row.agent_id, row.path) !== undefined;
       if (dupe) { rep.skipped++; continue; }
       const { id: _id, ...rest } = row;
       this.insert('agent_workspaces', liveCols, rest);
@@ -185,9 +192,9 @@ class Merger {
       const fix = this.live.prepare('UPDATE memories SET superseded_by = ?, lineage_root_id = ? WHERE id = ?');
       for (const row of rows) {
         fix.run(
-          this.remapped('memories', row.superseded_by) as never,
+          this.remapped('memories', row.superseded_by),
           // lineage_root_id 0 is the "am my own root" sentinel — keep it.
-          (Number(row.lineage_root_id) ? this.remapped('memories', row.lineage_root_id) : 0) as never,
+          (Number(row.lineage_root_id) ? this.remapped('memories', row.lineage_root_id) : 0),
           this.map('memories').get(Number(row.id))!,
         );
       }
@@ -202,7 +209,7 @@ class Merger {
     for (const row of this.rows('raw_records')) {
       // UUID keys are collision-safe across installs; a duplicate means a
       // re-run, so skip rather than error.
-      const dupe = this.live.prepare('SELECT 1 FROM raw_records WHERE id = ?').get(row.id as string) !== undefined;
+      const dupe = this.live.prepare('SELECT 1 FROM raw_records WHERE id = ?').get(row.id) !== undefined;
       if (dupe) { rep.skipped++; continue; }
       this.insert('raw_records', liveCols, row);
       rep.inserted++;
@@ -292,6 +299,7 @@ class Merger {
     ]);
     for (const [table, raw] of Object.entries(this.file.tables)) {
       if (handled.has(table) || NEVER_MERGE.has(table)) continue;
+      if (!/^[A-Za-z_]\w*$/.test(table)) continue;   // uploaded name, not an identifier
       if (!Array.isArray(raw) || raw.length === 0) continue;
       if (!tableExists(this.live, table)) {
         this.report.skippedTables.push(table);
