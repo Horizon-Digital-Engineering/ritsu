@@ -6,6 +6,22 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-06
+
+### Added
+
+- **Merge a JSON export into the live database** — from the Studio Backups
+  page (pick a file, review the dry-run report, confirm) or the CLI
+  (`ritsu backup merge <file>` with `--dry-run`, `--agents`, `--only`,
+  `--replace-agents`). Works for exports of any age: staged data is run
+  through the same schema migrations a live upgrade gets, so legacy shapes
+  (renamed columns, retired fields, pre-tree chats) arrive current. All
+  integer ids are remapped, so existing rows are never overwritten; an agent
+  id that already exists keeps the live definition unless replacement is
+  requested. Credentials, tokens, audit rows, channel configs, and settings
+  never transfer. A UI merge hot-reloads the agent host, so imported agents
+  are usable immediately.
+
 ## [0.12.3] — 2026-09-06
 
 ### Changed

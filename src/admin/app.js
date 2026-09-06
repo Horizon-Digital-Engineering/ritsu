@@ -3022,6 +3022,7 @@ const ACTIONS = {
   'memory-save':            () => saveMemoryConfig(),
   'memory-probe':           () => probeFlashback(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
+  'merge-confirm':          () => mergeConfirm(),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
 
@@ -3320,6 +3321,60 @@ async function deleteBackupFile(name) {
   catch (e) { toast(e.message, 'err'); }
 }
 
+// ---- merge-import (old-export merge) ----------------------------------
+// Picking a file runs a DRY RUN and renders the exact report; the confirm
+// button then repeats the merge for real. The parsed export is held here
+// between the two steps so the file is read once.
+let pendingMergeExport = null;
+
+async function mergeFilePicked(inputEl) {
+  const f = inputEl.files?.[0];
+  pendingMergeExport = null;
+  $('merge-confirm').classList.add('hidden');
+  const box = $('merge-report');
+  box.classList.add('hidden');
+  if (!f) return;
+  let parsed;
+  try { parsed = JSON.parse(await f.text()); }
+  catch { toast('not valid JSON', 'err'); return; }
+  try {
+    const { report } = await api('POST', '/admin/api/merge-import', { export: parsed, options: { dry_run: true } });
+    pendingMergeExport = parsed;
+    renderMergeReport(report, true);
+    $('merge-confirm').classList.remove('hidden');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function mergeConfirm() {
+  if (!pendingMergeExport) return;
+  const btn = $('merge-confirm');
+  btn.disabled = true;
+  try {
+    const { report } = await api('POST', '/admin/api/merge-import', { export: pendingMergeExport, options: {} });
+    renderMergeReport(report, false);
+    pendingMergeExport = null;
+    btn.classList.add('hidden');
+    toast('merged — imported agents are live', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  finally { btn.disabled = false; }
+}
+
+function renderMergeReport(report, dry) {
+  const box = $('merge-report');
+  const rows = Object.entries(report.tables).map(([t, r]) => {
+    const drops = r.droppedColumns.length ? ` <span class="txt-muted">(dropped columns: ${esc(r.droppedColumns.join(', '))})</span>` : '';
+    return `<li><code>${esc(t)}</code>: ${r.inserted} in, ${r.skipped} skipped${drops}</li>`;
+  }).join('');
+  const agents = report.skippedAgents.map(a =>
+    `<li class="txt-warn">agent <code>${esc(a)}</code> exists here — its definition is kept (its data still merges)</li>`).join('');
+  const notes = report.notes.map(n => `<li class="txt-warn">${esc(n)}</li>`).join('');
+  const head = dry
+    ? '<strong>Dry run — nothing written yet.</strong> This is exactly what a merge would do:'
+    : '<strong>Merged.</strong>';
+  box.innerHTML = `<p>${head}</p><ul>${rows}${agents}${notes}</ul>`;
+  box.classList.remove('hidden');
+}
+
 // Authed downloads: a plain <a download> can't carry the admin token header, so
 // fetch the file with auth, then trigger the download from a blob URL.
 async function downloadWithAuth(path, filename) {
@@ -3359,6 +3414,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'merge-file') { mergeFilePicked(e.target); return; }
   const el = e.target.closest('[data-change]');
   if (!el) return;
   const handler = pluginChanges[el.dataset.change];

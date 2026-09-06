@@ -73,6 +73,7 @@ before(async () => {
   const channels = new SqliteChannelStore(db);
 
   const app = createAdminApp({
+    db,
     defStore, host, tokens, apiKeys, workspaces,
     pluginHost: new PluginHost(db, secrets),
     memory: new SqliteMemoryStore(db),

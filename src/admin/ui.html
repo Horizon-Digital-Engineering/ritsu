@@ -826,6 +826,21 @@
         <div id="backups-list">loading…</div>
         <p class="txt-muted mt-3">Restore is a break-glass operation on the box: <code>sudo ritsu service restart</code> after <code>sudo ritsu backup restore &lt;file&gt;</code> (stop the service first).</p>
       </div>
+      <div class="panel">
+        <h2>Import a JSON export</h2>
+        <p>Merge a <code>ritsu backup export</code> file — from this install or an old one —
+           <strong>into</strong> this database. Old exports are schema-upgraded on the way in.
+           Everything gets fresh ids, so nothing here is overwritten; an agent id that already
+           exists keeps this install's definition and is reported. Credentials never transfer.
+           Picking a file shows a dry-run report first; nothing is written until you confirm.</p>
+        <div class="row mb-3">
+          <input type="file" id="merge-file" accept="application/json,.json" aria-label="Export file to merge">
+        </div>
+        <div id="merge-report" class="hidden"></div>
+        <div class="row mb-3">
+          <button data-action="merge-confirm" id="merge-confirm" class="primary hidden">Merge into this database</button>
+        </div>
+      </div>
     </section>
   </main>
 

@@ -229,6 +229,7 @@ describe('workspace API routes', () => {
     workspaces.upsert({ agent_id: 'alice', path: wsRoot, permissions: ['read'] } as never);
 
     const app = createAdminApp({
+    db,
       defStore, host, tokens, apiKeys: new ApiKeyStore(db), workspaces,
       pluginHost: new PluginHost(db, secrets),
       memory: new SqliteMemoryStore(db),
@@ -282,6 +283,38 @@ describe('workspace API routes', () => {
     // The data endpoints behind it stay gated.
     const gated = await fetch(`${baseUrl}/admin/api/approvals`);
     assert.equal(gated.status, 401);
+  });
+
+  it('merges an old-era export over HTTP: dry run first, then live agents', async () => {
+    const oldExport = {
+      exported_at: 1,
+      tables: {
+        agent_definitions: [{
+          id: 'imported-agent', type: 'generic', name: 'imported', description: 'from the past',
+          system_prompt: 'p', dispatcher: 'claude-direct', model: 'm', memory_backend: 'sqlite',
+          tools_allowlist: '[]', enabled: 1, created_at: 1, updated_at: 1,
+          previous_system_prompt: null, previous_saved_at: null,
+        }],
+        conversations: [{ id: 1, agent_id: 'imported-agent', started_at: 1, ended_at: null }],
+        messages: [{ id: 1, conversation_id: 1, role: 'user', content: 'old hello', created_at: 1 }],
+        mcp_tokens: [{ id: 9, name: 'evil', token_hash: 'x', token_prefix: 'rt_', scope: 'admin', created_at: 1, last_used_at: null, use_count: 0, revoked_at: null }],
+      },
+    };
+    const dry = await req('POST', '/admin/api/merge-import', { export: oldExport, options: { dry_run: true } });
+    assert.equal(dry.status, 200);
+    const dryReport = dry.json.report as { dryRun: boolean; tables: Record<string, { inserted: number }> };
+    assert.equal(dryReport.dryRun, true);
+    assert.equal(dryReport.tables.agent_definitions.inserted, 1);
+    assert.equal((await req('GET', '/admin/agents/imported-agent')).status, 404, 'dry run wrote nothing');
+
+    const real = await req('POST', '/admin/api/merge-import', { export: oldExport, options: {} });
+    assert.equal(real.status, 200);
+    const got = await req('GET', '/admin/agents/imported-agent');
+    assert.equal(got.status, 200, 'merged agent is live without a restart');
+    assert.equal((got.json as { runtime: string }).runtime, 'direct', 'dispatcher row came through the migration');
+    // The old install's credential row must not have arrived.
+    const tokens = db.prepare("SELECT count(*) c FROM mcp_tokens WHERE name = 'evil'").get() as { c: number };
+    assert.equal(tokens.c, 0);
   });
 
   it('project CRUD round-trips over HTTP', async () => {

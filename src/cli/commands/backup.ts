@@ -10,6 +10,7 @@ import type { Command, CommandContext } from '../registry.js';
 import { loadConfig } from '../../config.js';
 import { openDatabase } from '../../db.js';
 import { BackupManager, importJson, integrityError, type ExportFile } from '../../backup.js';
+import { mergeExportIntoLive, type MergeOptions } from '../../merge-import.js';
 
 const SQLITE_MAGIC = 'SQLite format 3\0';
 
@@ -139,6 +140,59 @@ function runRestore(ctx: CommandContext): number {
   return 0;
 }
 
+
+const ONLY_KINDS = new Set(['definitions', 'memories', 'conversations', 'workspaces']);
+const ONLY_ALIAS: Record<string, MergeOptions['only'] extends Array<infer T> | undefined ? T : never> = {
+  defs: 'definitions', definitions: 'definitions',
+  memories: 'memories', memory: 'memories',
+  conversations: 'conversations', chats: 'conversations',
+  workspaces: 'workspaces',
+};
+
+function csv(v: string | boolean | undefined): string[] {
+  return typeof v === 'string' ? v.split(',').map(x => x.trim()).filter(Boolean) : [];
+}
+
+function runMerge(ctx: CommandContext): number {
+  const src = ctx.positional[0];
+  if (!src) { process.stderr.write('usage: ritsu backup merge <export.json> [--dry-run] [--agents a,b] [--only kinds] [--replace-agents a,b]\n'); return 2; }
+  const file = resolve(src);
+  if (!existsSync(file)) { process.stderr.write(`no such file: ${file}\n`); return 1; }
+  let parsed: ExportFile;
+  try { parsed = JSON.parse(readFileSync(file, 'utf8')) as ExportFile; }
+  catch (e) { process.stderr.write(`not valid JSON: ${(e as Error).message}\n`); return 1; }
+  const only: NonNullable<MergeOptions['only']> = [];
+  for (const k of csv(ctx.flags.only)) {
+    const mapped = ONLY_ALIAS[k];
+    if (!mapped || !ONLY_KINDS.has(mapped)) { process.stderr.write(`unknown --only kind '${k}'\n`); return 2; }
+    only.push(mapped);
+  }
+  const opts: MergeOptions = {
+    agents: csv(ctx.flags.agents),
+    replaceAgents: csv(ctx.flags['replace-agents']),
+    dryRun: ctx.flags['dry-run'] !== undefined,
+    ...(only.length ? { only } : {}),
+  };
+  const cfg = loadConfig();
+  const scratch = `${cfg.dbPath}.merge-stage`;
+  try {
+    const report = mergeExportIntoLive(parsed, cfg.dbPath, scratch, opts);
+    const head = report.dryRun ? 'DRY RUN — nothing was written. Would merge:' : 'merged:';
+    process.stdout.write(`${head}\n`);
+    for (const [t, r] of Object.entries(report.tables)) {
+      const drops = r.droppedColumns.length ? `  (dropped columns: ${r.droppedColumns.join(', ')})` : '';
+      process.stdout.write(`  ${t}: ${r.inserted} in, ${r.skipped} skipped${drops}\n`);
+    }
+    for (const a of report.skippedAgents) process.stdout.write(`  ! agent '${a}' exists here — definition kept (use --replace-agents ${a} to overwrite)\n`);
+    for (const n of report.notes) process.stdout.write(`  ! ${n}\n`);
+    if (!report.dryRun) process.stdout.write('restart the service to load the merged data:  sudo systemctl restart ritsu\n');
+    return 0;
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    return 1;
+  }
+}
+
 export const backupCommand: Command = {
   name: 'backup',
   summary: 'snapshot / list / export / prune / restore the database',
@@ -153,6 +207,14 @@ export const backupCommand: Command = {
     '                                   (--skip-unknown drops tables this schema',
     '                                   lacks, e.g. from uninstalled plugins;',
     '                                   without it such data is a hard error)',
+    '  ritsu backup merge <file>        merge a JSON export INTO the live database',
+    '                                   (schema-upgrades old exports; remaps ids;',
+    '                                   never touches tokens/keys/channels/settings)',
+    '                                   --dry-run          report only, write nothing',
+    '                                   --agents a,b       only these agents (default all)',
+    '                                   --only defs,memories,conversations,workspaces',
+    '                                   --replace-agents a,b  overwrite these live definitions',
+    '                                   STOP the service first; restart after.',
     '  ritsu backup prune [--keep N]    keep the newest N snapshots (default 14)',
     '  ritsu backup restore <file>      replace the live DB with a snapshot',
     '                                   (STOP the service first: sudo ritsu service ... )',
@@ -164,6 +226,7 @@ export const backupCommand: Command = {
       case 'list': return runList();
       case 'export': return runExport(ctx);
       case 'import': return runImport(ctx);
+      case 'merge': return runMerge(ctx);
       case 'prune': return runPrune(ctx);
       case 'restore': return runRestore(ctx);
       default:
