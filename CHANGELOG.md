@@ -6,6 +6,16 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-09-06
+
+### Fixed
+
+- The installer verifies the agent runtime's native binary actually launches
+  after install. A corrupted download previously installed silently and only
+  failed when an agent tried to respond; now the installer retries once with
+  a clean npm cache, and if the binary still fails, aborts before restarting
+  the service — leaving the running version untouched.
+
 ## [0.13.0] — 2026-09-06
 
 ### Added
