@@ -179,7 +179,7 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .approval-card.stale-7d  { border-left-color: hsl(0, 80%, 58%); }
 .approval-card.escalation { border-left-color: var(--danger); }
 .approval-escalation-banner {
-  background: rgba(178, 34, 51, 0.14); border: 1px solid var(--danger);
+  background: #2c1b24; border: 1px solid var(--danger);
   color: #ffb6c0; border-radius: 6px; padding: 7px 10px;
   font-size: 0.8rem; line-height: 1.45;
 }
@@ -208,8 +208,8 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .approval-detail.hidden, .approval-reason.hidden { display: none; }
 .approval-actions { display: flex; gap: 8px; }
 .approval-actions button { flex: 1; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line); }
-.approval-actions .primary { background: rgba(90, 209, 122, 0.16); border-color: rgba(90, 209, 122, 0.4); color: #9df0b3; font-weight: 650; }
-.approval-actions .primary:hover { background: rgba(90, 209, 122, 0.28); }
+.approval-actions .primary { background: #21372f; border-color: rgba(90, 209, 122, 0.4); color: #9df0b3; font-weight: 650; }
+.approval-actions .primary:hover { background: #294d3b; }
 .approval-actions .danger { background: var(--panel-2); color: var(--muted); }
 .approval-actions .danger:hover { color: var(--err); border-color: rgba(255, 118, 118, 0.4); }
 

@@ -13,7 +13,7 @@
 .task-row.status-done .task-title { color: var(--muted); text-decoration: line-through; }
 .task-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .task-proj { color: var(--muted); font-size: 0.78rem; }
-.task-title { word-break: break-word; }
+.task-title { overflow-wrap: anywhere; }
 .task-detail { color: var(--muted); font-size: 0.82rem; }
 .task-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .task-status-sel { font-size: 0.78rem; padding: 2px 4px; }

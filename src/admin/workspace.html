@@ -47,7 +47,7 @@
 
     <div id="scrim" class="scrim" data-action="close-sidebar"></div>
 
-    <aside id="sidebar" class="sidebar">
+    <aside id="sidebar" class="sidebar" aria-label="Chats and projects">
       <div class="side-top">
         <button type="button" class="new-chat" data-action="new-chat">+ New chat</button>
         <label class="search-wrap">
@@ -117,7 +117,7 @@
         <form id="ask-form" class="composer">
           <!-- "/" or "@" at position 0 opens this; rows are built in JS and
                chosen with the arrow keys, so it stays out of the tab order. -->
-          <div id="palette" class="palette" role="listbox" aria-label="Commands" aria-hidden="true"></div>
+          <div id="palette" class="palette" role="listbox" aria-label="Commands" aria-hidden="true"></div><!-- NOSONAR: ARIA APG listbox pattern; options are JS-built and arrow-key driven, a native select cannot host them -->
           <div id="edit-banner" class="edit-banner hidden">
             <span class="edit-banner-text">Editing a message — sending forks a new branch.</span>
             <button type="button" class="edit-banner-x" data-action="cancel-edit" title="Cancel (Esc)">✕</button>
@@ -185,7 +185,7 @@
     <form id="admin-login-form" autocomplete="on" class="admin-login-card">
       <h2 class="admin-login-title">ritsu</h2>
       <p id="admin-login-msg" class="admin-login-msg">Sign in with your admin token.</p>
-      <input id="admin-login-user" type="text" name="username" autocomplete="username" value="ritsu"
+      <input id="admin-login-user" aria-label="Username" aria-hidden="true" type="text" name="username" autocomplete="username" value="ritsu"
              readonly tabindex="-1" aria-label="Username" class="hidden">
       <label for="admin-login-token" class="admin-login-label">Admin token</label>
       <input id="admin-login-token" name="password" type="password" autocomplete="current-password"

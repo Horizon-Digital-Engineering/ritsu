@@ -843,7 +843,7 @@
       <!-- hidden username helps password managers know this is a saveable
            login. Static value ('ritsu') so the manager always matches the
            same credential for this origin. -->
-      <input type="text" name="username" autocomplete="username" value="ritsu" readonly tabindex="-1" class="hidden">
+      <input id="admin-login-user" aria-label="Username" aria-hidden="true" type="text" name="username" autocomplete="username" value="ritsu" readonly tabindex="-1" class="hidden">
       <label for="admin-login-token" class="admin-login-label">Admin token</label>
       <input id="admin-login-token" name="password" type="password" autocomplete="current-password" placeholder="rt_..." required spellcheck="false" class="admin-login-input">
       <button class="primary input-full" type="submit">Sign in</button>

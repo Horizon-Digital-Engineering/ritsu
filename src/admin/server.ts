@@ -336,6 +336,23 @@ function validateChannelConfig(kind: string, config: unknown): unknown {
 /** Redact secrets before returning a channel row to the client — bot tokens
  *  must never round-trip through the API. Pure transform; module-scope so
  *  closure overhead doesn't compound across the channel handlers. */
+/** Secrets are unwritable without a master key. Answering with the reason
+ *  beats a 500 whose cause is only visible in the journal. */
+function keyMissing(res: Response): boolean {
+  const st = masterKeyStatus();
+  if (st.ok) return false;
+  res.status(503).json({ error: st.detail ?? 'no master key — secrets cannot be stored' });
+  return true;
+}
+
+function setNoCache(res: Response): void {
+  // Mobile Safari is notoriously eager to serve stale assets across
+  // ritsu releases; these headers force a fresh fetch on every visit.
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
 function redactChannel<T extends { config: unknown } | null>(row: T): T {
   if (!row) return row;
   const config = row.config && typeof row.config === 'object'
@@ -479,14 +496,6 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
 export function createAdminApp(deps: AdminDeps) {
   const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects, skills, prompts } = deps;
 
-  /** Secrets are unwritable without a master key. Answering with the reason
-   *  beats a 500 whose cause is only visible in the journal. */
-  function keyMissing(res: Response): boolean {
-    const st = masterKeyStatus();
-    if (st.ok) return false;
-    res.status(503).json({ error: st.detail ?? 'no master key — secrets cannot be stored' });
-    return true;
-  }
   const app = express();
   app.disable('x-powered-by');
   // Behind a loopback reverse proxy. Trust it so req.ip is the real client, not
@@ -839,10 +848,12 @@ export function createAdminApp(deps: AdminDeps) {
     const dir = join(__dirname, 'vendor');
     const out = new Map<string, { data: Buffer; type: string }>();
     if (!existsSync(dir)) return out;
-    const typeOf = (n: string) =>
-      n.endsWith('.js') ? 'application/javascript'
-        : n.endsWith('.css') ? 'text/css'
-          : n.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream';
+    const typeOf = (n: string): string => {
+      if (n.endsWith('.js')) return 'application/javascript';
+      if (n.endsWith('.css')) return 'text/css';
+      if (n.endsWith('.woff2')) return 'font/woff2';
+      return 'application/octet-stream';
+    };
     for (const name of readdirSync(dir)) {
       const fp = join(dir, name);
       if (statSync(fp).isFile() && /\.(js|css)$/.test(name)) {
@@ -872,13 +883,6 @@ export function createAdminApp(deps: AdminDeps) {
     res.type(hit.type).send(hit.data);
   });
 
-  function setNoCache(res: Response): void {
-    // Mobile Safari is notoriously eager to serve stale assets across
-    // ritsu releases; these headers force a fresh fetch on every visit.
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-  }
 
   app.get('/admin', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
