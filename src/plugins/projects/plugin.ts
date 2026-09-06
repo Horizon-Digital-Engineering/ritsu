@@ -20,7 +20,10 @@ function defineTools(ctx: PluginToolContext): void {
     untrustedOutput: true,
     handler: () => {
       const rows = projects.list();
-      return text(rows.length ? rows.map(p => `${p.id} — ${p.name}${p.working_dir ? ` (${p.working_dir})` : ''}${p.enabled ? '' : ' [disabled]'}`).join('\n') : '(no projects)');
+      return text(rows.length ? rows.map(p => {
+        const dir = p.working_dir ? ` (${p.working_dir})` : '';
+        return `${p.id} — ${p.name}${dir}${p.enabled ? '' : ' [disabled]'}`;
+      }).join('\n') : '(no projects)');
     },
   });
 

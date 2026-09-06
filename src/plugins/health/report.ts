@@ -25,7 +25,7 @@ export function trend(series: Observation[]): Trend {
   }
   const values = series.map(o => o.value);
   const first = series[0];
-  const last = series[series.length - 1];
+  const last = series.at(-1)!;
   const change = last.value - first.value;
   return {
     label: first.label,

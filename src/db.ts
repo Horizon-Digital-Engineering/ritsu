@@ -775,7 +775,7 @@ function backfillCallerLabels(db: Db): void {
  * future caller pipes user-controlled text through. Refuse anything
  * that isn't a plain SQL identifier so the bug surfaces loud.
  */
-const SQL_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SQL_IDENT_RE = /^[A-Za-z_]\w*$/;
 const SQL_TYPE_RE  = /^[A-Za-z][A-Za-z0-9_ ()'"[\]{}=\-,.]*$/;
 
 function addColumnIfMissing(db: Db, table: string, column: string, type: string): void {

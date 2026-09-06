@@ -411,7 +411,7 @@ async function loadIngestTypes() {
   } catch (e) { toast(e.message, 'err'); }
 }
 function fileToBase64(file) {
-  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1]); r.onerror = reject; r.readAsDataURL(file); });
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve((typeof r.result === 'string' ? r.result : '').split(',')[1]); r.onerror = reject; r.readAsDataURL(file); });
 }
 async function submitIngest(e) {
   e.preventDefault();

@@ -58,7 +58,10 @@ export function buildAgentSkillsMcp(agentId: string, skills: SkillsLookup, gate:
 export function formatSearchHits(hits: Array<{ id: number; title: string; snippet: string }>): string {
   if (!hits.length) return 'no chats matched.';
   return hits
-    .map(h => `[chat ${h.id}] ${h.title || '(untitled)'}${h.snippet ? `\n    ${h.snippet}` : ''}`)
+    .map(h => {
+      const snippet = h.snippet ? `\n    ${h.snippet}` : '';
+      return `[chat ${h.id}] ${h.title || '(untitled)'}${snippet}`;
+    })
     .join('\n');
 }
 

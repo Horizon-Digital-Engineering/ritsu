@@ -117,7 +117,7 @@
         <form id="ask-form" class="composer">
           <!-- "/" or "@" at position 0 opens this; rows are built in JS and
                chosen with the arrow keys, so it stays out of the tab order. -->
-          <div id="palette" class="palette" role="listbox" aria-label="Commands" aria-hidden="true"></div><!-- NOSONAR: ARIA APG listbox pattern; options are JS-built and arrow-key driven, a native select cannot host them -->
+          <div id="palette" class="palette" role="menu" aria-label="Commands" aria-hidden="true"></div>
           <div id="edit-banner" class="edit-banner hidden">
             <span class="edit-banner-text">Editing a message — sending forks a new branch.</span>
             <button type="button" class="edit-banner-x" data-action="cancel-edit" title="Cancel (Esc)">✕</button>

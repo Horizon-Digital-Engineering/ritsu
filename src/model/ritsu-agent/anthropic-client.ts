@@ -48,7 +48,9 @@ export class AnthropicClient implements RaClient {
       messages: turns,
     };
     if (system) body.system = system;
-    if (this.providerOptions.temperature !== undefined) body.temperature = this.providerOptions.temperature;
+    // Deprecated upstream for models past Opus 4.6 (they reject non-1.0 with
+    // a clear 400) but still honored by older models — operator's choice.
+    if (this.providerOptions.temperature !== undefined) body.temperature = this.providerOptions.temperature; // NOSONAR
     if (tools.length > 0) {
       body.tools = tools.map(t => ({
         name: t.name,
@@ -140,7 +142,7 @@ function toolResultBlock(m: RaMessage): ContentBlockParam {
  *  next user message the API requires. */
 function appendUserBlocks(turns: MessageParam[], blocks: ContentBlockParam[]): void {
   if (blocks.length === 0) return;
-  const last = turns[turns.length - 1];
+  const last = turns.at(-1);
   if (last?.role === 'user' && Array.isArray(last.content)) {
     last.content.push(...blocks);
     return;

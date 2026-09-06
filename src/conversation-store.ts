@@ -309,8 +309,8 @@ export class SqliteConversationStore implements ConversationStore {
     // LIKE with explicit escaping so a literal % or _ in the query stays literal.
     const like = (t: string) => '%' + t.replace(/[\\%_]/g, c => '\\' + c) + '%';
     const perTerm = terms.map(() =>
-      `(COALESCE(c.title, '') LIKE ? ESCAPE '\\' OR EXISTS (
-          SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))`).join(' AND ');
+      String.raw`(COALESCE(c.title, '') LIKE ? ESCAPE '\' OR EXISTS (
+          SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\'))`).join(' AND ');
     const params: unknown[] = [agent_id];
     for (const t of terms) { params.push(like(t), like(t)); }
     params.push(limit);
@@ -326,7 +326,7 @@ export class SqliteConversationStore implements ConversationStore {
     const summaries = this.listSummaries(agent_id, 10_000, 'human').filter(sm => ids.has(sm.id));
     // One fragment per hit: the first message matching the first term.
     const snippetStmt = this.db.prepare(
-      `SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' ORDER BY id ASC LIMIT 1`,
+      String.raw`SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\' ORDER BY id ASC LIMIT 1`,
     );
     return summaries.map(sm => {
       const row = snippetStmt.get(sm.id, like(terms[0])) as { content: string } | undefined;
@@ -388,7 +388,7 @@ export class SqliteConversationStore implements ConversationStore {
     const row = this.db
       .prepare('SELECT agent_id, caller_agent_id FROM conversations WHERE id = ?')
       .get(conversation_id) as { agent_id: string; caller_agent_id: string | null } | undefined;
-    if (!row || row.caller_agent_id !== null) return false;
+    if (row?.caller_agent_id !== null) return false;
     const oldest = this.db
       .prepare(
         `SELECT id FROM conversations

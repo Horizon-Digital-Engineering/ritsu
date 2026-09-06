@@ -1233,7 +1233,7 @@ function appendTranscript(role, content, attachmentUrls) {
     text.textContent = content;
     div.appendChild(text);
   }
-  if (attachmentUrls && attachmentUrls.length) {
+  if (attachmentUrls?.length) {
     const atts = document.createElement('div');
     atts.className = 'ap-msg-atts';
     for (const url of attachmentUrls) {
@@ -1293,7 +1293,7 @@ function blobToBase64(blob) {
     const r = new FileReader();
     r.onerror = () => reject(new Error('failed to read image'));
     r.onload = () => {
-      const s = String(r.result);
+      const s = typeof r.result === 'string' ? r.result : '';
       const comma = s.indexOf(',');
       resolve(comma >= 0 ? s.slice(comma + 1) : s);
     };
@@ -1335,7 +1335,7 @@ async function processImageFile(file) {
 }
 
 async function addAttachmentFiles(files) {
-  const list = Array.from(files || []).filter(f => f && f.type && f.type.startsWith('image/'));
+  const list = Array.from(files || []).filter(f => f?.type?.startsWith('image/'));
   for (const f of list) {
     if (panelAttachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
     try {
@@ -1398,7 +1398,7 @@ function closeImageLightbox() {
 function updateAttachHint() {
   const hint = $('ap-attach-hint');
   if (!hint) return;
-  const model = panelModel || ((agentCache || []).find(a => a.id === panelAgentId) || {}).model;
+  const model = panelModel || (agentCache || []).find(a => a.id === panelAgentId)?.model;
   if (model && !modelSupportsVision(model)) {
     hint.textContent = `heads up: ${model} may not be able to see images`;
     hint.classList.add('show');
@@ -2769,7 +2769,7 @@ function approvalHighlightsHtml(a) {
 function approvalEscalationInfo(argsJson) {
   try {
     const args = JSON.parse(argsJson);
-    const caps = args && args._escalation && args._escalation.capabilities;
+    const caps = args?._escalation?.capabilities;
     return Array.isArray(caps) ? caps : null;
   } catch {
     return null;
@@ -3022,6 +3022,7 @@ const ACTIONS = {
   'memory-save':            () => saveMemoryConfig(),
   'memory-probe':           () => probeFlashback(),
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
+  'merge-confirm':          () => mergeConfirm(),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
 
@@ -3320,6 +3321,59 @@ async function deleteBackupFile(name) {
   catch (e) { toast(e.message, 'err'); }
 }
 
+// ---- export import ----------------------------------------------------
+// Picking a file runs a DRY RUN and renders the exact report; the confirm
+// button then repeats the merge for real. The parsed export is held here
+// between the two steps so the file is read once.
+let pendingMergeExport = null;
+
+async function mergeFilePicked(inputEl) {
+  const f = inputEl.files?.[0];
+  pendingMergeExport = null;
+  $('merge-confirm').classList.add('hidden');
+  const box = $('merge-report');
+  box.classList.add('hidden');
+  if (!f) return;
+  let parsed;
+  try { parsed = JSON.parse(await f.text()); }
+  catch { toast('not valid JSON', 'err'); return; }
+  try {
+    const { report } = await api('POST', '/admin/api/import-export', { export: parsed, options: { dry_run: true } });
+    pendingMergeExport = parsed;
+    renderMergeReport(report, true);
+    $('merge-confirm').classList.remove('hidden');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function mergeConfirm() {
+  if (!pendingMergeExport) return;
+  const btn = $('merge-confirm');
+  btn.disabled = true;
+  try {
+    const { report } = await api('POST', '/admin/api/import-export', { export: pendingMergeExport, options: {} });
+    renderMergeReport(report, false);
+    pendingMergeExport = null;
+    btn.classList.add('hidden');
+    toast('imported — agents are live', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  finally { btn.disabled = false; }
+}
+
+function renderMergeReport(report, dry) {
+  const box = $('merge-report');
+  const rows = Object.entries(report.tables).map(([t, r]) => {
+    return `<li><code>${esc(t)}</code>: ${r.inserted} in, ${r.skipped} skipped</li>`;
+  }).join('');
+  const agents = report.skippedAgents.map(a =>
+    `<li class="txt-warn">agent <code>${esc(a)}</code> exists here — its definition is kept (its data still imports)</li>`).join('');
+  const notes = report.notes.map(n => `<li class="txt-warn">${esc(n)}</li>`).join('');
+  const head = dry
+    ? '<strong>Dry run — nothing written yet.</strong> This is exactly what an import would do:'
+    : '<strong>Imported.</strong>';
+  box.innerHTML = `<p>${head}</p><ul>${rows}${agents}${notes}</ul>`;
+  box.classList.remove('hidden');
+}
+
 // Authed downloads: a plain <a download> can't carry the admin token header, so
 // fetch the file with auth, then trigger the download from a blob URL.
 async function downloadWithAuth(path, filename) {
@@ -3359,6 +3413,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'merge-file') { mergeFilePicked(e.target); return; }
   const el = e.target.closest('[data-change]');
   if (!el) return;
   const handler = pluginChanges[el.dataset.change];

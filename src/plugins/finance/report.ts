@@ -122,7 +122,7 @@ function subscriptionFrom(list: Transaction[]): Subscription | null {
   if (cadence === 'irregular') return null;
   return {
     merchant: list[0].merchant_name || list[0].name,
-    avgAmount: avg, occurrences: list.length, lastDate: dates[dates.length - 1], cadence,
+    avgAmount: avg, occurrences: list.length, lastDate: dates.at(-1)!, cadence,
   };
 }
 

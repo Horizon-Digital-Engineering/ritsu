@@ -40,7 +40,7 @@ export async function gateMcpTool(
   args: unknown,
   run: () => Promise<McpToolResult>,
 ): Promise<McpToolResult> {
-  if (gate && gate.gatedTools.includes(fullToolName)) {
+  if (gate?.gatedTools.includes(fullToolName)) {
     const decision = await gate.approvals.request({
       agentId: gate.agentId,
       conversationId: gate.conversationId,

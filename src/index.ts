@@ -202,6 +202,7 @@ async function main(): Promise<void> {
   });
 
   const adminApp = createAdminApp({
+    db,
     defStore,
     host,
     tokens,
