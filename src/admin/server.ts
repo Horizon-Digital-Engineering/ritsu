@@ -107,6 +107,23 @@ function containerEnd(html: string, lower: string, tag: string, s: number): numb
   return containerCloseEnd(html, lower, `</${tag}`, gt + 1);
 }
 
+/** Drop every `<...>` run with a linear scan — the `<[^>]*>` regex version
+ *  rescans per position on tag-free input. An unclosed `<` is kept, exactly
+ *  as the regex left it. */
+function stripTags(html: string): string {
+  let out = '';
+  let i = 0;
+  while (i < html.length) {
+    const a = html.indexOf('<', i);
+    if (a === -1) { out += html.slice(i); break; }
+    const b = html.indexOf('>', a + 1);
+    if (b === -1) { out += html.slice(i); break; }
+    out += html.slice(i, a) + ' ';
+    i = b + 1;
+  }
+  return out;
+}
+
 function stripContainers(html: string, tag: string): string {
   const lower = html.toLowerCase();
   const open = `<${tag}`;
@@ -133,8 +150,7 @@ function stripContainers(html: string, tag: string): string {
  *  entities decoded, whitespace collapsed. Extraction quality is not the goal
  *  — the result is fenced context, not rendered content. */
 export function htmlToText(html: string): string {
-  return stripContainers(stripContainers(html, 'script'), 'style')
-    .replace(/<[^>]*>/g, ' ')
+  return stripTags(stripContainers(stripContainers(html, 'script'), 'style'))
     // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
     // characters "&lt;" rather than a freshly minted "<".
     .replaceAll('&nbsp;', ' ')
@@ -2324,7 +2340,7 @@ export function createAdminApp(deps: AdminDeps) {
    */
   function agentMismatchWarning(payload: unknown): string | null {
     const p = payload as { kind?: string; agent_id?: string } | null;
-    if (!p || p.kind !== 'agent_turn' || !p.agent_id) return null;
+    if (p?.kind !== 'agent_turn' || !p.agent_id) return null;
     const operators = new Set(deps.channels.listEnabled().map(c => c.operator_agent_id));
     if (operators.size === 0 || operators.has(p.agent_id)) return null;
     return `agent "${p.agent_id}" does not operate any enabled channel; replies to this job will not reach it`;

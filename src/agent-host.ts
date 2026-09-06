@@ -489,16 +489,14 @@ export class AgentHost {
   }
 
   private buildMemoryStore(def: AgentDefinition): MemoryStore {
-    switch (def.memory_backend) {
-      case 'sqlite':
-        return new SqliteMemoryStore(this.db);
-      default: {
-        // The per-agent backend is sqlite-only. A remote store is reached
-        // through the MemoryService seam, configured once for the server, not
-        // chosen per agent.
-        const _exhaustive: never = def.memory_backend;
-        throw new Error(`Unknown memory_backend: ${JSON.stringify(_exhaustive)}`);
-      }
+    if (def.memory_backend === 'sqlite') {
+      return new SqliteMemoryStore(this.db);
+    } else {
+      // The per-agent backend is sqlite-only. A remote store is reached
+      // through the MemoryService seam, configured once for the server, not
+      // chosen per agent.
+      const _exhaustive: never = def.memory_backend;
+      throw new Error(`Unknown memory_backend: ${JSON.stringify(_exhaustive)}`);
     }
   }
 }

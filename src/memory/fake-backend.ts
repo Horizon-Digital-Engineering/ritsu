@@ -26,11 +26,10 @@ export class FakeMemoryBackend implements MemoryBackend {
       mode: rec.scope.mode ?? null,
       supersedes: rec.supersedes ?? null,
       prev_source_ref: rec.prev_source_ref ?? null,
-      // JSON round-trip so acl/payload match sqlite's serialize-then-parse
-      // semantics (drops undefined keys, NaN->null) and aren't stored by reference.
-      acl: rec.acl != null ? JSON.parse(JSON.stringify(rec.acl)) : null,
+      // Deep clone so acl/payload aren't stored by reference.
+      acl: rec.acl != null ? structuredClone(rec.acl) : null,
       ttl: rec.ttl ?? null,
-      payload: rec.payload != null ? JSON.parse(JSON.stringify(rec.payload)) : null,
+      payload: rec.payload != null ? structuredClone(rec.payload) : null,
     });
     return { id };
   }
@@ -93,7 +92,7 @@ export class FakeMemoryBackend implements MemoryBackend {
     let added = true;
     while (added) {
       added = false;
-      for (const rid of [...seen.keys()]) {
+      for (const rid of seen.keys()) {
         // .filter(): a branch has multiple rows superseding the same id; .find()
         // would grab only one and silently drop the siblings.
         for (const newer of this.rows.filter(r => r.supersedes === rid)) {

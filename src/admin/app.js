@@ -1233,7 +1233,7 @@ function appendTranscript(role, content, attachmentUrls) {
     text.textContent = content;
     div.appendChild(text);
   }
-  if (attachmentUrls && attachmentUrls.length) {
+  if (attachmentUrls?.length) {
     const atts = document.createElement('div');
     atts.className = 'ap-msg-atts';
     for (const url of attachmentUrls) {
@@ -1293,7 +1293,7 @@ function blobToBase64(blob) {
     const r = new FileReader();
     r.onerror = () => reject(new Error('failed to read image'));
     r.onload = () => {
-      const s = String(r.result);
+      const s = typeof r.result === 'string' ? r.result : '';
       const comma = s.indexOf(',');
       resolve(comma >= 0 ? s.slice(comma + 1) : s);
     };
@@ -1335,7 +1335,7 @@ async function processImageFile(file) {
 }
 
 async function addAttachmentFiles(files) {
-  const list = Array.from(files || []).filter(f => f && f.type && f.type.startsWith('image/'));
+  const list = Array.from(files || []).filter(f => f?.type?.startsWith('image/'));
   for (const f of list) {
     if (panelAttachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
     try {
@@ -1398,7 +1398,7 @@ function closeImageLightbox() {
 function updateAttachHint() {
   const hint = $('ap-attach-hint');
   if (!hint) return;
-  const model = panelModel || ((agentCache || []).find(a => a.id === panelAgentId) || {}).model;
+  const model = panelModel || (agentCache || []).find(a => a.id === panelAgentId)?.model;
   if (model && !modelSupportsVision(model)) {
     hint.textContent = `heads up: ${model} may not be able to see images`;
     hint.classList.add('show');
@@ -2769,7 +2769,7 @@ function approvalHighlightsHtml(a) {
 function approvalEscalationInfo(argsJson) {
   try {
     const args = JSON.parse(argsJson);
-    const caps = args && args._escalation && args._escalation.capabilities;
+    const caps = args?._escalation?.capabilities;
     return Array.isArray(caps) ? caps : null;
   } catch {
     return null;

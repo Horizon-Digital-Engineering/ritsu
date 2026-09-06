@@ -96,7 +96,10 @@ class Merger {
       // Keys come from an uploaded file — a null-prototype target makes
       // "__proto__" a plain own property instead of prototype pollution.
       const out: Row = Object.create(null) as Row;
-      for (const [k, v] of Object.entries(r as Row)) out[k] = decodeBlob(v);
+      for (const [k, v] of Object.entries(r as Row)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        out[k] = decodeBlob(v);
+      }
       return out;
     });
     if (rows.length && typeof rows[0].id === 'number') rows.sort((a, b) => Number(a.id) - Number(b.id));
