@@ -22,32 +22,32 @@
     "ritsu": "./dist/cli.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.246",
-    "@anthropic-ai/sdk": "^0.120.0",
-    "@google/genai": "^2.18.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.251",
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@google/genai": "^2.19.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "croner": "^10.0.1",
     "express": "^5.2.1",
     "imapflow": "^1.7.6",
-    "mailparser": "^3.9.16",
+    "mailparser": "^3.9.17",
     "nodemailer": "^9.0.3",
-    "openai": "^7.5.0",
+    "openai": "^7.8.0",
     "re2-wasm": "^1.0.2",
     "twitter-api-v2": "^1.29.1",
     "undici": "^8.10.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/mailparser": "^3.4.6",
-    "@types/node": "^26.3.0",
+    "@types/node": "^26.4.0",
     "@types/nodemailer": "^8.0.1",
     "@typescript-eslint/eslint-plugin": "^8.68.0",
     "@typescript-eslint/parser": "^8.0.0",
     "c8": "^12.0.0",
     "eslint": "^10.9.1",
     "fast-check": "^4.9.0",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3"
   },
   "overrides": {
