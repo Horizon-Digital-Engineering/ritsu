@@ -63,6 +63,7 @@ describe('plugin agent preset (CORE-2)', () => {
       const channels = new ChannelRegistry(channelStore, { get: (id: string) => host.get(id) });
       token = tokens.mint('t', 'admin').token;
       const app = createAdminApp({
+    db,
         defStore, host, tokens, apiKeys, workspaces, pluginHost, memory, conversations,
         approvals, commsDenials, secrets, backup: new BackupManager(db, ':memory:'), channels: channelStore, channelRegistry: channels, jobs: new SqliteJobStore(db), oauth,
         projects: new ProjectStore(db), skills: new SkillStore(db), prompts: new PromptStore(db),

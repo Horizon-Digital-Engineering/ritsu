@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from 'express';
 import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, sep, resolve as resolvePath, normalize as normalizePath } from 'node:path';
+import { mergeExportIntoDb } from '../merge-import.js';
 import { spawnSync } from '../util/safe-spawn.js';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -154,6 +155,8 @@ export function clampLimit(raw: unknown, fallback: number, max: number): number 
 }
 
 export interface AdminDeps {
+  /** The live database handle — used by the in-process export merge. */
+  db: import('../db.js').Db;
   defStore: AgentDefinitionStore;
   host: AgentHost;
   tokens: TokenStore;
@@ -719,11 +722,14 @@ export function createAdminApp(deps: AdminDeps) {
   // client from blowing up RAM.
   const jsonDefault = express.json({ limit: '256kb' });
   const jsonAsk = express.json({ limit: '32mb' });
-  app.use((req, res, next) =>
-    req.method === 'POST' && (req.path.endsWith('/ask') || req.path.endsWith('/files'))
-      ? jsonAsk(req, res, next)
-      : jsonDefault(req, res, next),
-  );
+  // Whole-history exports carry base64 attachments; give the import room.
+  const jsonMerge = express.json({ limit: '128mb' });
+  app.use((req, res, next) => {
+    if (req.method !== 'POST') return jsonDefault(req, res, next);
+    if (req.path.endsWith('/import-export')) return jsonMerge(req, res, next);
+    if (req.path.endsWith('/ask') || req.path.endsWith('/files')) return jsonAsk(req, res, next);
+    return jsonDefault(req, res, next);
+  });
 
   // ---- admin action audit ------------------------------------------------
   // Runs after the auth middleware (so we have the token id) and only for
@@ -2051,6 +2057,32 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   // Portable JSON of your meaningful data (no secrets/tokens) — "never hostage".
+  // Merge a current-format JSON export into THIS live database. dry_run
+  // executes the full merge in a transaction and rolls back, so the report
+  // is exact. A real merge hot-reloads the agent host, so imported agents
+  // are usable without a restart.
+  app.post('/admin/api/import-export', async (req: Request, res: Response) => {
+    const body = req.body as { export?: unknown; options?: Record<string, unknown> } | undefined;
+    const file = body?.export as { format?: unknown; tables?: unknown } | undefined;
+    if (!file || typeof file !== 'object' || typeof file.tables !== 'object' || file.tables === null) {
+      res.status(400).json({ error: 'body must be { export: <ritsu export JSON>, options?: {...} }' });
+      return;
+    }
+    const o = body?.options ?? {};
+    const strList = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    try {
+      const report = mergeExportIntoDb(file as never, deps.db, {
+        dryRun: o.dry_run === true,
+        agents: strList(o.agents),
+        replaceAgents: strList(o.replace_agents),
+      });
+      if (!report.dryRun) await host.loadAll();
+      res.json({ report });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
   app.get('/admin/api/export', (_req: Request, res: Response) => {
     const data = backup.exportJson();
     res.setHeader('Content-Disposition', `attachment; filename="ritsu-export-${new Date().toISOString().slice(0, 10)}.json"`);

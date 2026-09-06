@@ -1,6 +1,6 @@
 {
   "name": "ritsu",
-  "version": "0.12.4",
+  "version": "0.13.0",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",

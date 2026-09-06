@@ -6,13 +6,22 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.12.4] — 2026-09-06
+## [0.13.0] — 2026-09-06
+
+### Added
+
+- **Import an export from the UI.** Studio → Server → Backups can merge a
+  `ritsu backup export` file into the live database: pick the file, review
+  the exact dry-run report, confirm. Every integer id is remapped so nothing
+  existing is overwritten; an agent id that already exists keeps the live
+  definition unless replacement is requested; credentials, tokens, audit
+  rows, channel configs, and settings never transfer. A confirmed import
+  hot-reloads the agent host, so imported agents are usable immediately.
 
 ### Changed
 
-- `ritsu backup import` requires the current export format stamp; the
-  tolerance for unstamped files is removed. The import matches exactly what
-  `ritsu backup export` writes today.
+- Imports accept only the current export format — the exact shape
+  `ritsu backup export` writes today. Anything else is refused.
 
 ## [0.12.3] — 2026-09-06
 
