@@ -48,19 +48,19 @@ import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
  */
 const IPV4_DENY: ReadonlyArray<readonly [string, number, string]> = [
   ['0.0.0.0',         8,  'unspecified / "this network"'],
-  ['10.0.0.0',        8,  'RFC 1918 private'],
-  ['100.64.0.0',      10, 'RFC 6598 CGN'],
+  ['10.0.0.0',        8,  'RFC 1918 private'],  // NOSONAR — this literal IS the deny rule
+  ['100.64.0.0',      10, 'RFC 6598 CGN'],  // NOSONAR — this literal IS the deny rule
   ['127.0.0.0',       8,  'loopback'],
-  ['169.254.0.0',     16, 'link-local / cloud metadata'],
-  ['172.16.0.0',      12, 'RFC 1918 private'],
-  ['192.0.0.0',       24, 'RFC 6890 reserved'],
+  ['169.254.0.0',     16, 'link-local / cloud metadata'],  // NOSONAR — this literal IS the deny rule
+  ['172.16.0.0',      12, 'RFC 1918 private'],  // NOSONAR — this literal IS the deny rule
+  ['192.0.0.0',       24, 'RFC 6890 reserved'],  // NOSONAR — this literal IS the deny rule
   ['192.0.2.0',       24, 'TEST-NET-1'],
-  ['192.168.0.0',     16, 'RFC 1918 private'],
-  ['198.18.0.0',      15, 'benchmark / RFC 2544'],
+  ['192.168.0.0',     16, 'RFC 1918 private'],  // NOSONAR — this literal IS the deny rule
+  ['198.18.0.0',      15, 'benchmark / RFC 2544'],  // NOSONAR — this literal IS the deny rule
   ['198.51.100.0',    24, 'TEST-NET-2'],
   ['203.0.113.0',     24, 'TEST-NET-3'],
-  ['224.0.0.0',       4,  'multicast'],
-  ['240.0.0.0',       4,  'reserved'],
+  ['224.0.0.0',       4,  'multicast'],  // NOSONAR — this literal IS the deny rule
+  ['240.0.0.0',       4,  'reserved'],  // NOSONAR — this literal IS the deny rule
   ['255.255.255.255', 32, 'limited broadcast'],
 ];
 
@@ -72,15 +72,15 @@ const IPV4_DENY: ReadonlyArray<readonly [string, number, string]> = [
 const IPV6_DENY: ReadonlyArray<readonly [string, number, string]> = [
   ['::',     128, 'unspecified'],
   ['::1',    128, 'loopback'],
-  ['fc00::', 7,   'unique local (RFC 4193)'],
-  ['fe80::', 10,  'link-local'],
-  ['ff00::', 8,   'multicast'],
+  ['fc00::', 7,   'unique local (RFC 4193)'],  // NOSONAR — this literal IS the deny rule
+  ['fe80::', 10,  'link-local'],  // NOSONAR — this literal IS the deny rule
+  ['ff00::', 8,   'multicast'],  // NOSONAR — this literal IS the deny rule
 ];
 
 /** Parse an IPv4 dotted-quad to a 32-bit number. Returns null on malformed input. */
 function parseIPv4(ip: string): number | null {
   if (!isIPv4(ip)) return null;
-  const parts = ip.split('.').map(s => Number(s));
+  const parts = ip.split('.').map(Number);
   return (parts[0] * 2 ** 24) + (parts[1] * 2 ** 16) + (parts[2] * 2 ** 8) + parts[3];
 }
 
@@ -113,12 +113,12 @@ function parseIPv6(ip: string): bigint | null {
     const left = dblIdx === 0 ? [] : normalized.slice(0, dblIdx).split(':');
     const right = dblIdx === normalized.length - 2 ? [] : normalized.slice(dblIdx + 2).split(':');
     const missing = 8 - left.length - right.length;
-    groups = [...left, ...Array<string>(missing).fill('0'), ...right];
+    groups = [...left, ...new Array<string>(missing).fill('0'), ...right];
   }
   if (groups.length !== 8) return null;
   let n = 0n;
   for (const g of groups) {
-    const v = parseInt(g, 16);
+    const v = Number.parseInt(g, 16);
     if (!Number.isFinite(v) || v < 0 || v > 0xffff) return null;
     n = (n << 16n) | BigInt(v);
   }
@@ -239,12 +239,13 @@ export function createSafeDispatcher(): Dispatcher {
           }
           // Honour the caller's family preference for the actual return.
           const family = typeof options === 'object' ? options.family : 0;
-          const chosen = family === 4
-            ? addrs.find(a => a.family === 4)
-            : family === 6
-              ? addrs.find(a => a.family === 6)
-              : addrs[0];
-          if (!chosen) { cb(new Error(`no ${family ? `IPv${family}` : ''} address`), '', 0); return; }
+          let chosen: LookupAddress | undefined = addrs[0];
+          if (family === 4 || family === 6) chosen = addrs.find(a => a.family === family);
+          if (!chosen) {
+            const wanted = family ? `IPv${family} ` : '';
+            cb(new Error(`no ${wanted}address`), '', 0);
+            return;
+          }
           cb(null, chosen.address, chosen.family);
         });
       },
@@ -268,6 +269,14 @@ const DEFAULT_MAX_REDIRECTS = 5;
  * stream with an upper bound). Everything address-policy-related is
  * handled here.
  */
+/** Where a manual-redirect response points next (resolved against `base`),
+ *  or null when the response is final — including a 3xx with no Location. */
+function redirectTarget(res: Response, base: URL): string | null {
+  if (res.status < 300 || res.status >= 400) return null;
+  const loc = res.headers.get('location');
+  return loc ? new URL(loc, base).href : null;
+}
+
 export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Promise<Response> {
   const dispatcher = createSafeDispatcher();
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
@@ -286,21 +295,15 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
       headers: opts.headers,
       dispatcher,
     });
-    // 3xx with Location → re-validate and follow manually. Anything else
-    // (including 3xx without a Location header) is final.
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get('location');
-      if (!loc) return res;
-      if (hops >= maxRedirects) {
-        throw new Error(`SSRF guard: too many redirects (>${maxRedirects})`);
-      }
-      // Resolve relative redirects against the current URL. 307/308 keep the
-      // method and body; every other 3xx degrades to GET, per fetch.
-      current = new URL(loc, v.url).href;
-      if (res.status !== 307 && res.status !== 308) { method = 'GET'; body = undefined; }
-      hops++;
-      continue;
+    // 3xx with Location → re-validate and follow manually; anything else is final.
+    const next = redirectTarget(res, v.url);
+    if (next === null) return res;
+    if (hops >= maxRedirects) {
+      throw new Error(`SSRF guard: too many redirects (>${maxRedirects})`);
     }
-    return res;
+    // 307/308 keep the method and body; every other 3xx degrades to GET, per fetch.
+    current = next;
+    if (res.status !== 307 && res.status !== 308) { method = 'GET'; body = undefined; }
+    hops++;
   }
 }
