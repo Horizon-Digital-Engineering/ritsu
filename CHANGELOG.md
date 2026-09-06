@@ -6,6 +6,14 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-09-06
+
+### Changed
+
+- `ritsu backup import` requires the current export format stamp; the
+  tolerance for unstamped files is removed. The import matches exactly what
+  `ritsu backup export` writes today.
+
 ## [0.12.3] — 2026-09-06
 
 ### Changed

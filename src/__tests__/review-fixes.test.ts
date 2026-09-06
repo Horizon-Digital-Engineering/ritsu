@@ -280,16 +280,14 @@ describe('JSON export round-trip', () => {
     assert.equal(new BackupManager(openDatabase(dbPath), dbPath).exportJson().format, exportFormatForTests);
   });
 
-  it('accepts an export from before the format stamp existed', () => {
-    // Old exports ARE the v1 shape — the field was added without a layout change.
+  it('refuses an export without the current format stamp', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'ritsu-io5-'));
     const srcPath = join(tmp, 'src.db');
     const src = openDatabase(srcPath);
     src.prepare("INSERT INTO memories (agent_id, content, lineage_root_id) VALUES ('a', 'old world', 0)").run();
     const file = new BackupManager(src, srcPath).exportJson() as { format?: string };
     delete file.format;
-    const { counts } = importJson(file as never, join(tmp, 'rebuilt.db'));
-    assert.equal(counts.memories, 1);
+    assert.throws(() => importJson(file as never, join(tmp, 'rebuilt.db')), /unrecognised export format/);
   });
 
   it('imports rows in export order despite forward and self-referential FKs', () => {
