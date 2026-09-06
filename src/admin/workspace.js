@@ -136,6 +136,32 @@ async function api(method, path, body) {
  * text/event-stream wire format. Caller aborts the signal to stop the loop;
  * anything else reconnects after 2s.
  */
+/** Emit every complete event in buf; returns the unconsumed tail. */
+function sseDrainBuffer(buf, onEvent) {
+  let idx;
+  while ((idx = buf.indexOf('\n\n')) !== -1) {
+    const raw = buf.slice(0, idx);
+    buf = buf.slice(idx + 2);
+    const dataLines = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
+    if (!dataLines.length) continue;
+    try { onEvent(JSON.parse(dataLines.join('\n'))); }
+    catch { /* malformed payload — skip, keep the stream alive */ }
+  }
+  return buf;
+}
+
+async function sseReadBody(body, onEvent, signal) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    buf = sseDrainBuffer(buf, onEvent);
+  }
+}
+
 async function sseFetch(path, onEvent, signal) {
   while (!signal.aborted) {
     try {
@@ -144,23 +170,7 @@ async function sseFetch(path, onEvent, signal) {
         signal,
       });
       if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (!signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const raw = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const dataLines = raw.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
-          if (!dataLines.length) continue;
-          try { onEvent(JSON.parse(dataLines.join('\n'))); }
-          catch { /* malformed payload — skip, keep the stream alive */ }
-        }
-      }
+      await sseReadBody(r.body, onEvent, signal);
     } catch (e) {
       if (signal.aborted) return;
       console.warn('sse reconnect in 2s:', e?.message ?? e);
@@ -207,7 +217,10 @@ let ctxSeq = 0;
 let txSeq = 0;
 
 // ---- routing ---------------------------------------------------------------
-const chatPath = (id, cid) => `/a/${encodeURIComponent(id)}${cid ? `/c/${cid}` : ''}`;
+const chatPath = (id, cid) => {
+  const tail = cid ? `/c/${cid}` : '';
+  return `/a/${encodeURIComponent(id)}${tail}`;
+};
 const projectPath = (id, pid) => `/a/${encodeURIComponent(id)}/p/${pid}`;
 const filesPath = (id) => `/a/${encodeURIComponent(id)}/files`;
 const skillsPath = (id) => `/a/${encodeURIComponent(id)}/skills`;
@@ -897,10 +910,9 @@ function renderPath() {
       const m = node.msg;
       const byline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label)
         ? `<div class="msg-byline">${esc(m.caller_label)}</div>` : '';
-      const atts = m.attachments?.length
-        ? `<div class="msg-atts">${m.attachments.map(a =>
-            `<img class="att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${esc(a.data)}" alt="attachment">`).join('')}</div>`
-        : '';
+      const attImgs = (m.attachments || []).map(a =>
+        `<img class="att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${esc(a.data)}" alt="attachment">`).join('');
+      const atts = attImgs ? `<div class="msg-atts">${attImgs}</div>` : '';
       // Assistant turns render as markdown; user turns stay literal text —
       // what the operator typed is what they see.
       const body = m.role === 'assistant' ? md(m.content) : esc(m.content).replace(/\n/g, '<br>');
@@ -1055,7 +1067,7 @@ const ATTACH_MAX = 4;
 const ATTACH_MAX_EDGE_DEFAULT = 1568;
 const ATTACH_MAX_EDGE_HIRES = 2576;
 const ATTACH_MAX_B64 = 6_800_000;   // ~5MB binary; the server enforces the same
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const ATTACH_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 // Best-effort guess. Unknown models default to "capable" so we don't nag; the
 // hint only fires for models we are fairly sure are text-only.
 const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|grok|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
@@ -1080,7 +1092,7 @@ function blobToBase64(blob) {
 // Decode → downscale → re-encode, bounding the payload. GIFs pass through
 // untouched so animation survives (canvas would flatten them).
 async function processImageFile(file) {
-  if (!ATTACH_TYPES.includes(file.type)) throw new Error('unsupported image type (png/jpeg/webp/gif only)');
+  if (!ATTACH_TYPES.has(file.type)) throw new Error('unsupported image type (png/jpeg/webp/gif only)');
   if (file.type === 'image/gif') {
     const data = await blobToBase64(file);
     if (data.length > ATTACH_MAX_B64) throw new Error('gif too large (max ~5MB)');
@@ -1380,9 +1392,7 @@ function renderProjectView(pid) {
   if (!filesLoaded) {
     filesHtml = '<div class="empty">loading…</div>';
   } else if (tagged.length) {
-    filesHtml = `<div class="table-wrap"><table class="ftable">
-      <thead><tr><th>Path</th><th>Size</th><th>Modified</th><th></th></tr></thead>
-      <tbody>${tagged.map(f => `<tr>
+    const taggedRows = tagged.map(f => `<tr>
         <td class="path-cell">${esc(f.rel)}</td>
         <td class="num-cell">${fmtBytes(f.size)}</td>
         <td class="num-cell">${fmtAge(f.mtime)}</td>
@@ -1390,7 +1400,10 @@ function renderProjectView(pid) {
           <button type="button" data-action="download-file" data-path="${esc(f.path)}" title="Download">Download</button>
           <button type="button" data-action="untag-file" data-path="${esc(f.path)}" title="Remove from this project">Untag</button>
         </td>
-      </tr>`).join('')}</tbody></table></div>`;
+      </tr>`).join('');
+    filesHtml = `<div class="table-wrap"><table class="ftable">
+      <thead><tr><th>Path</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody>${taggedRows}</tbody></table></div>`;
   } else {
     filesHtml = '<div class="empty">No files tagged here yet — tag one from the Files view.</div>';
   }
@@ -1491,8 +1504,9 @@ async function showFilesView() {
 
 function renderFilesView() {
   const target = $('view-files');
+  const plural = files.length === 1 ? '' : 's';
   const sub = hasWorkspaces
-    ? `${files.length} file${files.length === 1 ? '' : 's'} across this agent's workspace roots`
+    ? `${files.length} file${plural} across this agent's workspace roots`
     : 'no workspace roots';
   const head = `<div class="view-head">
       <div class="view-title-wrap">
@@ -1578,6 +1592,24 @@ async function downloadFile(path) {
   } catch (e) { toast(`download failed: ${e.message}`, 'err'); }
 }
 
+/** POST one file into the workspace; a name collision confirms then overwrites. */
+async function uploadOneFile(name, path, data) {
+  try {
+    await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: false });
+    return true;
+  } catch (e) {
+    if (/file exists/i.test(e.message) && confirm(`${path} already exists. Overwrite it?`)) {
+      try {
+        await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
+        return true;
+      } catch (e2) { toast(`${name}: ${e2.message}`, 'err'); }
+    } else if (!/file exists/i.test(e.message)) {
+      toast(`${name}: ${e.message}`, 'err');
+    }
+    return false;
+  }
+}
+
 async function uploadFiles(fileList) {
   const list = Array.from(fileList || []);
   if (!list.length) return;
@@ -1589,19 +1621,7 @@ async function uploadFiles(fileList) {
     let data;
     try { data = await blobToBase64(f); }
     catch { toast(`${name}: could not read file`, 'err'); continue; }
-    try {
-      await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: false });
-      wrote++;
-    } catch (e) {
-      if (/file exists/i.test(e.message) && confirm(`${path} already exists. Overwrite it?`)) {
-        try {
-          await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
-          wrote++;
-        } catch (e2) { toast(`${name}: ${e2.message}`, 'err'); }
-      } else if (!/file exists/i.test(e.message)) {
-        toast(`${name}: ${e.message}`, 'err');
-      }
-    }
+    if (await uploadOneFile(name, path, data)) wrote++;
   }
   if (wrote) toast(`uploaded ${wrote} file${wrote === 1 ? '' : 's'}`);
   await loadFiles();
@@ -1997,29 +2017,36 @@ function closePalette() {
   paletteRows = [];
 }
 
+function paletteAgentRows(filter) {
+  const rows = [];
+  for (const a of agents) {
+    if (!filter || a.id.toLowerCase().includes(filter) || (a.name || '').toLowerCase().includes(filter)) {
+      rows.push({ kind: 'agent', label: `@${a.id}`, desc: a.name || '', id: a.id });
+    }
+  }
+  return rows;
+}
+
+function paletteSlashRows(filter) {
+  const rows = [];
+  for (const b of PALETTE_BUILTINS) {
+    if (b.name.startsWith(filter)) rows.push({ kind: 'builtin', label: `/${b.name}`, desc: b.desc, action: b.action });
+  }
+  for (const p of savedPrompts) {
+    if (!filter || p.name.toLowerCase().includes(filter)) {
+      rows.push({ kind: 'prompt', label: `/${p.name}`, desc: p.agent_id ? '' : 'all agents', id: p.id });
+    }
+  }
+  return rows;
+}
+
 /** Re-derive the palette from the composer's current text. */
 function syncPalette() {
   const v = $('ask-input').value;
   const lead = v.slice(0, 1);
   if ((lead !== '/' && lead !== '@') || v.includes('\n')) { closePalette(); return; }
   const filter = v.slice(1).trim().toLowerCase();
-  const rows = [];
-  if (lead === '@') {
-    for (const a of agents) {
-      if (!filter || a.id.toLowerCase().includes(filter) || (a.name || '').toLowerCase().includes(filter)) {
-        rows.push({ kind: 'agent', label: `@${a.id}`, desc: a.name || '', id: a.id });
-      }
-    }
-  } else {
-    for (const b of PALETTE_BUILTINS) {
-      if (b.name.startsWith(filter)) rows.push({ kind: 'builtin', label: `/${b.name}`, desc: b.desc, action: b.action });
-    }
-    for (const p of savedPrompts) {
-      if (!filter || p.name.toLowerCase().includes(filter)) {
-        rows.push({ kind: 'prompt', label: `/${p.name}`, desc: p.agent_id ? '' : 'all agents', id: p.id });
-      }
-    }
-  }
+  const rows = lead === '@' ? paletteAgentRows(filter) : paletteSlashRows(filter);
   // Nothing matches any more — the operator is writing a message that merely
   // starts with "/" or "@", so get out of the way and let Enter send it.
   if (!rows.length) { closePalette(); return; }
@@ -2118,6 +2145,30 @@ function substituteVars(content, values) {
   });
 }
 
+function varInputFor(v) {
+  let input;
+  if (v.type === 'textarea') {
+    input = document.createElement('textarea');
+    input.rows = 4;
+  } else if (v.type === 'select') {
+    input = document.createElement('select');
+    for (const opt of String(v.props.options || '').split(',').map(o => o.trim()).filter(Boolean)) {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      input.appendChild(o);
+    }
+  } else {
+    input = document.createElement('input');
+    let inputType = 'text';
+    if (v.type === 'number' || v.type === 'checkbox' || v.type === 'date') inputType = v.type;
+    input.type = inputType;
+  }
+  input.dataset.var = v.name;
+  input.dataset.vtype = v.type;
+  return input;
+}
+
 function openVarForm(prompt_, vars) {
   openModal((card) => {
     card.innerHTML = `<h2 class="modal-title">${esc(prompt_.name)}</h2>`
@@ -2130,24 +2181,7 @@ function openVarForm(prompt_, vars) {
       field.className = v.type === 'checkbox' ? 'field-row' : 'field';
       const label = document.createElement('label');
       label.textContent = v.name;
-      let input;
-      if (v.type === 'textarea') {
-        input = document.createElement('textarea');
-        input.rows = 4;
-      } else if (v.type === 'select') {
-        input = document.createElement('select');
-        for (const opt of String(v.props.options || '').split(',').map(o => o.trim()).filter(Boolean)) {
-          const o = document.createElement('option');
-          o.value = opt;
-          o.textContent = opt;
-          input.appendChild(o);
-        }
-      } else {
-        input = document.createElement('input');
-        input.type = v.type === 'number' ? 'number' : v.type === 'checkbox' ? 'checkbox' : v.type === 'date' ? 'date' : 'text';
-      }
-      input.dataset.var = v.name;
-      input.dataset.vtype = v.type;
+      const input = varInputFor(v);
       if (v.type === 'checkbox') { field.appendChild(input); field.appendChild(label); }
       else { field.appendChild(label); field.appendChild(input); }
       host.appendChild(field);
@@ -2164,7 +2198,8 @@ function applyVarForm() {
   if (!p) { closeModal(); return; }
   const values = {};
   for (const el of card.querySelectorAll('[data-var]')) {
-    values[el.dataset.var] = el.dataset.vtype === 'checkbox' ? (el.checked ? 'yes' : 'no') : el.value;
+    const checked = el.checked ? 'yes' : 'no';
+    values[el.dataset.var] = el.dataset.vtype === 'checkbox' ? checked : el.value;
   }
   closeModal();
   applyPromptText(substituteVars(p.content, values));
@@ -2519,7 +2554,8 @@ const ACTIONS = {
     const title = convoTitle(convoId);
     const lines = [`# ${title}`, ''];
     for (const m of lastRendered) {
-      lines.push(`## ${m.role}${m.caller_label ? ` (${m.caller_label})` : ''}`, '', m.content, '');
+      const caller = m.caller_label ? ` (${m.caller_label})` : '';
+      lines.push(`## ${m.role}${caller}`, '', m.content, '');
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
     const a = document.createElement('a');
@@ -2781,4 +2817,4 @@ async function boot() {
   await onRoute();
 }
 
-boot();
+await boot();

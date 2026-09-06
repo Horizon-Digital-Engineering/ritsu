@@ -1,5 +1,6 @@
 import {
   query, type CanUseTool, type SDKUserMessage, type HookCallback, type PreToolUseHookInput,
+  type Options,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
 import { messageText, messageImages } from './dispatcher.js';
@@ -140,10 +141,11 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     });
 
     const workspaces = this.opts.workspaces ?? [];
-    const { mcpServers, allowedTools } = buildMcpServers(this.opts, req.conversation_id ?? null, (req.caller_label ?? '').startsWith('scheduler:'));
+    const conversationId = req.conversation_id ?? null;
+    const { mcpServers, allowedTools } = buildMcpServers(this.opts, conversationId, (req.caller_label ?? '').startsWith('scheduler:'));
     const inProcessTools = new Set(allowedTools);
-    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
-    const preToolUseHook = buildPreToolUseHook(workspaces, this.opts, req.conversation_id ?? null, inProcessTools);
+    const canUseTool = buildCanUseToolCallback(workspaces, this.opts, conversationId, inProcessTools);
+    const preToolUseHook = buildPreToolUseHook(workspaces, this.opts, conversationId, inProcessTools);
 
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
@@ -152,67 +154,84 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     // reply. The last cached assistant text is the right thing to return in
     // that case — it's the model's most recent words to the user.
     let lastAssistantText = '';
-    for await (const event of query({
-      prompt,
-      options: {
-        systemPrompt: systemMsg,
-        model,
-        // Explicit-safe permission baseline. settingSources:[] stops the SDK
-        // loading the service account's ~/.claude/settings.json (whose
-        // `defaultMode: "auto"` would put the agent in classifier-auto mode);
-        // permissionMode:'default' is the documented interactive-approval
-        // mode. OAuth credentials load independently of settings, so $0 Max
-        // dispatch is unaffected, and agents carry their own system_prompt so
-        // dropping CLAUDE.md costs nothing.
-        //
-        // CAVEAT (learned the hard way): on the Max-plan session path the
-        // spawned `claude` subprocess runs its BUILT-IN tools itself and does
-        // NOT route them through canUseTool regardless of these options —
-        // proven by tracing the event stream. PreToolUse HOOKS, however, DO
-        // fire for built-in tools, so we install one (buildPreToolUseHook) to
-        // enforce workspace permissions + operator approval on Bash/Read/Write/
-        // Edit/… — the same policy canUseTool intends, applied where it bites.
-        // In-process MCP tools still gate in their own handlers (approval-
-        // gate.ts), the layer the SDK can't bypass. The ritsu-agent runtime
-        // (our own loop) remains the fully-owned path.
-        settingSources: [],
-        permissionMode: 'default',
-        hooks: { PreToolUse: [{ hooks: [preToolUseHook] }] },
-        ...(this.opts.cwd === undefined ? {} : { cwd: this.opts.cwd }),
-        ...(this.opts.tools === undefined ? {} : { tools: this.opts.tools }),
-        ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
-        ...(allowedTools.length > 0 ? { allowedTools } : {}),
-        ...(canUseTool ? { canUseTool } : {}),
-        // env REPLACES the child's environment rather than merging, so spread
-        // process.env or the subprocess loses PATH/HOME and never starts.
-        //
-        // ANTHROPIC_API_KEY is dropped alongside: it takes precedence over the
-        // subscription token, so leaving it in place would silently bill these
-        // turns per token instead of drawing on the plan the operator
-        // configured. Metered Anthropic is the api runtime's job, with a key
-        // from the API Keys page — the two paths stay separate on purpose.
-        ...(this.opts.oauthToken
-          ? { env: subscriptionEnv(this.opts.oauthToken) }
-          : {}),
-      },
-    })) {
+    const options = buildQueryOptions(model, systemMsg, this.opts, {
+      mcpServers, allowedTools, canUseTool, preToolUseHook,
+    });
+    for await (const event of query({ prompt, options })) {
       const text = extractAssistantText(event);
       if (text) lastAssistantText = text;
       const result = extractResult(event, model);
-      if (result) {
-        if (!result.content && lastAssistantText) {
-          logger.debug('claude-direct.result-fallback', {
-            reason: 'empty-result-using-last-assistant-text',
-            len: lastAssistantText.length,
-          });
-          return { ...result, content: lastAssistantText };
-        }
-        return result;
-      }
+      if (result) return resolveFinalResult(result, lastAssistantText);
     }
 
     throw new Error('Claude SDK stream ended without a result message');
   }
+}
+
+/** Assemble the SDK query options from the dispatcher's per-agent wiring. */
+function buildQueryOptions(
+  model: string,
+  systemMsg: string,
+  opts: ClaudeDirectOpts,
+  wiring: {
+    mcpServers: Record<string, SdkMcpServer>;
+    allowedTools: string[];
+    canUseTool: CanUseTool | undefined;
+    preToolUseHook: HookCallback;
+  },
+): Options {
+  return {
+    systemPrompt: systemMsg,
+    model,
+    // Explicit-safe permission baseline. settingSources:[] stops the SDK
+    // loading the service account's ~/.claude/settings.json (whose
+    // `defaultMode: "auto"` would put the agent in classifier-auto mode);
+    // permissionMode:'default' is the documented interactive-approval
+    // mode. OAuth credentials load independently of settings, so $0 Max
+    // dispatch is unaffected, and agents carry their own system_prompt so
+    // dropping CLAUDE.md costs nothing.
+    //
+    // CAVEAT (learned the hard way): on the Max-plan session path the
+    // spawned `claude` subprocess runs its BUILT-IN tools itself and does
+    // NOT route them through canUseTool regardless of these options —
+    // proven by tracing the event stream. PreToolUse HOOKS, however, DO
+    // fire for built-in tools, so we install one (buildPreToolUseHook) to
+    // enforce workspace permissions + operator approval on Bash/Read/Write/
+    // Edit/… — the same policy canUseTool intends, applied where it bites.
+    // In-process MCP tools still gate in their own handlers (approval-
+    // gate.ts), the layer the SDK can't bypass. The ritsu-agent runtime
+    // (our own loop) remains the fully-owned path.
+    settingSources: [],
+    permissionMode: 'default',
+    hooks: { PreToolUse: [{ hooks: [wiring.preToolUseHook] }] },
+    ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+    ...(opts.tools === undefined ? {} : { tools: opts.tools }),
+    ...(Object.keys(wiring.mcpServers).length > 0 ? { mcpServers: wiring.mcpServers } : {}),
+    ...(wiring.allowedTools.length > 0 ? { allowedTools: wiring.allowedTools } : {}),
+    ...(wiring.canUseTool ? { canUseTool: wiring.canUseTool } : {}),
+    // env REPLACES the child's environment rather than merging, so spread
+    // process.env or the subprocess loses PATH/HOME and never starts.
+    //
+    // ANTHROPIC_API_KEY is dropped alongside: it takes precedence over the
+    // subscription token, so leaving it in place would silently bill these
+    // turns per token instead of drawing on the plan the operator
+    // configured. Metered Anthropic is the api runtime's job, with a key
+    // from the API Keys page — the two paths stay separate on purpose.
+    ...(opts.oauthToken
+      ? { env: subscriptionEnv(opts.oauthToken) }
+      : {}),
+  };
+}
+
+function resolveFinalResult(result: ChatResponse, lastAssistantText: string): ChatResponse {
+  if (!result.content && lastAssistantText) {
+    logger.debug('claude-direct.result-fallback', {
+      reason: 'empty-result-using-last-assistant-text',
+      len: lastAssistantText.length,
+    });
+    return { ...result, content: lastAssistantText };
+  }
+  return result;
 }
 
 // ---- helpers ---------------------------------------------------------------

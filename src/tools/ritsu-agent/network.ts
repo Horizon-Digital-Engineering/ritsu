@@ -42,12 +42,50 @@ export interface NetworkOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** The per-agent searxng override wins over the operator default, so one
+ *  agent can point at a different instance without changing the global. */
+function resolveSearchConfig(opts: NetworkOptions): SearchConfig | undefined {
+  if (opts.search) {
+    return { ...opts.search, ...(opts.searxng_url ? { url: opts.searxng_url } : {}) };
+  }
+  if (opts.searxng_url) return { provider: 'searxng', url: opts.searxng_url };
+  return undefined;
+}
+
+/** safeFetch enforces IP-range + DNS-rebinding protections and follows
+ *  redirects manually with per-hop re-validation. Tests can still inject
+ *  `fetchImpl` to bypass the dispatcher for unit-test setups that don't
+ *  (or can't) stand up a real loopback server. */
+function pickFetcher(opts: NetworkOptions, url: string, ctl: AbortController): () => Promise<Response> {
+  const headers = { 'User-Agent': WEBFETCH_USER_AGENT };
+  return opts.fetchImpl
+    ? () => opts.fetchImpl!(url, { signal: ctl.signal, redirect: 'follow', headers })
+    : () => safeFetch(url, { signal: ctl.signal, headers });
+}
+
+async function drainCapped(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ body: string; total: number; truncated: boolean }> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (total < FETCH_MAX_BYTES) {
+    // reader is the body's ReadableStream<Uint8Array>; the spec types
+    // value as `any` (ReadableStream is generic), so narrow at the
+    // boundary.
+    const read = await reader.read() as { value: Uint8Array | undefined; done: boolean };
+    if (read.done || !read.value) break;
+    chunks.push(read.value);
+    total += read.value.byteLength;
+  }
+  // Make sure we drain or cancel so the connection releases.
+  try { await reader.cancel(); } catch { /* ignore */ }
+  const truncated = total >= FETCH_MAX_BYTES;
+  const bytes = Buffer.concat(chunks.map(c => Buffer.from(c)));
+  return { body: bytes.toString('utf8'), total, truncated };
+}
+
 export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
-  // The per-agent searxng override wins over the operator default, so one
-  // agent can point at a different instance without changing the global.
-  const search: SearchConfig | undefined = opts.search
-    ? { ...opts.search, ...(opts.searxng_url ? { url: opts.searxng_url } : {}) }
-    : (opts.searxng_url ? { provider: 'searxng', url: opts.searxng_url } : undefined);
+  const search = resolveSearchConfig(opts);
   const searchError = search ? searchConfigError(search) : 'WebSearch is not configured';
 
   return [
@@ -80,15 +118,7 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
         try {
           const ctl = new AbortController();
           const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-          // safeFetch enforces IP-range + DNS-rebinding protections and
-          // follows redirects manually with per-hop re-validation. Tests
-          // can still inject `fetchImpl` to bypass the dispatcher for
-          // unit-test setups that don't (or can't) stand up a real
-          // loopback server.
-          const headers = { 'User-Agent': WEBFETCH_USER_AGENT };
-          const doFetch = opts.fetchImpl
-            ? () => opts.fetchImpl!(url, { signal: ctl.signal, redirect: 'follow', headers })
-            : () => safeFetch(url, { signal: ctl.signal, headers });
+          const doFetch = pickFetcher(opts, url, ctl);
           const res = await doFetch().finally(() => clearTimeout(timer));
           if (!res.ok) return `error: HTTP ${res.status} ${res.statusText}`;
           const ct = res.headers.get('content-type') ?? '';
@@ -98,22 +128,7 @@ export function buildNetworkTools(opts: NetworkOptions = {}): RaTool[] {
             const text = await res.text();
             return formatFetchBody(text, ct, false, url);
           }
-          const chunks: Uint8Array[] = [];
-          let total = 0;
-          while (total < FETCH_MAX_BYTES) {
-            // reader is the body's ReadableStream<Uint8Array>; the spec types
-            // value as `any` (ReadableStream is generic), so narrow at the
-            // boundary.
-            const read = await reader.read() as { value: Uint8Array | undefined; done: boolean };
-            if (read.done || !read.value) break;
-            chunks.push(read.value);
-            total += read.value.byteLength;
-          }
-          // Make sure we drain or cancel so the connection releases.
-          try { await reader.cancel(); } catch { /* ignore */ }
-          const truncated = total >= FETCH_MAX_BYTES;
-          const bytes = Buffer.concat(chunks.map(c => Buffer.from(c)));
-          const body = bytes.toString('utf8');
+          const { body, total, truncated } = await drainCapped(reader);
           logger.debug('ra.network.webfetch', { url, bytes: total, truncated });
           return formatFetchBody(body, ct, truncated, url);
         } catch (err) {

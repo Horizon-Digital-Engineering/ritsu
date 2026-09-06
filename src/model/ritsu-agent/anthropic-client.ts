@@ -98,32 +98,41 @@ export function toAnthropicMessages(messages: RaMessage[]): { system: string; tu
       continue;
     }
     if (m.role === 'assistant') {
-      const blocks: ContentBlockParam[] = [];
-      const t = textOf(m.content);
-      if (t) blocks.push({ type: 'text', text: t });
-      for (const call of m.tool_calls ?? []) {
-        blocks.push({
-          type: 'tool_use',
-          id: call.id,
-          name: call.function.name,
-          input: parseArgs(call.function.arguments),
-        });
-      }
+      const blocks = assistantBlocks(m);
       if (blocks.length > 0) turns.push({ role: 'assistant', content: blocks });
       continue;
     }
     if (m.role === 'tool') {
-      appendUserBlocks(turns, [{
-        type: 'tool_result',
-        tool_use_id: m.tool_call_id ?? '',
-        content: textOf(m.content),
-      }]);
+      appendUserBlocks(turns, [toolResultBlock(m)]);
       continue;
     }
     appendUserBlocks(turns, userBlocks(m.content));
   }
 
   return { system: systemParts.join('\n\n'), turns };
+}
+
+function assistantBlocks(m: RaMessage): ContentBlockParam[] {
+  const blocks: ContentBlockParam[] = [];
+  const t = textOf(m.content);
+  if (t) blocks.push({ type: 'text', text: t });
+  for (const call of m.tool_calls ?? []) {
+    blocks.push({
+      type: 'tool_use',
+      id: call.id,
+      name: call.function.name,
+      input: parseArgs(call.function.arguments),
+    });
+  }
+  return blocks;
+}
+
+function toolResultBlock(m: RaMessage): ContentBlockParam {
+  return {
+    type: 'tool_result',
+    tool_use_id: m.tool_call_id ?? '',
+    content: textOf(m.content),
+  };
 }
 
 /** Append blocks to the trailing user turn, or start a new one. Merging

@@ -17,7 +17,10 @@ import {
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 const today = () => new Date().toISOString().slice(0, 10);
-const fmt = (v: number, unit: string) => `${v}${unit ? ` ${unit}` : ''}`;
+const fmt = (v: number, unit: string) => {
+  const u = unit ? ` ${unit}` : '';
+  return `${v}${u}`;
+};
 // Express query values are string | ParsedQs | array | undefined; only trust a plain string.
 const qstr = (v: unknown): string => (typeof v === 'string' ? v : '');
 
@@ -83,7 +86,12 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (a) => {
       const meds = store.listMedications(a.active_only === true);
       if (!meds.length) return text('(no medications recorded)');
-      return text(meds.map(m => `${m.name}${m.dose ? ` ${m.dose}` : ''}${m.frequency ? ` — ${m.frequency}` : ''}${m.active ? '' : ` [stopped ${m.end_date}]`}`).join('\n'));
+      return text(meds.map(m => {
+        const dose = m.dose ? ` ${m.dose}` : '';
+        const freq = m.frequency ? ` — ${m.frequency}` : '';
+        const stopped = m.active ? '' : ` [stopped ${m.end_date}]`;
+        return `${m.name}${dose}${freq}${stopped}`;
+      }).join('\n'));
     },
   });
 
@@ -95,7 +103,10 @@ function defineTools(ctx: PluginToolContext): void {
     handler: () => {
       const labs = store.latestPerLabel('lab');
       if (!labs.length) return text('(no lab results recorded)');
-      return text(labs.map(o => `${o.label}: ${fmt(o.value, o.unit)}${o.flag && o.flag !== 'normal' ? ` (${o.flag.toUpperCase()})` : ''} — ${o.date}`).join('\n'));
+      return text(labs.map(o => {
+        const flag = o.flag && o.flag !== 'normal' ? ` (${o.flag.toUpperCase()})` : '';
+        return `${o.label}: ${fmt(o.value, o.unit)}${flag} — ${o.date}`;
+      }).join('\n'));
     },
   });
 
@@ -107,8 +118,12 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (a) => {
       const t = trend(store.series(String(a.label)));
       if (t.count === 0 || !t.first || !t.last) return text(`(no data for "${String(a.label)}")`);
-      const dir = t.change == null ? '' : t.change > 0 ? '▲' : t.change < 0 ? '▼' : '→';
-      return text(`${t.label} (${t.count} points): ${fmt(t.first.value, t.unit)} (${t.first.date}) → ${fmt(t.last.value, t.unit)} (${t.last.date}) ${dir} ${t.change?.toFixed(1)}${t.pctChange != null ? ` (${t.pctChange.toFixed(1)}%)` : ''}\n  min ${t.min} · max ${t.max} · avg ${t.avg.toFixed(1)}`);
+      let dir = '→';
+      if (t.change == null) dir = '';
+      else if (t.change > 0) dir = '▲';
+      else if (t.change < 0) dir = '▼';
+      const pct = t.pctChange != null ? ` (${t.pctChange.toFixed(1)}%)` : '';
+      return text(`${t.label} (${t.count} points): ${fmt(t.first.value, t.unit)} (${t.first.date}) → ${fmt(t.last.value, t.unit)} (${t.last.date}) ${dir} ${t.change?.toFixed(1)}${pct}\n  min ${t.min} · max ${t.max} · avg ${t.avg.toFixed(1)}`);
     },
   });
 
@@ -120,7 +135,9 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (a) => {
       const c = correlate(store.series(String(a.label_a)), store.series(String(a.label_b)));
       if (c.r == null) return text(`Not enough overlapping data to correlate ${String(a.label_a)} and ${String(a.label_b)} (paired ${c.n} points).`);
-      const strength = Math.abs(c.r) > 0.7 ? 'strong' : Math.abs(c.r) > 0.4 ? 'moderate' : 'weak';
+      let strength = 'weak';
+      if (Math.abs(c.r) > 0.7) strength = 'strong';
+      else if (Math.abs(c.r) > 0.4) strength = 'moderate';
       return text(`${String(a.label_a)} vs ${String(a.label_b)}: r = ${c.r.toFixed(2)} (${strength} ${c.r < 0 ? 'inverse' : 'positive'}), ${c.n} paired points.`);
     },
   });
@@ -133,7 +150,10 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (a) => {
       const rows = store.recentObservations(a.label as string | undefined, typeof a.limit === 'number' ? a.limit : 30);
       if (!rows.length) return text('(no observations)');
-      return text(rows.map(o => `${o.date} ${o.label}: ${fmt(o.value, o.unit)}${o.flag && o.flag !== 'normal' ? ` (${o.flag})` : ''}`).join('\n'));
+      return text(rows.map(o => {
+        const flag = o.flag && o.flag !== 'normal' ? ` (${o.flag})` : '';
+        return `${o.date} ${o.label}: ${fmt(o.value, o.unit)}${flag}`;
+      }).join('\n'));
     },
   });
 
@@ -148,7 +168,8 @@ function defineTools(ctx: PluginToolContext): void {
       if (!p) return text('(no active insurance plan on file)');
       const ded = p.deductible_individual != null ? `deductible: $${p.deductible_met} / $${p.deductible_individual}` : 'deductible: n/a';
       const oop = p.oop_max_individual != null ? `out-of-pocket: $${p.oop_met} / $${p.oop_max_individual}` : 'OOP max: n/a';
-      return text(`${p.carrier} ${p.plan_name} (${p.plan_type || 'plan'}, ${p.plan_year})\n  member ${p.member_id || '—'}\n  ${ded}\n  ${oop}${p.premium_monthly != null ? `\n  premium: $${p.premium_monthly}/mo` : ''}`);
+      const premium = p.premium_monthly != null ? `\n  premium: $${p.premium_monthly}/mo` : '';
+      return text(`${p.carrier} ${p.plan_name} (${p.plan_type || 'plan'}, ${p.plan_year})\n  member ${p.member_id || '—'}\n  ${ded}\n  ${oop}${premium}`);
     },
   });
 

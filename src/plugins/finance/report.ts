@@ -89,6 +89,16 @@ export interface Subscription { merchant: string; avgAmount: number; occurrences
  * endpoint is wired — deliberately conservative to avoid false "subscriptions".
  */
 export function detectSubscriptions(txns: Transaction[]): Subscription[] {
+  const byMerchant = groupSpendByMerchant(txns);
+  const subs: Subscription[] = [];
+  for (const list of byMerchant.values()) {
+    const sub = subscriptionFrom(list);
+    if (sub) subs.push(sub);
+  }
+  return subs.sort((a, b) => b.avgAmount - a.avgAmount);
+}
+
+function groupSpendByMerchant(txns: Transaction[]): Map<string, Transaction[]> {
   const byMerchant = new Map<string, Transaction[]>();
   for (const t of txns) {
     if (t.amount <= 0) continue;
@@ -97,23 +107,23 @@ export function detectSubscriptions(txns: Transaction[]): Subscription[] {
     const arr = byMerchant.get(key);
     if (arr) arr.push(t); else byMerchant.set(key, [t]);
   }
-  const subs: Subscription[] = [];
-  for (const list of byMerchant.values()) {
-    if (list.length < 2) continue;
-    const amounts = list.map(t => t.amount);
-    const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
-    if (!amounts.every(a => Math.abs(a - avg) <= Math.max(1, avg * 0.25))) continue;
-    const dates = list.map(t => t.date).sort((a, b) => a.localeCompare(b));
-    const gaps: number[] = [];
-    for (let i = 1; i < dates.length; i++) gaps.push(dayGap(dates[i - 1], dates[i]));
-    const cadence = classifyCadence(gaps.reduce((a, b) => a + b, 0) / gaps.length);
-    if (cadence === 'irregular') continue;
-    subs.push({
-      merchant: list[0].merchant_name || list[0].name,
-      avgAmount: avg, occurrences: list.length, lastDate: dates[dates.length - 1], cadence,
-    });
-  }
-  return subs.sort((a, b) => b.avgAmount - a.avgAmount);
+  return byMerchant;
+}
+
+function subscriptionFrom(list: Transaction[]): Subscription | null {
+  if (list.length < 2) return null;
+  const amounts = list.map(t => t.amount);
+  const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+  if (!amounts.every(a => Math.abs(a - avg) <= Math.max(1, avg * 0.25))) return null;
+  const dates = list.map(t => t.date).sort((a, b) => a.localeCompare(b));
+  const gaps: number[] = [];
+  for (let i = 1; i < dates.length; i++) gaps.push(dayGap(dates[i - 1], dates[i]));
+  const cadence = classifyCadence(gaps.reduce((a, b) => a + b, 0) / gaps.length);
+  if (cadence === 'irregular') return null;
+  return {
+    merchant: list[0].merchant_name || list[0].name,
+    avgAmount: avg, occurrences: list.length, lastDate: dates[dates.length - 1], cadence,
+  };
 }
 
 export interface BudgetLine { category: string; spent: number; limit: number; remaining: number; over: boolean }

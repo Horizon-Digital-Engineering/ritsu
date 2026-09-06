@@ -148,6 +148,36 @@ async function api(method, path, body) {
  * Auto-reconnect: on transport failure, waits 2s and reopens. Caller
  * aborts to stop the loop permanently.
  */
+/** Emit every complete event in buf; returns the unconsumed tail. */
+function sseDrainBuffer(buf, onEvent) {
+  // SSE events end with a blank line (\n\n). Split, keep the
+  // trailing partial in buf for the next chunk.
+  let idx;
+  while ((idx = buf.indexOf('\n\n')) !== -1) {
+    const raw = buf.slice(0, idx);
+    buf = buf.slice(idx + 2);
+    const dataLines = raw.split('\n')
+      .filter(l => l.startsWith('data: '))
+      .map(l => l.slice(6));
+    if (!dataLines.length) continue;
+    try { onEvent(JSON.parse(dataLines.join('\n'))); }
+    catch { /* malformed payload — skip, keep stream alive */ }
+  }
+  return buf;
+}
+
+async function sseReadBody(body, onEvent, signal) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    buf = sseDrainBuffer(buf, onEvent);
+  }
+}
+
 async function sseFetch(path, onEvent, signal) {
   while (!signal.aborted) {
     try {
@@ -156,27 +186,7 @@ async function sseFetch(path, onEvent, signal) {
         signal,
       });
       if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (!signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // SSE events end with a blank line (\n\n). Split, keep the
-        // trailing partial in buf for the next chunk.
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const raw = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const dataLines = raw.split('\n')
-            .filter(l => l.startsWith('data: '))
-            .map(l => l.slice(6));
-          if (!dataLines.length) continue;
-          try { onEvent(JSON.parse(dataLines.join('\n'))); }
-          catch { /* malformed payload — skip, keep stream alive */ }
-        }
-      }
+      await sseReadBody(r.body, onEvent, signal);
     } catch (e) {
       if (signal.aborted) return;
       console.warn('sse reconnect in 2s:', e?.message ?? e);
@@ -268,6 +278,28 @@ function switchGroup(groupId) {
   switchTab(group.tabs[0].id);
 }
 
+/** Per-tab loaders fired on entry; tabs without one just show their pane. */
+const TAB_LOADERS = {
+  'extensions': loadExtensionsTab,
+  'mcp': loadMcpTools,
+  'tokens': refreshTokens,
+  'api-keys': () => { refreshApiKeys(); loadClaudeToken(); },
+  'oauth-clients': loadOAuthClientsTab,
+  'channels': loadChannelsTab,
+  'jobs': loadJobsTab,
+  'workspaces': loadWorkspacesTab,
+  'conversations': loadConversationsTab,
+  'memories': loadMemoriesTab,
+  'tools': loadToolsTab,
+  'logs': openLogStream,
+  'audit': loadAuditTab,
+  'plugins': loadPluginsManager,
+  'backups': loadBackupsTab,
+  'health': loadHealthTab,
+  'memory': loadMemoryTab,
+  'settings': loadSettingsTab,
+};
+
 function switchTab(name) {
   activeTab = name;
   const parentGroup = TAB_TO_GROUP.get(name);
@@ -277,24 +309,7 @@ function switchTab(name) {
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
   if (pluginTabs[name]) pluginTabs[name](document.getElementById(`pane-${name}`));
-  if (name === 'extensions') loadExtensionsTab();
-  if (name === 'mcp') loadMcpTools();
-  else if (name === 'tokens') refreshTokens();
-  else if (name === 'api-keys') { refreshApiKeys(); loadClaudeToken(); }
-  else if (name === 'oauth-clients') loadOAuthClientsTab();
-  else if (name === 'channels') loadChannelsTab();
-  else if (name === 'jobs') loadJobsTab();
-  else if (name === 'workspaces') loadWorkspacesTab();
-  else if (name === 'conversations') loadConversationsTab();
-  else if (name === 'memories') loadMemoriesTab();
-  else if (name === 'tools') loadToolsTab();
-  else if (name === 'logs') openLogStream();
-  else if (name === 'audit') loadAuditTab();
-  else if (name === 'plugins') loadPluginsManager();
-  else if (name === 'backups') loadBackupsTab();
-  else if (name === 'health') loadHealthTab();
-  else if (name === 'memory') loadMemoryTab();
-  else if (name === 'settings') loadSettingsTab();
+  if (Object.hasOwn(TAB_LOADERS, name)) TAB_LOADERS[name]();
   if (name !== 'logs') closeLogStream();
 }
 
@@ -416,7 +431,10 @@ function renderApprovalToolsCheckboxes(selected) {
   const names = [...new Set([...approvalToolCandidates(), ...set])];
   // Explicit comparator: deterministic and locale-independent, since this
   // string is only ever compared against the previous render's.
-  const sorted = [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const sorted = [...set].sort((a, b) => {
+    if (a < b) return -1;
+    return a > b ? 1 : 0;
+  });
   const sig = `${runtime}|${names.join(',')}|${sorted.join(',')}`;
   if (sig === approvalToolsRendered) return;
   approvalToolsRendered = sig;
@@ -1191,10 +1209,9 @@ function renderTranscript(messages) {
       const byline = showByline
         ? `<div class="transcript-byline">${esc(m.caller_label)}</div>`
         : '';
-      const atts = (m.attachments && m.attachments.length)
-        ? `<div class="ap-msg-atts">${m.attachments.map(a =>
-            `<img class="ap-att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${a.data}" alt="attachment">`).join('')}</div>`
-        : '';
+      const attImgs = (m.attachments || []).map(a =>
+        `<img class="ap-att-img" data-action="zoom-attachment" src="data:${esc(a.media_type)};base64,${a.data}" alt="attachment">`).join('');
+      const atts = attImgs ? `<div class="ap-msg-atts">${attImgs}</div>` : '';
       return `<div class="ap-msg ${m.role}">${byline}${esc(m.content)}${atts}</div>`;
     }).join('');
   }
@@ -1266,7 +1283,7 @@ const ATTACH_MAX_B64 = 6_800_000;    // ~5MB binary; server enforces the same
 function attachMaxEdge() {
   return /opus-4-[78]/.test(panelModel || '') ? ATTACH_MAX_EDGE_HIRES : ATTACH_MAX_EDGE_DEFAULT;
 }
-const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const ATTACH_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 // Best-effort vision-capability guess. Unknown models default to "yes" so we
 // don't nag; the warning only fires for models we're fairly sure are text-only.
 const VISION_MODEL_RE = /claude|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|chatgpt-4o|o1|o3|o4|gemini|grok|llava|pixtral|qwen.*vl|llama.*vision|vision|moondream/i;
@@ -1287,7 +1304,7 @@ function blobToBase64(blob) {
 // Decode → downscale to ATTACH_MAX_EDGE → re-encode, bounding the payload.
 // GIFs pass through untouched so animation survives (canvas flattens them).
 async function processImageFile(file) {
-  if (!ATTACH_TYPES.includes(file.type)) {
+  if (!ATTACH_TYPES.has(file.type)) {
     throw new Error('unsupported image type (png/jpeg/webp/gif only)');
   }
   if (file.type === 'image/gif') {
@@ -2864,29 +2881,34 @@ const EXT_CONNECTORS = [
     secretFields: ['access_token'] },
 ];
 
+/** Paint one connector's field states + status badge from its key map. */
+function renderConnectorStatus(conn, keys) {
+  for (const f of conn.fields) {
+    const el = $(`${conn.prefix}-${f}`);
+    if (!el) continue;
+    if (keys.get(f)) {
+      el.classList.add('field-set');
+      if (conn.secretFields.includes(f)) el.placeholder = '•••••• (set — blank keeps it)';
+      else if (!el.value) el.placeholder = '(set — blank keeps it)';
+    } else {
+      el.classList.remove('field-set');
+    }
+  }
+  const ok = conn.core.every(k => keys.get(k));
+  const badge = $(conn.badge);
+  if (badge) {
+    badge.textContent = ok ? 'configured' : 'not configured';
+    badge.className = `chip ${ok ? 'ok' : 'warn'}`;
+  }
+}
+
 async function loadExtensionsTab() {
   try {
     const { connectors } = await api('GET', '/admin/api/secrets');
     for (const conn of EXT_CONNECTORS) {
       const remote = (connectors || []).find(c => c.namespace === conn.ns);
       const keys = new Map((remote?.keys || []).map(k => [k.name, k.set]));
-      for (const f of conn.fields) {
-        const el = $(`${conn.prefix}-${f}`);
-        if (!el) continue;
-        if (keys.get(f)) {
-          el.classList.add('field-set');
-          if (conn.secretFields.includes(f)) el.placeholder = '•••••• (set — blank keeps it)';
-          else if (!el.value) el.placeholder = '(set — blank keeps it)';
-        } else {
-          el.classList.remove('field-set');
-        }
-      }
-      const ok = conn.core.every(k => keys.get(k));
-      const badge = $(conn.badge);
-      if (badge) {
-        badge.textContent = ok ? 'configured' : 'not configured';
-        badge.className = `chip ${ok ? 'ok' : 'warn'}`;
-      }
+      renderConnectorStatus(conn, keys);
     }
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -2904,7 +2926,8 @@ async function saveConnectorExt(ns) {
       wrote++;
       if (conn.secretFields.includes(f)) el.value = ''; // don't keep secrets in the DOM
     }
-    toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'}` : 'nothing to save');
+    const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'}`;
+    toast(wrote ? savedMsg : 'nothing to save');
     loadExtensionsTab();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -3052,6 +3075,28 @@ window.ritsu = {
   registerChange(name, fn) { pluginChanges[name] = fn; },
 };
 
+/** Mount one plugin nav group: row-1 button, tab→group entries, pane sections. */
+function mountPluginNavGroup(g, primary, main) {
+  if (!NAV_GROUPS.some(x => x.id === g.id)) NAV_GROUPS.push(g);
+  if (!primary.querySelector(`[data-group="${g.id}"]`)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.action = 'switch-group';
+    btn.dataset.group = g.id;
+    btn.textContent = g.label;
+    primary.appendChild(btn);
+  }
+  for (const t of (g.tabs || [])) {
+    TAB_TO_GROUP.set(t.id, g.id);
+    if (!document.getElementById(`pane-${t.id}`)) {
+      const sec = document.createElement('section');
+      sec.id = `pane-${t.id}`;
+      sec.className = 'pane';
+      main.appendChild(sec);
+    }
+  }
+}
+
 async function loadPlugins() {
   let plugins = [];
   try { ({ plugins } = await api('GET', '/admin/api/plugins')); }
@@ -3061,26 +3106,7 @@ async function loadPlugins() {
   const main = document.querySelector('main');
   for (const p of plugins) {
     if (p.enabled === false) continue;
-    for (const g of (p.nav || [])) {
-      if (!NAV_GROUPS.some(x => x.id === g.id)) NAV_GROUPS.push(g);
-      if (!primary.querySelector(`[data-group="${g.id}"]`)) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.dataset.action = 'switch-group';
-        btn.dataset.group = g.id;
-        btn.textContent = g.label;
-        primary.appendChild(btn);
-      }
-      for (const t of (g.tabs || [])) {
-        TAB_TO_GROUP.set(t.id, g.id);
-        if (!document.getElementById(`pane-${t.id}`)) {
-          const sec = document.createElement('section');
-          sec.id = `pane-${t.id}`;
-          sec.className = 'pane';
-          main.appendChild(sec);
-        }
-      }
-    }
+    for (const g of (p.nav || [])) mountPluginNavGroup(g, primary, main);
     if (p.assets?.css) {
       const link = document.createElement('link');
       link.rel = 'stylesheet';
@@ -3190,7 +3216,10 @@ async function saveSettings() {
 async function loadMemoryTab() {
   try {
     const d = await api('GET', '/admin/api/memory');
-    const fmt = s => `<strong>${esc(s.mode)}</strong>${s.remote ? ` → ${esc(s.remote)}` : ''}`;
+    const fmt = (s) => {
+      const remote = s.remote ? ` → ${esc(s.remote)}` : '';
+      return `<strong>${esc(s.mode)}</strong>${remote}`;
+    };
     const boot = d.boot ? `running: ${fmt(d.boot)}` : 'running: (unknown)';
     const next = `after restart: ${fmt(d.effective_next_boot)}`;
     $('memory-state').innerHTML = [
@@ -3218,7 +3247,8 @@ async function saveMemoryConfig() {
       wrote++;
     }
     $('mem-token').value = '';  // never keep the secret in the DOM
-    toast(wrote ? `saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply` : 'nothing to save');
+    const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply`;
+    toast(wrote ? savedMsg : 'nothing to save');
     loadMemoryTab();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -3265,15 +3295,16 @@ async function loadBackupsTab() {
   if (!el) return;
   try {
     const { backups, dir } = await api('GET', '/admin/api/backups');
-    el.innerHTML = backups.length
-      ? `<p class="txt-muted">Stored on the box at <code>${esc(dir)}</code></p>
-         <table><thead><tr><th>when</th><th>size</th><th></th></tr></thead><tbody>${backups.map(b => `
+    const backupRows = backups.map(b => `
            <tr><td>${new Date(b.created_at * 1000).toLocaleString()}</td>
                <td>${(b.size / 1024).toFixed(0)} KB</td>
                <td class="row-actions">
                  <button data-action="backup-download" data-name="${esc(b.name)}">download</button>
                  <button class="danger" data-action="backup-delete" data-name="${esc(b.name)}">delete</button>
-               </td></tr>`).join('')}</tbody></table>`
+               </td></tr>`).join('');
+    el.innerHTML = backups.length
+      ? `<p class="txt-muted">Stored on the box at <code>${esc(dir)}</code></p>
+         <table><thead><tr><th>when</th><th>size</th><th></th></tr></thead><tbody>${backupRows}</tbody></table>`
       : '<em class="txt-muted">No backups yet — one is taken automatically on restart. Or click “Back up now”.</em>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
@@ -3347,7 +3378,7 @@ setInterval(refreshInfo, 5000);
 // Approvals: open the live stream + seed the nav badge so a pending
 // approval is visible from any tab, not just when the Approvals tab is open.
 ensureApprovalsSse();
-refreshApprovalBadge();
+await refreshApprovalBadge();
 
 // Tiles is the default tab → kick its polling immediately.
 startTilesPolling();
@@ -3520,8 +3551,9 @@ function renderJobs(jobs, unreadable = []) {
   // A row that will not parse is not in `jobs` and never can be, so it needs
   // its own block. Without it the operator sees an empty list and concludes
   // nothing is there, while the job still occupies its id.
+  const brokenPlural = unreadable.length > 1 ? 's' : '';
   const broken = unreadable.length
-    ? `<p class="txt-warn">${unreadable.length} job${unreadable.length > 1 ? 's' : ''} could not be read and will not run:</p>`
+    ? `<p class="txt-warn">${unreadable.length} job${brokenPlural} could not be read and will not run:</p>`
       + '<table><thead><tr><th>job</th><th>why</th><th></th></tr></thead><tbody>'
       + unreadable.map(u => `<tr><td><code>${esc(u.id)}</code>${u.name ? ' — ' + esc(u.name) : ''}</td>`
         + `<td class="txt-muted">${esc(u.error)}</td>`

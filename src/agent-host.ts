@@ -152,6 +152,161 @@ export class AgentHost {
     if (affected.length) logger.info('host.reloaded-for-plugin', { plugin: pluginId, agents: affected.length });
   }
 
+  /**
+   * SECURITY: an agent that reads untrusted content (email bodies, social
+   * mentions) must not have an UNGATED egress/persistence path, or a
+   * prompt-injected message could exfiltrate or self-persist with no
+   * operator approval. So for crm/social agents we auto-gate every egress +
+   * persistence tool: shell/web (exfil), Write/Edit (persist attacker
+   * content to a possibly-synced workspace), every memory mutation incl.
+   * forget (so injection can't silently tombstone the agent's own security
+   * memories), and ask_agent (so attacker text can't be laundered to a peer
+   * with an ungated egress path).
+   *
+   * The ritsu-agent (open-model) runtime is the REAL enforcement layer here:
+   * we own that loop, so these gates are unbypassable. claude-direct can't be
+   * a trust boundary — the Max-session SDK runs built-ins without consulting
+   * our hook — so for it we STRIP the ungateable built-ins rather than
+   * pretend to gate them. An operator who wants a hard gate uses ritsu-agent.
+   */
+  private resolveInjectionGating(def: AgentDefinition, isRitsuAgent: boolean):
+    { effectiveTools: string[]; autoGated: string[] } {
+    const UNGATEABLE_BUILTIN_EGRESS = new Set(['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit']);
+    if (isRitsuAgent) {
+      // Our own loop gates these reliably — require approval, don't strip.
+      return {
+        effectiveTools: def.tools_allowlist,
+        autoGated: [
+          'memory_remember', 'memory_update_memory', 'memory_forget',
+          'agent_comms_ask_agent',
+          // Own-history recall replays past (possibly channel-borne) content
+          // into fresh context — hold it behind the operator too.
+          'history_search_chats', 'history_view_chat',
+          // Scheduling is the most durable self-persistence there is: a job
+          // feeds attacker text back as a user turn on a timer and delivers
+          // the reply to every channel, outliving the conversation the
+          // injection arrived in.
+          'schedule_create', 'schedule_pause', 'schedule_remove',
+          // Minting or patching an agent is a privilege-escalation primitive:
+          // the new agent carries whatever the caller writes into it.
+          'agent_admin_create_agent', 'agent_admin_update_agent', 'agent_admin_reload_agent',
+          ...UNGATEABLE_BUILTIN_EGRESS,
+        ],
+      };
+    }
+    // memory_forget + ask_agent gate via gateMcpTool inside their handlers
+    // (the path the SDK can't bypass); the built-in egress tools can't, so
+    // strip those.
+    const autoGated = [
+      'mcp__scheduler__schedule_create', 'mcp__scheduler__schedule_pause',
+      'mcp__scheduler__schedule_remove',
+      'mcp__memory__remember', 'mcp__memory__update_memory', 'mcp__memory__forget',
+      'mcp__agent_comms__ask_agent',
+      'mcp__agent_admin__create_agent', 'mcp__agent_admin__update_agent',
+      'mcp__agent_admin__reload_agent',
+      'mcp__history__search_chats', 'mcp__history__view_chat',
+    ];
+    let effectiveTools = def.tools_allowlist;
+    const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.has(t));
+    if (stripped.length) {
+      effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.has(t));
+      logger.warn('agent.crm-egress-stripped', { id: def.id, stripped });
+    }
+    return { effectiveTools, autoGated };
+  }
+
+  /** Resolve the agent's plugin allowlist into MCP providers. A plugin that
+   *  isn't installed, isn't enabled, or has no agent tools is skipped — so a
+   *  disabled/removed plugin makes the allowlist entry inert, not broken.
+   *  Every plugin flows through the same gateway; adding one needs no new code. */
+  private resolvePluginTools(def: AgentDefinition): {
+    pluginProviders: ReturnType<typeof pluginMcpProvider>[];
+    pluginToolSets: PluginToolSet[];
+    pluginGated: string[];
+    pluginAll: string[];
+  } {
+    const pluginProviders: ReturnType<typeof pluginMcpProvider>[] = [];
+    const pluginToolSets: PluginToolSet[] = [];
+    const pluginGated: string[] = [];
+    const pluginAll: string[] = [];
+    for (const pid of def.plugins) {
+      const tools = this.pluginHost?.isEnabled(pid) ? this.pluginHost.toolsFor(pid) : [];
+      if (!tools.length) continue;
+      pluginProviders.push(pluginMcpProvider(pid, tools));
+      pluginToolSets.push({ id: pid, tools });
+      pluginGated.push(...pluginGatedToolNames(pid, tools));
+      pluginAll.push(...tools.map(t => `mcp__${pid}__${t.name}`));
+    }
+    return { pluginProviders, pluginToolSets, pluginGated, pluginAll };
+  }
+
+  /** The capability-conditional slice of the dispatcher deps: admin/monitor
+   *  tool surfaces, the approval gate, CRM extensions, scheduling. Split out
+   *  so addOrReplace reads as a wiring list rather than a branch forest. */
+  private capabilityDispatcherDeps(def: AgentDefinition, ctx: {
+    memory: ReturnType<AgentHost['buildMemoryStore']>;
+    gatedTools: string[];
+    readsUntrusted: boolean;
+    canManage: boolean;
+    canMonitor: boolean;
+    canCrm: boolean;
+    canSocial: boolean;
+  }): Partial<DispatcherOpts> {
+    const out: Partial<DispatcherOpts> = {};
+    if (ctx.canManage) {
+      out.admin = {
+        callerAgentId: def.id,
+        deps: {
+          defStore: this.defStore,
+          host: { addOrReplace: (d) => this.addOrReplace(d) },
+        },
+      };
+    }
+    if (ctx.canMonitor) {
+      out.monitor = {
+        callerAgentId: def.id,
+        deps: {
+          defStore: this.defStore,
+          conversations: this.conversations,
+          memory: ctx.memory,
+        },
+      };
+    }
+    // Human-in-the-loop: tools this agent must get operator approval for.
+    // Wired when the gated list is non-empty OR the agent opts into
+    // approvable escalation (which needs the ApprovalStore on the comms path
+    // even with no other gated tools). Re-read fresh on every addOrReplace,
+    // so editing approval_tools / escalation_approvable in the admin UI takes
+    // effect on the next reload.
+    // crm/social also need it unconditionally: their send/post tools block
+    // on the operator from inside their own handlers, independent of
+    // approval_tools.
+    if (ctx.gatedTools.length > 0 || def.escalation_approvable || ctx.readsUntrusted) {
+      out.approval = {
+        agentId: def.id,
+        store: this.approvals,
+        gatedTools: ctx.gatedTools,
+      };
+    }
+    // CRM email extension — only when the agent has the 'crm' capability.
+    // send_email always blocks on approval, so the gate store rides along
+    // independent of approval_tools. Credentials are resolved from the
+    // SecretStore inside the tool handlers, never exposed to the model.
+    if (ctx.canCrm) {
+      out.email = { agentId: def.id, secrets: this.secrets, approvals: this.approvals };
+    }
+    // CRM social extension — X/Twitter tools when the agent has 'social'.
+    // post_tweet always blocks on approval.
+    if (ctx.canSocial) {
+      out.social = { agentId: def.id, secrets: this.secrets, approvals: this.approvals };
+    }
+    // Scheduling, for every agent regardless of runtime. The native loop
+    // gets the same tools through ritsuAgentToolDeps; this is the direct-
+    // runtime half, which is the default and would otherwise have none.
+    if (this.jobStore) out.scheduler = { store: this.jobStore };
+    return out;
+  }
+
   /** Idempotent. Builds the agent fresh from `def` and swaps the instance. */
   addOrReplace(def: AgentDefinition): void {
     if (!def.enabled) {
@@ -169,80 +324,11 @@ export class AgentHost {
     const canSocial = def.capabilities.includes('social');
     const isRitsuAgent = def.runtime === 'api';
 
-    // SECURITY: an agent that reads untrusted content (email bodies, social
-    // mentions) must not have an UNGATED egress/persistence path, or a
-    // prompt-injected message could exfiltrate or self-persist with no
-    // operator approval. So for crm/social agents we auto-gate every egress +
-    // persistence tool: shell/web (exfil), Write/Edit (persist attacker
-    // content to a possibly-synced workspace), every memory mutation incl.
-    // forget (so injection can't silently tombstone the agent's own security
-    // memories), and ask_agent (so attacker text can't be laundered to a peer
-    // with an ungated egress path).
-    //
-    // The ritsu-agent (open-model) runtime is the REAL enforcement layer here:
-    // we own that loop, so these gates are unbypassable. claude-direct can't be
-    // a trust boundary — the Max-session SDK runs built-ins without consulting
-    // our hook — so for it we STRIP the ungateable built-ins rather than
-    // pretend to gate them. An operator who wants a hard gate uses ritsu-agent.
     const readsUntrusted = canCrm || canSocial;
-    const UNGATEABLE_BUILTIN_EGRESS = new Set(['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit']);
-    let effectiveTools = def.tools_allowlist;
-    const autoGated: string[] = [];
-    if (readsUntrusted) {
-      if (isRitsuAgent) {
-        // Our own loop gates these reliably — require approval, don't strip.
-        autoGated.push(
-          'memory_remember', 'memory_update_memory', 'memory_forget',
-          'agent_comms_ask_agent',
-          // Own-history recall replays past (possibly channel-borne) content
-          // into fresh context — hold it behind the operator too.
-          'history_search_chats', 'history_view_chat',
-          // Scheduling is the most durable self-persistence there is: a job
-          // feeds attacker text back as a user turn on a timer and delivers
-          // the reply to every channel, outliving the conversation the
-          // injection arrived in.
-          'schedule_create', 'schedule_pause', 'schedule_remove',
-          // Minting or patching an agent is a privilege-escalation primitive:
-          // the new agent carries whatever the caller writes into it.
-          'agent_admin_create_agent', 'agent_admin_update_agent', 'agent_admin_reload_agent',
-          ...UNGATEABLE_BUILTIN_EGRESS,
-        );
-      } else {
-        // memory_forget + ask_agent gate via gateMcpTool inside their handlers
-        // (the path the SDK can't bypass); the built-in egress tools can't, so
-        // strip those.
-        autoGated.push(
-          'mcp__scheduler__schedule_create', 'mcp__scheduler__schedule_pause',
-          'mcp__scheduler__schedule_remove',
-          'mcp__memory__remember', 'mcp__memory__update_memory', 'mcp__memory__forget',
-          'mcp__agent_comms__ask_agent',
-          'mcp__agent_admin__create_agent', 'mcp__agent_admin__update_agent',
-          'mcp__agent_admin__reload_agent',
-          'mcp__history__search_chats', 'mcp__history__view_chat',
-        );
-        const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.has(t));
-        if (stripped.length) {
-          effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.has(t));
-          logger.warn('agent.crm-egress-stripped', { id: def.id, stripped });
-        }
-      }
-    }
-    // Resolve the agent's plugin allowlist into MCP providers. A plugin that
-    // isn't installed, isn't enabled, or has no agent tools is skipped — so a
-    // disabled/removed plugin makes the allowlist entry inert, not broken.
-    // Every plugin flows through the same gateway; adding one needs no new code.
-    const pluginProviders: ReturnType<typeof pluginMcpProvider>[] = [];
-    const pluginToolSets: PluginToolSet[] = [];
-    const pluginGated: string[] = [];
-    const pluginAll: string[] = [];
-    for (const pid of def.plugins) {
-      const tools = this.pluginHost?.isEnabled(pid) ? this.pluginHost.toolsFor(pid) : [];
-      if (!tools.length) continue;
-      pluginProviders.push(pluginMcpProvider(pid, tools));
-      pluginToolSets.push({ id: pid, tools });
-      pluginGated.push(...pluginGatedToolNames(pid, tools));
-      pluginAll.push(...tools.map(t => `mcp__${pid}__${t.name}`));
-    }
+    const { effectiveTools, autoGated } = readsUntrusted
+      ? this.resolveInjectionGating(def, isRitsuAgent)
+      : { effectiveTools: def.tools_allowlist, autoGated: [] as string[] };
+    const { pluginProviders, pluginToolSets, pluginGated, pluginAll } = this.resolvePluginTools(def);
     // Injection-exposed agents (crm/social) get NO ungated plugin egress: every
     // plugin tool they can call is force-gated, not just the ones a plugin author
     // flagged needsApproval — the same hard rail the built-in egress tools get.
@@ -329,66 +415,7 @@ export class AgentHost {
           denials: this.commsDenials,
         },
       },
-      ...(canManage ? {
-        admin: {
-          callerAgentId: def.id,
-          deps: {
-            defStore: this.defStore,
-            host: { addOrReplace: (d) => this.addOrReplace(d) },
-          },
-        },
-      } : {}),
-      ...(canMonitor ? {
-        monitor: {
-          callerAgentId: def.id,
-          deps: {
-            defStore: this.defStore,
-            conversations: this.conversations,
-            memory,
-          },
-        },
-      } : {}),
-      // Human-in-the-loop: tools this agent must get operator approval for.
-      // Wired when the gated list is non-empty OR the agent opts into
-      // approvable escalation (which needs the ApprovalStore on the comms path
-      // even with no other gated tools). Re-read fresh on every addOrReplace,
-      // so editing approval_tools / escalation_approvable in the admin UI takes
-      // effect on the next reload.
-      // crm/social also need it unconditionally: their send/post tools block
-      // on the operator from inside their own handlers, independent of
-      // approval_tools.
-      ...((gatedTools.length > 0 || def.escalation_approvable || readsUntrusted) ? {
-        approval: {
-          agentId: def.id,
-          store: this.approvals,
-          gatedTools,
-        },
-      } : {}),
-      // CRM email extension — only when the agent has the 'crm' capability.
-      // send_email always blocks on approval, so the gate store rides along
-      // independent of approval_tools. Credentials are resolved from the
-      // SecretStore inside the tool handlers, never exposed to the model.
-      ...(canCrm ? {
-        email: {
-          agentId: def.id,
-          secrets: this.secrets,
-          approvals: this.approvals,
-        },
-      } : {}),
-      // CRM social extension — X/Twitter tools when the agent has 'social'.
-      // post_tweet always blocks on approval. Creds resolved from the
-      // SecretStore inside the handlers, never exposed to the model.
-      ...(canSocial ? {
-        social: {
-          agentId: def.id,
-          secrets: this.secrets,
-          approvals: this.approvals,
-        },
-      } : {}),
-      // Scheduling, for every agent regardless of runtime. The native loop
-      // gets the same tools through ritsuAgentToolDeps; this is the direct-
-      // runtime half, which is the default and would otherwise have none.
-      ...(this.jobStore ? { scheduler: { store: this.jobStore } } : {}),
+      ...this.capabilityDispatcherDeps(def, { memory, gatedTools, readsUntrusted, canManage, canMonitor, canCrm, canSocial }),
       skillsLookup: {
         manifest: () => this.skills.manifestFor(def.id),
         content: (name: string) => this.skills.contentFor(def.id, name),

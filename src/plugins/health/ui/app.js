@@ -1,7 +1,10 @@
 const { api, esc, toast, registerTab, registerAction } = window.ritsu;
 const H = '/admin/api/plugins/health';
 
-const val = (o) => `${o.value}${o.unit ? ` ${esc(o.unit)}` : ''}`;
+const val = (o) => {
+  const unit = o.unit ? ` ${esc(o.unit)}` : '';
+  return `${o.value}${unit}`;
+};
 const today = () => new Date().toISOString().slice(0, 10);
 const flagClass = (f) => (f === 'high' || f === 'low' ? 'err' : '');
 
@@ -18,14 +21,20 @@ async function loadOverview() {
   try {
     const o = await api('GET', `${H}/overview`);
     const vit = document.getElementById('hl-vitals');
+    const vitalRows = o.vitals.map(v => `<tr><td>${esc(v.label)}</td><td class="num">${val(v)}</td><td class="muted">${esc(v.date)}</td></tr>`).join('');
     vit.innerHTML = o.vitals.length
-      ? `<table><tbody>${o.vitals.map(v => `<tr><td>${esc(v.label)}</td><td class="num">${val(v)}</td><td class="muted">${esc(v.date)}</td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${vitalRows}</tbody></table>`
       : '<p class="muted">No weight/vitals yet — add some in Log.</p>';
+    const labRows = o.labs.map(l => {
+      const flag = l.flag && l.flag !== 'normal' ? ` (${esc(l.flag)})` : '';
+      return `<tr><td>${esc(l.label)}</td><td class="num ${flagClass(l.flag)}">${val(l)}${flag}</td><td class="muted">${esc(l.date)}</td></tr>`;
+    }).join('');
     document.getElementById('hl-labs').innerHTML = o.labs.length
-      ? `<table><tbody>${o.labs.map(l => `<tr><td>${esc(l.label)}</td><td class="num ${flagClass(l.flag)}">${val(l)}${l.flag && l.flag !== 'normal' ? ` (${esc(l.flag)})` : ''}</td><td class="muted">${esc(l.date)}</td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${labRows}</tbody></table>`
       : '<p class="muted">No labs yet.</p>';
+    const medRows = o.medications.map(m => `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.dose)} ${esc(m.frequency)}</td></tr>`).join('');
     document.getElementById('hl-meds').innerHTML = o.medications.length
-      ? `<table><tbody>${o.medications.map(m => `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.dose)} ${esc(m.frequency)}</td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${medRows}</tbody></table>`
       : '<p class="muted">No active medications.</p>';
   } catch (e) { document.getElementById('hl-vitals').textContent = `error: ${e.message}`; }
 }
@@ -100,8 +109,9 @@ async function loadRecent() {
   const el = document.getElementById('hl-recent'); if (!el) return;
   try {
     const { observations } = await api('GET', `${H}/observations?limit=40`);
+    const obsRows = observations.map(o => `<tr><td class="muted">${esc(o.date)}</td><td>${esc(o.label)}</td><td class="num ${flagClass(o.flag)}">${val(o)}</td><td><button data-action="hl-del-obs" data-id="${o.id}">×</button></td></tr>`).join('');
     el.innerHTML = observations.length
-      ? `<table><tbody>${observations.map(o => `<tr><td class="muted">${esc(o.date)}</td><td>${esc(o.label)}</td><td class="num ${flagClass(o.flag)}">${val(o)}</td><td><button data-action="hl-del-obs" data-id="${o.id}">×</button></td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${obsRows}</tbody></table>`
       : '<p class="muted">Nothing logged yet.</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
@@ -110,10 +120,15 @@ async function loadMeds() {
   const el = document.getElementById('hl-medlist'); if (!el) return;
   try {
     const { medications } = await api('GET', `${H}/medications`);
+    const medRows = medications.map(m => {
+      const state = m.active ? 'active' : `stopped ${esc(m.end_date || '')}`;
+      const stopBtn = m.active ? `<button data-action="hl-stop-med" data-id="${m.id}">stop</button> ` : '';
+      return `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.dose)} ${esc(m.frequency)}</td>
+          <td class="${m.active ? 'ok' : 'muted'}">${state}</td>
+          <td>${stopBtn}<button data-action="hl-del-med" data-id="${m.id}" class="danger">×</button></td></tr>`;
+    }).join('');
     el.innerHTML = medications.length
-      ? `<table><tbody>${medications.map(m => `<tr><td>${esc(m.name)}</td><td class="muted">${esc(m.dose)} ${esc(m.frequency)}</td>
-          <td class="${m.active ? 'ok' : 'muted'}">${m.active ? 'active' : `stopped ${esc(m.end_date || '')}`}</td>
-          <td>${m.active ? `<button data-action="hl-stop-med" data-id="${m.id}">stop</button> ` : ''}<button data-action="hl-del-med" data-id="${m.id}" class="danger">×</button></td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${medRows}</tbody></table>`
       : '<p class="muted">No medications.</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
@@ -158,13 +173,17 @@ async function loadSeries(label) {
     const max = Math.max(...series.map(s => s.value));
     const min = Math.min(...series.map(s => s.value));
     const span = max - min || 1;
-    const dir = trend.change > 0 ? '▲' : trend.change < 0 ? '▼' : '→';
-    el.innerHTML = `
-      <p><strong>${esc(trend.label)}</strong>: ${trend.first.value} → ${trend.last.value} ${dir} ${trend.change != null ? trend.change.toFixed(1) : ''}${trend.pctChange != null ? ` (${trend.pctChange.toFixed(1)}%)` : ''}
-        <span class="muted">· min ${trend.min} · max ${trend.max} · avg ${trend.avg.toFixed(1)}</span></p>
-      <table>${series.map(s => `<tr><td class="muted">${esc(s.date)}</td>
+    let dir = '→';
+    if (trend.change > 0) dir = '▲';
+    else if (trend.change < 0) dir = '▼';
+    const pct = trend.pctChange != null ? ` (${trend.pctChange.toFixed(1)}%)` : '';
+    const seriesRows = series.map(s => `<tr><td class="muted">${esc(s.date)}</td>
         <td class="fin-bar-cell"><span class="fin-bar" style="width:${Math.round(((s.value - min) / span) * 100)}%"></span></td>
-        <td class="num ${flagClass(s.flag)}">${val(s)}</td></tr>`).join('')}</table>`;
+        <td class="num ${flagClass(s.flag)}">${val(s)}</td></tr>`).join('');
+    el.innerHTML = `
+      <p><strong>${esc(trend.label)}</strong>: ${trend.first.value} → ${trend.last.value} ${dir} ${trend.change != null ? trend.change.toFixed(1) : ''}${pct}
+        <span class="muted">· min ${trend.min} · max ${trend.max} · avg ${trend.avg.toFixed(1)}</span></p>
+      <table>${seriesRows}</table>`;
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
 
@@ -176,15 +195,17 @@ async function correlate() {
     const r = await api('GET', `${H}/correlate?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
     const c = r.correlation;
     if (c.r == null) { el.innerHTML = `<p class="muted">Not enough overlapping data (${c.n} paired points).</p>`; return; }
-    const strength = Math.abs(c.r) > 0.7 ? 'strong' : Math.abs(c.r) > 0.4 ? 'moderate' : 'weak';
+    let strength = 'weak';
+    if (Math.abs(c.r) > 0.7) strength = 'strong';
+    else if (Math.abs(c.r) > 0.4) strength = 'moderate';
     el.innerHTML = `<p><strong>r = ${c.r.toFixed(2)}</strong> — ${strength} ${c.r < 0 ? 'inverse' : 'positive'} (${c.n} paired points)</p><p class="muted">Correlation ≠ causation.</p>`;
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
 
 // ---- actions --------------------------------------------------------------
 async function delObs(id) { try { await api('DELETE', `${H}/observations/${id}`); loadRecent(); } catch (e) { toast(e.message, 'err'); } }
-async function stopMed(id) { const d = prompt('Stop date (YYYY-MM-DD):', today()); if (!d) return; try { await api('POST', `${H}/medications/${id}/stop`, { end_date: d }); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
-async function delMed(id) { if (!confirm('Delete this medication record?')) return; try { await api('DELETE', `${H}/medications/${id}`); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
+async function stopMed(id) { const d = prompt('Stop date (YYYY-MM-DD):', today()); if (!d) { return; } try { await api('POST', `${H}/medications/${id}/stop`, { end_date: d }); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
+async function delMed(id) { if (!confirm('Delete this medication record?')) { return; } try { await api('DELETE', `${H}/medications/${id}`); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
 
 // ---- Insurance ------------------------------------------------------------
 const COST_TYPES = ['copay', 'coinsurance', 'covered', 'not_covered'];
@@ -202,12 +223,13 @@ function bar(met, total) {
 }
 
 function insuranceSkeleton() {
+  const costTypeOpts = COST_TYPES.map(t => `<option>${t}</option>`).join('');
   return `
     <div class="panel"><h2>Active plan</h2><div id="hl-ins-active">loading…</div></div>
     <div class="panel"><h2>Coverage</h2><div id="hl-ins-benefits"></div>
       <form class="grid" id="hl-benefit-form" style="margin-top:10px">
         <label>service</label><input id="hl-b-cat" required placeholder="Specialist, ER, Generic Rx…" />
-        <label>cost type</label><select id="hl-b-type">${COST_TYPES.map(t => `<option>${t}</option>`).join('')}</select>
+        <label>cost type</label><select id="hl-b-type">${costTypeOpts}</select>
         <label>amount</label><input id="hl-b-amt" type="number" step="any" placeholder="$ copay or % coinsurance" />
         <label>network</label><select id="hl-b-net"><option value="in">in-network</option><option value="out">out-of-network</option></select>
         <label>after deductible</label><input id="hl-b-after" type="checkbox" />
@@ -251,22 +273,24 @@ async function loadInsurance() {
     const { active, benefits } = await api('GET', `${H}/insurance`);
     const el = document.getElementById('hl-ins-active');
     if (!active) { el.innerHTML = '<p class="muted">No plan yet — add one below.</p>'; document.getElementById('hl-ins-benefits').innerHTML = ''; return; }
+    const premiumRow = active.premium_monthly != null ? `<tr><td>premium</td><td class="num">$${active.premium_monthly}/mo</td><td></td></tr>` : '';
     el.innerHTML = `
       <p><strong>${esc(active.carrier)} ${esc(active.plan_name)}</strong> <span class="muted">${esc(active.plan_type)} · ${active.plan_year}</span></p>
       <table><tbody>
         <tr><td>deductible</td><td class="num">$${active.deductible_met} / ${active.deductible_individual ?? '—'}</td><td>${bar(active.deductible_met, active.deductible_individual)}</td></tr>
         <tr><td>out-of-pocket</td><td class="num">$${active.oop_met} / ${active.oop_max_individual ?? '—'}</td><td>${bar(active.oop_met, active.oop_max_individual)}</td></tr>
-        ${active.premium_monthly != null ? `<tr><td>premium</td><td class="num">$${active.premium_monthly}/mo</td><td></td></tr>` : ''}
+        ${premiumRow}
       </tbody></table>
       <div class="row" style="margin-top:8px"><span class="muted">update used:</span>
         <input id="hl-ded-met" type="number" step="any" placeholder="deductible met" style="width:130px" value="${active.deductible_met}" />
         <input id="hl-oop-met" type="number" step="any" placeholder="OOP met" style="width:110px" value="${active.oop_met}" />
         <button data-action="hl-ins-progress" data-id="${active.id}">Update</button>
         <button data-action="hl-ins-del-plan" data-id="${active.id}" class="danger">Delete plan</button></div>`;
+    const benefitRows = benefits.map(b =>
+      `<tr><td>${esc(b.category)}</td><td class="muted">${b.network === 'in' ? 'in' : 'out'}</td><td>${esc(benefitCost(b))}</td>
+         <td><button data-action="hl-ins-del-benefit" data-id="${b.id}">×</button></td></tr>`).join('');
     document.getElementById('hl-ins-benefits').innerHTML = benefits.length
-      ? `<table><thead><tr><th>Service</th><th>Network</th><th>Your cost</th><th></th></tr></thead><tbody>${benefits.map(b =>
-          `<tr><td>${esc(b.category)}</td><td class="muted">${b.network === 'in' ? 'in' : 'out'}</td><td>${esc(benefitCost(b))}</td>
-             <td><button data-action="hl-ins-del-benefit" data-id="${b.id}">×</button></td></tr>`).join('')}</tbody></table>`
+      ? `<table><thead><tr><th>Service</th><th>Network</th><th>Your cost</th><th></th></tr></thead><tbody>${benefitRows}</tbody></table>`
       : '<p class="muted">No coverage lines yet. Add the common ones (PCP, Specialist, ER, Rx) or dump the SBC below.</p>';
   } catch (e) { document.getElementById('hl-ins-active').textContent = `error: ${e.message}`; }
 }
@@ -311,15 +335,16 @@ async function updateProgress(id) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function delPlan(id) { if (!confirm('Delete this plan and its coverage lines?')) return; try { await api('DELETE', `${H}/insurance/plans/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
+async function delPlan(id) { if (!confirm('Delete this plan and its coverage lines?')) { return; } try { await api('DELETE', `${H}/insurance/plans/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
 async function delBenefit(id) { try { await api('DELETE', `${H}/insurance/benefits/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
 
 async function loadDocs() {
   const el = document.getElementById('hl-docs'); if (!el) return;
   try {
     const { documents } = await api('GET', `${H}/documents`);
+    const docRows = documents.map(d => `<tr><td>${esc(d.title)}</td><td class="muted">${esc(d.category)} · ${d.chars} chars</td><td><button data-action="hl-doc-del" data-id="${d.id}" class="danger">×</button></td></tr>`).join('');
     el.innerHTML = documents.length
-      ? `<table><tbody>${documents.map(d => `<tr><td>${esc(d.title)}</td><td class="muted">${esc(d.category)} · ${d.chars} chars</td><td><button data-action="hl-doc-del" data-id="${d.id}" class="danger">×</button></td></tr>`).join('')}</tbody></table>`
+      ? `<table><tbody>${docRows}</tbody></table>`
       : '<p class="muted">No documents dumped yet.</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
@@ -430,13 +455,20 @@ async function loadIngestList() {
   const el = document.getElementById('hl-ingest-list'); if (!el) return;
   try {
     const { ingestions } = await api('GET', `${H}/ingest`);
-    el.innerHTML = ingestions.length
-      ? `<table><tbody>${ingestions.map(i => `<tr>
+    const ingestRows = ingestions.map(i => {
+      let statusClass = '';
+      if (i.status === 'error') statusClass = 'err';
+      else if (i.status === 'committed') statusClass = 'ok';
+      const reviewBtn = i.status === 'pending' ? `<button data-action="hl-ingest-open" data-id="${i.id}">review</button> ` : '';
+      return `<tr>
           <td class="muted">${i.created_at ? new Date(i.created_at * 1000).toISOString().slice(0, 10) : ''}</td>
           <td>${esc(i.title)}</td><td class="muted">${esc(i.doc_type)}</td>
-          <td class="${i.status === 'error' ? 'err' : i.status === 'committed' ? 'ok' : ''}">${esc(i.status)}</td>
-          <td>${i.status === 'pending' ? `<button data-action="hl-ingest-open" data-id="${i.id}">review</button> ` : ''}<button data-action="hl-ingest-del" data-id="${i.id}" class="danger">×</button></td>
-        </tr>`).join('')}</tbody></table>`
+          <td class="${statusClass}">${esc(i.status)}</td>
+          <td>${reviewBtn}<button data-action="hl-ingest-del" data-id="${i.id}" class="danger">×</button></td>
+        </tr>`;
+    }).join('');
+    el.innerHTML = ingestions.length
+      ? `<table><tbody>${ingestRows}</tbody></table>`
       : '<p class="muted">No imports yet.</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }

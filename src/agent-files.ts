@@ -11,7 +11,7 @@
  * a violation — so the guard runs against permission-widened copies of the
  * roots, keeping containment while ignoring the agent-facing flags.
  */
-import { readdirSync, lstatSync } from 'node:fs';
+import { readdirSync, lstatSync, type Dirent } from 'node:fs';
 import { open, mkdir, unlink, lstat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join, resolve, relative, dirname } from 'node:path';
@@ -57,41 +57,58 @@ function operatorView(workspaces: Workspace[]): Workspace[] {
  * write path's refusal to operate through them.
  */
 export function listFiles(workspaces: Workspace[]): FileListing {
-  const files: WorkspaceFile[] = [];
-  let truncated = false;
-
-  const walk = (root: string, dir: string, depth: number): void => {
-    if (truncated || depth > MAX_DEPTH) return;
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); }
-    catch { return; }  // unreadable dir: skip, don't fail the whole listing
-    for (const e of entries) {
-      if (files.length >= MAX_ENTRIES) { truncated = true; return; }
-      const p = join(dir, e.name);
-      if (e.isSymbolicLink()) continue;
-      if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(root, p, depth + 1);
-        continue;
-      }
-      if (!e.isFile() || e.name.startsWith('.')) continue;
-      let st;
-      try { st = lstatSync(p); } catch { continue; }
-      files.push({
-        path: p,
-        rel: relative(root, p),
-        root,
-        size: st.size,
-        mtime: Math.floor(st.mtimeMs / 1000),
-      });
-    }
-  };
-
+  const state: WalkState = { files: [], truncated: false };
   for (const ws of workspaces) {
     const root = resolve(ws.path);
-    walk(root, root, 0);
+    walkDir(state, root, root, 0);
   }
-  files.sort((a, b) => b.mtime - a.mtime);
-  return { files, truncated };
+  state.files.sort((a, b) => b.mtime - a.mtime);
+  return { files: state.files, truncated: state.truncated };
+}
+
+interface WalkState {
+  files: WorkspaceFile[];
+  truncated: boolean;
+}
+
+function walkDir(state: WalkState, root: string, dir: string, depth: number): void {
+  if (state.truncated || depth > MAX_DEPTH) return;
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); }
+  catch { return; }  // unreadable dir: skip, don't fail the whole listing
+  for (const e of entries) {
+    if (visitEntry(state, root, dir, depth, e) === 'stop') return;
+  }
+}
+
+function visitEntry(state: WalkState, root: string, dir: string, depth: number, e: Dirent): 'stop' | 'next' {
+  if (state.files.length >= MAX_ENTRIES) { state.truncated = true; return 'stop'; }
+  const p = join(dir, e.name);
+  if (e.isSymbolicLink()) return 'next';
+  if (e.isDirectory()) {
+    if (shouldDescend(e.name)) walkDir(state, root, p, depth + 1);
+    return 'next';
+  }
+  const f = fileEntry(root, p, e);
+  if (f) state.files.push(f);
+  return 'next';
+}
+
+function shouldDescend(name: string): boolean {
+  return !SKIP_DIRS.has(name) && !name.startsWith('.');
+}
+
+function fileEntry(root: string, p: string, e: Dirent): WorkspaceFile | null {
+  if (!e.isFile() || e.name.startsWith('.')) return null;
+  let st;
+  try { st = lstatSync(p); } catch { return null; }
+  return {
+    path: p,
+    rel: relative(root, p),
+    root,
+    size: st.size,
+    mtime: Math.floor(st.mtimeMs / 1000),
+  };
 }
 
 export interface FileResult<T> { ok: true; value: T }

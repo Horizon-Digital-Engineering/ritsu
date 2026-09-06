@@ -52,46 +52,50 @@ export function parseCron(spec: string, tz: string | null = null): Cron {
  */
 export function nextRun(schedule: Schedule, from: number, lastRunAt?: number | null): number | null {
   switch (schedule.kind) {
-    case 'at': {
-      // A one-shot that has run is done. Without this, an `at` with a relative
-      // spec re-arms to now-plus-duration on every fire and becomes a permanent
-      // alarm — "remind me in two hours", every two hours, forever.
-      if (lastRunAt !== null && lastRunAt !== undefined) return null;
-
-      const rel = parseDuration(schedule.spec);
-      if (rel !== null) return from + rel + schedule.stagger_ms;
-
-      const at = parseAbsolute(schedule.spec, schedule.tz);
-      if (at === null) throw new Error(`unparseable 'at' spec: ${schedule.spec}`);
-      return at > from ? at + schedule.stagger_ms : null;
-    }
-
-    case 'every': {
-      const ms = parseDuration(schedule.spec);
-      if (ms === null) throw new Error(`unparseable 'every' spec: ${schedule.spec}`);
-      if (ms < MINUTE_MS) throw new Error(`'every' below one minute: ${schedule.spec}`);
-
-      // Anchor on the previous scheduled slot, not the tick that noticed it.
-      // Anchoring on the tick permanently absorbs its latency, so an hourly job
-      // drifts by minutes a day. The stagger is removed first: the last run
-      // happened at slot+stagger, and re-anchoring on that would add the offset
-      // again every cycle, turning jitter into an unbounded phase shift.
-      const anchor = lastRunAt !== null && lastRunAt !== undefined
-        ? lastRunAt - schedule.stagger_ms
-        : from;
-      let next = anchor + ms;
-      // After downtime, skip ahead rather than firing once per missed slot.
-      if (next <= from) next = from + ms - ((from - anchor) % ms);
-      return next + schedule.stagger_ms;
-    }
-
-    case 'cron': {
-      // Croner is strictly after the given instant, which is the semantics we
-      // want: a job due at 09:00 must not re-fire for every tick in that minute.
-      const next = parseCron(schedule.spec, schedule.tz).nextRun(new Date(from));
-      return next === null ? null : next.getTime() + schedule.stagger_ms;
-    }
+    case 'at': return nextAtRun(schedule, from, lastRunAt);
+    case 'every': return nextEveryRun(schedule, from, lastRunAt);
+    case 'cron': return nextCronRun(schedule, from);
   }
+}
+
+function nextAtRun(schedule: Schedule, from: number, lastRunAt?: number | null): number | null {
+  // A one-shot that has run is done. Without this, an `at` with a relative
+  // spec re-arms to now-plus-duration on every fire and becomes a permanent
+  // alarm — "remind me in two hours", every two hours, forever.
+  if (lastRunAt !== null && lastRunAt !== undefined) return null;
+
+  const rel = parseDuration(schedule.spec);
+  if (rel !== null) return from + rel + schedule.stagger_ms;
+
+  const at = parseAbsolute(schedule.spec, schedule.tz);
+  if (at === null) throw new Error(`unparseable 'at' spec: ${schedule.spec}`);
+  return at > from ? at + schedule.stagger_ms : null;
+}
+
+function nextEveryRun(schedule: Schedule, from: number, lastRunAt?: number | null): number {
+  const ms = parseDuration(schedule.spec);
+  if (ms === null) throw new Error(`unparseable 'every' spec: ${schedule.spec}`);
+  if (ms < MINUTE_MS) throw new Error(`'every' below one minute: ${schedule.spec}`);
+
+  // Anchor on the previous scheduled slot, not the tick that noticed it.
+  // Anchoring on the tick permanently absorbs its latency, so an hourly job
+  // drifts by minutes a day. The stagger is removed first: the last run
+  // happened at slot+stagger, and re-anchoring on that would add the offset
+  // again every cycle, turning jitter into an unbounded phase shift.
+  const anchor = lastRunAt !== null && lastRunAt !== undefined
+    ? lastRunAt - schedule.stagger_ms
+    : from;
+  let next = anchor + ms;
+  // After downtime, skip ahead rather than firing once per missed slot.
+  if (next <= from) next = from + ms - ((from - anchor) % ms);
+  return next + schedule.stagger_ms;
+}
+
+function nextCronRun(schedule: Schedule, from: number): number | null {
+  // Croner is strictly after the given instant, which is the semantics we
+  // want: a job due at 09:00 must not re-fire for every tick in that minute.
+  const next = parseCron(schedule.spec, schedule.tz).nextRun(new Date(from));
+  return next === null ? null : next.getTime() + schedule.stagger_ms;
 }
 
 /**

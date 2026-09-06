@@ -6,6 +6,18 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-09-06
+
+### Changed
+
+- Static-analysis sweep across the codebase, no behavior changes: the
+  backtracking-prone regexes in the HTML-to-text, code-fence, and prompt-
+  variable parsers are now linear scans; oversized functions were split into
+  named helpers (agent wiring, model clients, scheduler, tool guards, admin
+  UI); accessibility labels and color contrast fixed in the admin pages;
+  assorted modern-JS preference findings resolved. Compile target moved to
+  ES2023 (runtime already required Node 20+).
+
 ## [0.12.2] — 2026-09-05
 
 ### Fixed
