@@ -23,8 +23,17 @@ export class StaticExtractor implements Extractor {
 /** Pull the first JSON object/array out of a model reply (tolerates ``` fences
  *  and surrounding prose). */
 export function parseModelJson(text: string): unknown {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  const body = fenced ? fenced[1] : text;
+  // Fence extraction by index scan — the lazy-regex version backtracks
+  // super-linearly when a reply opens a fence it never closes.
+  let body = text;
+  const openAt = text.indexOf('```');
+  if (openAt !== -1) {
+    let p = openAt + 3;
+    if (text.slice(p, p + 4).toLowerCase() === 'json') p += 4;
+    while (p < text.length && /\s/.test(text[p])) p++;
+    const closeAt = text.indexOf('```', p);
+    if (closeAt !== -1) body = text.slice(p, closeAt);
+  }
   const start = body.search(/[[{]/);
   if (start === -1) throw new Error('extractor returned no JSON');
   // Walk to the matching close so trailing prose doesn't break the parse.

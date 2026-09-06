@@ -71,23 +71,62 @@ function param(v: string | string[] | undefined): string {
  * table (attachments included), and `?limit=abc` reaches the driver as NaN
  * and 500s on a datatype mismatch.
  */
+/**
+ * Remove `<tag ...>content</tag ...>` containers (script/style) with a linear
+ * scan — the lazy-regex version backtracks super-linearly on adversarial
+ * unclosed tags, and this runs on fetched pages. Semantics match the regex it
+ * replaces: the open tag name must end at a word boundary, the closer
+ * tolerates attributes/whitespace, and an opener with no closer is left in
+ * place for the generic tag strip to eat.
+ */
+function stripContainers(html: string, tag: string): string {
+  const lower = html.toLowerCase();
+  const open = `<${tag}`;
+  const close = `</${tag}`;
+  const wordChar = /[a-z0-9_]/;
+  let out = '';
+  let i = 0;
+  while (i < html.length) {
+    const s = lower.indexOf(open, i);
+    if (s === -1) { out += html.slice(i); break; }
+    const boundary = lower[s + open.length];
+    const gt = boundary !== undefined && !wordChar.test(boundary) ? html.indexOf('>', s + open.length) : -1;
+    let closedAt = -1;
+    for (let c = gt === -1 ? -1 : gt + 1; c !== -1 && c < html.length;) {
+      const e = lower.indexOf(close, c);
+      if (e === -1) break;
+      const after = lower[e + close.length];
+      if (after !== undefined && wordChar.test(after)) { c = e + 1; continue; }
+      const egt = html.indexOf('>', e + close.length);
+      if (egt === -1) break;
+      closedAt = egt;
+      break;
+    }
+    if (closedAt === -1) {
+      // Not a removable container here — emit one char and rescan, exactly
+      // like the regex engine advancing past a failed match position.
+      out += html.slice(i, s + 1);
+      i = s + 1;
+    } else {
+      out += html.slice(i, s) + ' ';
+      i = closedAt + 1;
+    }
+  }
+  return out;
+}
+
 /** Crude but safe page-to-text: scripts/styles dropped, tags to spaces, a few
  *  entities decoded, whitespace collapsed. Extraction quality is not the goal
  *  — the result is fenced context, not rendered content. */
 export function htmlToText(html: string): string {
-  return html
-    // Element CONTENT removal keys on the opening tag boundary and tolerates
-    // attributes/whitespace in the closer; the general tag strip below then
-    // eats any straggler markup, so a malformed closer can't smuggle content.
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
+  return stripContainers(stripContainers(html, 'script'), 'style')
     .replace(/<[^>]*>/g, ' ')
     // Entities: &amp; is decoded LAST, so "&amp;lt;" yields the four
     // characters "&lt;" rather than a freshly minted "<".
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"').replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -650,14 +650,34 @@ async function reloadTranscript() {
  */
 const THINK_RE = /<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi;
 
+/** Linear scan for ```lang fences. Replaces lazy-regex parsing, which
+ *  backtracks super-linearly on unclosed fences in hostile input. Returns
+ *  [{start, end, lang, body}] with `end` just past the closing backticks;
+ *  `padAfterLang` additionally eats horizontal whitespace after the language
+ *  word (the artifact scanner's historical tolerance). */
+function scanFences(text, padAfterLang = false) {
+  const out = [];
+  let i = 0;
+  for (;;) {
+    const s = text.indexOf('```', i);
+    if (s === -1) break;
+    let p = s + 3;
+    while (p < text.length && /[A-Za-z0-9_+.-]/.test(text[p])) p++;
+    const lang = text.slice(s + 3, p);
+    if (padAfterLang) while (p < text.length && text[p] !== '\n' && /\s/.test(text[p])) p++;
+    if (text[p] === '\n') p++;
+    const e = text.indexOf('```', p);
+    if (e === -1) break;
+    out.push({ start: s, end: e + 3, lang, body: text.slice(p, e) });
+    i = e + 3;
+  }
+  return out;
+}
+
 /** Byte ranges covered by a ``` fence. Math extraction runs before the fence
  *  lift, so it consults these to leave TeX-shaped text inside code alone. */
 function fenceRanges(text) {
-  const out = [];
-  const re = /```[A-Za-z0-9_+.-]*\n?[\s\S]*?```/g;
-  let m;
-  while ((m = re.exec(text)) !== null) out.push([m.index, m.index + m[0].length]);
-  return out;
+  return scanFences(text).map(f => [f.start, f.end]);
 }
 
 /** A fenced block. `mermaid` keeps its source as the visible body: that is
@@ -709,10 +729,19 @@ function md(raw) {
   });
 
   const blocks = [];
-  text = text.replace(/```([A-Za-z0-9_+.-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    blocks.push({ lang, code });
-    return `\uE000B${blocks.length - 1}\uE000`;
-  });
+  {
+    const lifted = scanFences(text);
+    if (lifted.length) {
+      let rebuilt = '';
+      let last = 0;
+      for (const f of lifted) {
+        blocks.push({ lang: f.lang, code: f.body });
+        rebuilt += text.slice(last, f.start) + `\uE000B${blocks.length - 1}\uE000`;
+        last = f.end;
+      }
+      text = rebuilt + text.slice(last);
+    }
+  }
   text = esc(text);
   text = text.replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
   text = text
@@ -725,7 +754,7 @@ function md(raw) {
     .replace(/(^|[^*])\*([^*\s][^*\n]*?)\*(?!\*)/g, '$1<em>$2</em>');
   // esc() ran first, so a quote in the URL is already &quot; and cannot
   // break out of the attribute; the ^https? anchor shuts out javascript: etc.
-  text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+  text = text.replace(/\[([^[\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   text = text
     .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
@@ -1836,9 +1865,10 @@ function renderMermaid(root) {
 function artifactsIn(content) {
   const src = String(content ?? '');
   const found = [];
-  const fence = /```(html|svg)[^\S\n]*\n?([\s\S]*?)```/gi;
-  let m;
-  while ((m = fence.exec(src)) !== null) found.push({ kind: m[1].toLowerCase(), code: m[2].trim() });
+  for (const f of scanFences(src, true)) {
+    const kind = f.lang.toLowerCase();
+    if (kind === 'html' || kind === 'svg') found.push({ kind, code: f.body.trim() });
+  }
   if (!found.length) {
     const doc = src.match(/<!doctype html[\s\S]*<\/html>/i)
       || src.match(/<html[\s>][\s\S]*<\/html>/i)
@@ -2056,8 +2086,10 @@ function applyPromptText(text) {
 
 // ---- prompt variables -------------------------------------------------------
 // {{name}} | {{name|type}} | {{name|type:prop="a,b"}}
-const VAR_TYPES = ['text', 'textarea', 'select', 'number', 'checkbox', 'date'];
-const varRe = () => /\{\{\s*([^}|]+?)\s*(?:\|\s*([A-Za-z]+)\s*(?::\s*([^}]*?))?)?\s*\}\}/g;
+const VAR_TYPES = new Set(['text', 'textarea', 'select', 'number', 'checkbox', 'date']);
+// Whitespace tolerance lives in code (trim), not the pattern: \s* wrapping a
+// lazy class was ambiguous enough to backtrack super-linearly.
+const varRe = () => /\{\{([^}|]*)(?:\|\s*([A-Za-z]+)\s*(?::([^}]*))?)?\}\}/g;
 
 function parseVars(content) {
   const out = [];
@@ -2071,10 +2103,10 @@ function parseVars(content) {
     const type = (m[2] || 'text').toLowerCase();
     const props = {};
     // prop="a,b" | prop=[a,b] | prop=bare
-    for (const pm of String(m[3] || '').matchAll(/([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\]|([^,\s]+))/g)) {
+    for (const pm of String(m[3] || '').matchAll(/([A-Za-z0-9_]+)\s*=\s*(?:"([^"]*)"|\[([^\]]*)\]|([^",[\s][^,\s]*))/g)) {
       props[pm[1]] = String(pm[2] ?? pm[3] ?? pm[4] ?? '').trim();
     }
-    out.push({ name, type: VAR_TYPES.includes(type) ? type : 'text', props });
+    out.push({ name, type: VAR_TYPES.has(type) ? type : 'text', props });
   }
   return out;
 }
