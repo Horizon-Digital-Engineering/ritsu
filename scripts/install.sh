@@ -85,6 +85,29 @@ fi
 bold "==> Install + build"
 sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
 
+bold "==> Verify the agent runtime binary"
+# The SDK ships a large native sidecar; a corrupted download installs without
+# error and only fails when an agent tries to talk. Launch it once now — and
+# on failure, retry ONCE with a clean npm cache (the fix for a bad artifact)
+# before giving up. Giving up aborts BEFORE the service restart below, so a
+# bad upgrade leaves the old, working version running.
+verify_runtime() {
+  sudo -u "${SERVICE_USER}" -H bash -c \
+    "cd '${INSTALL_DIR}' && ./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude --version" >/dev/null 2>&1
+}
+if verify_runtime; then
+  note "runtime binary launches"
+else
+  warn "runtime binary failed to launch — reinstalling with a clean npm cache"
+  sudo -u "${SERVICE_USER}" -H bash -c \
+    "cd '${INSTALL_DIR}' && npm cache clean --force && rm -rf node_modules && npm ci --no-audit --no-fund && npm run build"
+  if verify_runtime; then
+    note "runtime binary launches after reinstall"
+  else
+    fail "runtime binary still fails to launch after a clean reinstall — aborting BEFORE restarting the service (the running version is untouched)"
+  fi
+fi
+
 bold "==> Master key"
 # Secrets are AES-256-GCM encrypted at rest and unwritable without this. Kept
 # out of ${INSTALL_DIR} on purpose: beside the database, one filesystem
