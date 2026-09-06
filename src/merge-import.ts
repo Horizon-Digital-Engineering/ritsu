@@ -88,17 +88,16 @@ class Merger {
     return this.report.tables[table];
   }
 
-  /** Rows of an export table, id-ordered so parents precede children. */
-  private rows(table: string): Row[] {
+  /** Rows of an export table, id-ordered so parents precede children. Only
+   *  schema-known columns are copied — property names never come from the
+   *  uploaded file, so a hostile key ("__proto__", …) is inert. */
+  private rows(table: string, liveCols: Set<string>): Row[] {
     const raw = this.file.tables[table];
     if (!Array.isArray(raw)) return [];
     const rows = raw.map(r => {
-      // Keys come from an uploaded file — a null-prototype target makes
-      // "__proto__" a plain own property instead of prototype pollution.
-      const out: Row = Object.create(null) as Row;
-      for (const [k, v] of Object.entries(r as Row)) {
-        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-        out[k] = decodeBlob(v);
+      const out: Row = {};
+      for (const k of liveCols) {
+        if (Object.hasOwn(r as Row, k)) out[k] = decodeBlob((r as Row)[k]);
       }
       return out;
     });
@@ -125,8 +124,8 @@ class Merger {
     return liveCols;
   }
 
-  private insert(table: string, liveCols: Set<string>, row: Row): number {
-    const cols = Object.keys(row).filter(c => liveCols.has(c));
+  private insert(table: string, row: Row): number {
+    const cols = Object.keys(row);
     const colList = cols.map(c => '"' + c + '"').join(', ');
     const holes = cols.map(() => '?').join(', ');
     const r = this.live.prepare(`INSERT INTO "${table}" (${colList}) VALUES (${holes})`)
@@ -150,7 +149,7 @@ class Merger {
     const rep = this.table('agent_definitions');
     const liveCols = this.liveColumnsStrict('agent_definitions');
     const replace = new Set(this.opts.replaceAgents ?? []);
-    for (const row of this.rows('agent_definitions')) {
+    for (const row of this.rows('agent_definitions', liveCols)) {
       const id = row.id as string;
       if (!this.wantsAgent(id)) continue;
       const exists = this.live.prepare('SELECT 1 FROM agent_definitions WHERE id = ?').get(id) !== undefined;
@@ -160,7 +159,7 @@ class Merger {
         continue;
       }
       if (exists) this.live.prepare('DELETE FROM agent_definitions WHERE id = ?').run(id);
-      this.insert('agent_definitions', liveCols, row);
+      this.insert('agent_definitions', row);
       rep.inserted++;
     }
   }
@@ -169,13 +168,13 @@ class Merger {
     if (!this.has('agent_workspaces')) return;
     const rep = this.table('agent_workspaces');
     const liveCols = this.liveColumnsStrict('agent_workspaces');
-    for (const row of this.rows('agent_workspaces')) {
+    for (const row of this.rows('agent_workspaces', liveCols)) {
       if (!this.wantsAgent(row.agent_id)) continue;
       const dupe = this.live.prepare('SELECT 1 FROM agent_workspaces WHERE agent_id = ? AND path = ?')
         .get(row.agent_id, row.path) !== undefined;
       if (dupe) { rep.skipped++; continue; }
       const { id: _id, ...rest } = row;
-      this.insert('agent_workspaces', liveCols, rest);
+      this.insert('agent_workspaces', rest);
       rep.inserted++;
     }
   }
@@ -184,12 +183,12 @@ class Merger {
     if (this.has('memories')) {
       const rep = this.table('memories');
       const liveCols = this.liveColumnsStrict('memories');
-      const rows = this.rows('memories').filter(r => this.wantsAgent(r.agent_id));
+      const rows = this.rows('memories', liveCols).filter(r => this.wantsAgent(r.agent_id));
       // Two passes: insert with lineage/supersession still pointing at OLD
       // ids, then re-point through the map once every new id exists.
       for (const row of rows) {
         const { id: oldId, ...rest } = row;
-        this.map('memories').set(Number(oldId), this.insert('memories', liveCols, rest));
+        this.map('memories').set(Number(oldId), this.insert('memories', rest));
         rep.inserted++;
       }
       const fix = this.live.prepare('UPDATE memories SET superseded_by = ?, lineage_root_id = ? WHERE id = ?');
@@ -209,12 +208,12 @@ class Merger {
     if (!this.has('raw_records') || !tableExists(this.live, 'raw_records')) return;
     const rep = this.table('raw_records');
     const liveCols = this.liveColumnsStrict('raw_records');
-    for (const row of this.rows('raw_records')) {
+    for (const row of this.rows('raw_records', liveCols)) {
       // UUID keys are collision-safe across installs; a duplicate means a
       // re-run, so skip rather than error.
       const dupe = this.live.prepare('SELECT 1 FROM raw_records WHERE id = ?').get(row.id) !== undefined;
       if (dupe) { rep.skipped++; continue; }
-      this.insert('raw_records', liveCols, row);
+      this.insert('raw_records', row);
       rep.inserted++;
     }
   }
@@ -224,11 +223,11 @@ class Merger {
     this.mergeProjects();
     const rep = this.table('conversations');
     const liveCols = this.liveColumnsStrict('conversations');
-    for (const row of this.rows('conversations')) {
+    for (const row of this.rows('conversations', liveCols)) {
       if (!this.wantsAgent(row.agent_id)) continue;
       const { id: oldId, ...rest } = row;
       if ('project_id' in rest) rest.project_id = this.remapped('agent_projects', rest.project_id);
-      this.map('conversations').set(Number(oldId), this.insert('conversations', liveCols, rest));
+      this.map('conversations').set(Number(oldId), this.insert('conversations', rest));
       rep.inserted++;
     }
     this.mergeMessages();
@@ -239,20 +238,20 @@ class Merger {
     if (!this.has('agent_projects')) return;
     const rep = this.table('agent_projects');
     const liveCols = this.liveColumnsStrict('agent_projects');
-    for (const row of this.rows('agent_projects')) {
+    for (const row of this.rows('agent_projects', liveCols)) {
       if (!this.wantsAgent(row.agent_id)) continue;
       const { id: oldId, ...rest } = row;
-      this.map('agent_projects').set(Number(oldId), this.insert('agent_projects', liveCols, rest));
+      this.map('agent_projects').set(Number(oldId), this.insert('agent_projects', rest));
       rep.inserted++;
     }
     if (this.has('agent_project_files')) {
       const frep = this.table('agent_project_files');
       const fcols = this.liveColumnsStrict('agent_project_files');
-      for (const row of this.rows('agent_project_files')) {
+      for (const row of this.rows('agent_project_files', fcols)) {
         if (!this.wantsAgent(row.agent_id)) continue;
         const { id: _id, ...rest } = row;
         if ('project_id' in rest) rest.project_id = this.remapped('agent_projects', rest.project_id);
-        this.insert('agent_project_files', fcols, rest);
+        this.insert('agent_project_files', rest);
         frep.inserted++;
       }
     }
@@ -263,7 +262,7 @@ class Merger {
     const rep = this.table('messages');
     const liveCols = this.liveColumnsStrict('messages');
     const convMap = this.map('conversations');
-    for (const row of this.rows('messages')) {
+    for (const row of this.rows('messages', liveCols)) {
       const newConv = convMap.get(Number(row.conversation_id));
       if (newConv === undefined) { rep.skipped++; continue; }   // conversation not selected
       const { id: oldId, ...rest } = row;
@@ -271,7 +270,7 @@ class Merger {
       // Parents sort before children (ids are insertion-ordered), so the map
       // already holds the parent by the time a child arrives.
       if ('parent_message_id' in rest) rest.parent_message_id = this.remapped('messages', rest.parent_message_id);
-      this.map('messages').set(Number(oldId), this.insert('messages', liveCols, rest));
+      this.map('messages').set(Number(oldId), this.insert('messages', rest));
       rep.inserted++;
     }
   }
@@ -280,14 +279,14 @@ class Merger {
     if (!this.has('message_attachments')) return;
     const rep = this.table('message_attachments');
     const liveCols = this.liveColumnsStrict('message_attachments');
-    for (const row of this.rows('message_attachments')) {
+    for (const row of this.rows('message_attachments', liveCols)) {
       const newMsg = this.map('messages').get(Number(row.message_id));
       const newConv = this.map('conversations').get(Number(row.conversation_id));
       if (newMsg === undefined || newConv === undefined) { rep.skipped++; continue; }
       const { id: _id, ...rest } = row;
       rest.message_id = newMsg;
       rest.conversation_id = newConv;
-      this.insert('message_attachments', liveCols, rest);
+      this.insert('message_attachments', rest);
       rep.inserted++;
     }
   }
@@ -317,8 +316,8 @@ class Merger {
       }
       const rep = this.table(table);
       const liveCols = this.liveColumnsStrict(table);
-      for (const row of this.rows(table)) {
-        this.insert(table, liveCols, row);
+      for (const row of this.rows(table, liveCols)) {
+        this.insert(table, row);
         rep.inserted++;
       }
     }
