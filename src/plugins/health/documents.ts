@@ -76,5 +76,5 @@ export function searchDocuments(docs: HealthDocument[], query: string, limit = 4
       if (score > 0) hits.push({ doc_id: d.id, title: d.title, category: d.category, snippet: p.slice(0, 400), score });
     }
   }
-  return hits.sort((a, b) => b.score - a.score).slice(0, limit);
+  return hits.toSorted((a, b) => b.score - a.score).slice(0, limit);
 }

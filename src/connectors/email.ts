@@ -80,6 +80,12 @@ export interface SendEmailInput {
  * configured yet. Decrypts only the fields it needs; nothing is returned
  * outward. smtp user/pass default to the shared user/pass.
  */
+function formatSender(addr: { name?: string; address?: string } | undefined): string {
+  if (!addr) return '(unknown)';
+  const name = addr.name ? `${addr.name} ` : '';
+  return `${name}<${addr.address ?? ''}>`.trim();
+}
+
 export function loadEmailConfig(secrets: SecretStore): EmailConfig | null {
   const user = secrets.get(EMAIL_NS, 'user');
   const pass = secrets.get(EMAIL_NS, 'pass');
@@ -161,7 +167,7 @@ export async function readInbox(
       const fromAddr = env?.from?.[0];
       out.push({
         uid: msg.uid,
-        from: fromAddr ? `${fromAddr.name ? fromAddr.name + ' ' : ''}<${fromAddr.address ?? ''}>`.trim() : '(unknown)',
+        from: formatSender(fromAddr),
         subject: env?.subject ?? '(no subject)',
         date: env?.date ? new Date(env.date).toISOString() : '',
         seen: msg.flags?.has('\\Seen') ?? false,

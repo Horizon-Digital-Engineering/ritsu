@@ -185,7 +185,7 @@ export class AgentHost {
     // our hook — so for it we STRIP the ungateable built-ins rather than
     // pretend to gate them. An operator who wants a hard gate uses ritsu-agent.
     const readsUntrusted = canCrm || canSocial;
-    const UNGATEABLE_BUILTIN_EGRESS = ['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit'];
+    const UNGATEABLE_BUILTIN_EGRESS = new Set(['Bash', 'WebFetch', 'WebSearch', 'Write', 'Edit']);
     let effectiveTools = def.tools_allowlist;
     const autoGated: string[] = [];
     if (readsUntrusted) {
@@ -220,9 +220,9 @@ export class AgentHost {
           'mcp__agent_admin__reload_agent',
           'mcp__history__search_chats', 'mcp__history__view_chat',
         );
-        const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.includes(t));
+        const stripped = def.tools_allowlist.filter(t => UNGATEABLE_BUILTIN_EGRESS.has(t));
         if (stripped.length) {
-          effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.includes(t));
+          effectiveTools = def.tools_allowlist.filter(t => !UNGATEABLE_BUILTIN_EGRESS.has(t));
           logger.warn('agent.crm-egress-stripped', { id: def.id, stripped });
         }
       }

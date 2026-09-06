@@ -410,7 +410,7 @@ export abstract class AgentBase {
     // The user turn it answered: recorded parent, or the message just before
     // it for pre-tree rows.
     const parentUserId = target.parent_message_id
-      ?? all.filter(m => (m.id ?? Infinity) < assistantMessageId && m.role === 'user').at(-1)?.id
+      ?? all.findLast(m => (m.id ?? Infinity) < assistantMessageId && m.role === 'user')?.id
       ?? null;
     if (parentUserId == null) throw new Error('cannot find the user turn this answered');
     const path = this.pathMessages(conversationId, parentUserId);
