@@ -30,7 +30,7 @@
     "express": "^5.2.1",
     "imapflow": "^1.7.6",
     "mailparser": "^3.9.17",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.0.10",
     "openai": "^7.8.0",
     "re2-wasm": "^1.0.2",
     "twitter-api-v2": "^1.29.1",
