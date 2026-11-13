@@ -3363,7 +3363,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
-  if (e.target.id === 'merge-file') mergeFilePicked(e.target);
+  if (e.target.id === 'merge-file') void mergeFilePicked(e.target);
 });
 
 // ---- bootstrap --------------------------------------------------------

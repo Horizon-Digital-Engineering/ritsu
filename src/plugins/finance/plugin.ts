@@ -82,7 +82,7 @@ function linesFor(store: FinanceStore, from: string, to: string) {
 
 function asOf(store: FinanceStore): string | null {
   const ts = store.lastSyncedAt();
-  const manual = store.listAccounts().map(a => a.balance_as_of).filter(Boolean).sort().at(-1);
+  const manual = store.listAccounts().map(a => a.balance_as_of).filter(Boolean).sort((a, b) => a.localeCompare(b)).at(-1);
   if (!ts) return manual ?? null;
   return new Date(ts * 1000).toISOString();
 }

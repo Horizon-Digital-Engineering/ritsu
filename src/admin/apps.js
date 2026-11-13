@@ -181,7 +181,7 @@ async function boot() {
     main.appendChild(sec);
   }
   switchTab(tabFromHash());
-  renderAgentAction(plugin);
+  void renderAgentAction(plugin);
 
   if (plugin.assets?.css) {
     const link = document.createElement('link');
@@ -200,7 +200,7 @@ async function boot() {
 // ---- delegated handlers ----------------------------------------------------
 const ACTIONS = {
   'switch-tab': (el) => switchTab(el.dataset.tab),
-  'load-agent': () => { if (plugin) loadAgent(plugin); },
+  'load-agent': () => { if (plugin) void loadAgent(plugin); },
 };
 
 document.addEventListener('click', (e) => {

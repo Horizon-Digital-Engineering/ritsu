@@ -3,7 +3,7 @@
  * inflow positive, outflow negative; a liability account's balance is
  * negative. Provider credentials never live in these tables.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { PluginDb } from '../types.js';
 import { UNCATEGORIZED } from './categories.js';
 
@@ -226,7 +226,7 @@ export class FinanceStore {
     return existing ? 'updated' : 'added';
   }
   insertManualTransaction(t: { account_id: string; date: string; payee: string; amount: number; category_id?: string | null; category_source?: string; notes?: string }): Transaction {
-    const id = `manual:${createHash('sha256').update(`${t.account_id}|${t.date}|${t.amount}|${t.payee}|${Date.now()}|${Math.random()}`).digest('hex').slice(0, 20)}`;
+    const id = `manual:${randomBytes(10).toString('hex')}`;
     this.db.prepare(
       `INSERT INTO ${this.t('transactions')} (id, account_id, date, description, payee, amount, category_id, category_source, notes, source, reviewed, fingerprint)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 1, ?)`,

@@ -52,7 +52,7 @@ export function netWorthSeries(
     const arr = byDate.get(h.date); if (arr) arr.push(h); else byDate.set(h.date, [h]);
   }
   const out: NetWorthPoint[] = [];
-  const dates = [...new Set([from, ...byDate.keys(), to])].filter(d => d >= from && d <= to).sort();
+  const dates = [...new Set([from, ...byDate.keys(), to])].filter(d => d >= from && d <= to).sort((a, b) => a.localeCompare(b));
   for (const d of dates) {
     for (const h of byDate.get(d) ?? []) current.set(h.account_id, h.balance);
     // Before the first snapshot there is nothing to plot; a zero there would read as a crash.
