@@ -8,6 +8,10 @@
   const TOKEN_KEY = 'ritsu.adminToken';
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
+// Fire-and-forget: a rejection is logged instead of vanishing as an unhandled promise.
+function background(promise) { promise.catch(e => console.error(e)); }
+
+
   function icon(d) {
     const svg = document.createElementNS(SVG_NS, 'svg');
     for (const [k, v] of Object.entries({
@@ -59,5 +63,5 @@
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
-  else void mount();
+  else background(mount());
 })();

@@ -1,6 +1,11 @@
 const { api, esc, toast, registerTab, registerAction } = window.ritsu;
 const H = '/admin/api/plugins/health';
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 const val = (o) => {
   const unit = o.unit ? ` ${esc(o.unit)}` : '';
   return `${o.value}${unit}`;
@@ -15,7 +20,7 @@ function overviewSkeleton() {
     <div class="panel"><h2>Latest labs</h2><div id="hl-labs"></div></div>
     <div class="panel"><h2>Current medications</h2><div id="hl-meds"></div></div>`;
 }
-function renderOverviewPane(pane) { pane.innerHTML = overviewSkeleton(); loadOverview(); }
+function renderOverviewPane(pane) { pane.innerHTML = overviewSkeleton(); background(loadOverview()); }
 
 async function loadOverview() {
   try {
@@ -67,8 +72,8 @@ function renderLogPane(pane) {
   pane.querySelector('#hl-o-date').value = today();
   pane.querySelector('#hl-obs-form').addEventListener('submit', saveObs);
   pane.querySelector('#hl-med-form').addEventListener('submit', saveMed);
-  loadRecent();
-  loadMeds();
+  background(loadRecent());
+  background(loadMeds());
 }
 
 async function saveObs(e) {
@@ -86,7 +91,7 @@ async function saveObs(e) {
     toast('logged', 'ok');
     document.getElementById('hl-obs-form').reset();
     document.getElementById('hl-o-date').value = today();
-    loadRecent();
+    background(loadRecent());
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -101,7 +106,7 @@ async function saveMed(e) {
     });
     toast('added', 'ok');
     document.getElementById('hl-med-form').reset();
-    loadMeds();
+    background(loadMeds());
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -146,7 +151,7 @@ function trendsSkeleton() {
       <div id="hl-corr" style="margin-top:10px"></div>
     </div>`;
 }
-function renderTrendsPane(pane) { pane.innerHTML = trendsSkeleton(); loadLabels(); }
+function renderTrendsPane(pane) { pane.innerHTML = trendsSkeleton(); background(loadLabels()); }
 
 let labelCache = [];
 async function loadLabels() {
@@ -161,7 +166,7 @@ async function loadLabels() {
     sel.innerHTML = opts; a.innerHTML = opts; b.innerHTML = opts;
     if (labels.length > 1) b.selectedIndex = 1;
     sel.addEventListener('change', () => loadSeries(sel.value));
-    loadSeries(sel.value);
+    background(loadSeries(sel.value));
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -203,9 +208,9 @@ async function correlate() {
 }
 
 // ---- actions --------------------------------------------------------------
-async function delObs(id) { try { await api('DELETE', `${H}/observations/${id}`); loadRecent(); } catch (e) { toast(e.message, 'err'); } }
-async function stopMed(id) { const d = prompt('Stop date (YYYY-MM-DD):', today()); if (!d) { return; } try { await api('POST', `${H}/medications/${id}/stop`, { end_date: d }); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
-async function delMed(id) { if (!confirm('Delete this medication record?')) { return; } try { await api('DELETE', `${H}/medications/${id}`); loadMeds(); } catch (e) { toast(e.message, 'err'); } }
+async function delObs(id) { try { await api('DELETE', `${H}/observations/${id}`); background(loadRecent()); } catch (e) { toast(e.message, 'err'); } }
+async function stopMed(id) { const d = prompt('Stop date (YYYY-MM-DD):', today()); if (!d) { return; } try { await api('POST', `${H}/medications/${id}/stop`, { end_date: d }); background(loadMeds()); } catch (e) { toast(e.message, 'err'); } }
+async function delMed(id) { if (!confirm('Delete this medication record?')) { return; } try { await api('DELETE', `${H}/medications/${id}`); background(loadMeds()); } catch (e) { toast(e.message, 'err'); } }
 
 // ---- Insurance ------------------------------------------------------------
 const COST_TYPES = ['copay', 'coinsurance', 'covered', 'not_covered'];
@@ -264,8 +269,8 @@ function renderInsurancePane(pane) {
   pane.querySelector('#hl-benefit-form').addEventListener('submit', addBenefit);
   pane.querySelector('#hl-plan-form').addEventListener('submit', savePlan);
   pane.querySelector('#hl-doc-form').addEventListener('submit', dumpDoc);
-  loadInsurance();
-  loadDocs();
+  background(loadInsurance());
+  background(loadDocs());
 }
 
 async function loadInsurance() {
@@ -306,7 +311,7 @@ async function savePlan(e) {
       plan_type: document.getElementById('hl-p-type').value.trim() || undefined,
       deductible_individual: num('hl-p-ded'), oop_max_individual: num('hl-p-oop'), premium_monthly: num('hl-p-prem'),
     });
-    toast('plan saved', 'ok'); document.getElementById('hl-plan-form').reset(); loadInsurance();
+    toast('plan saved', 'ok'); document.getElementById('hl-plan-form').reset(); background(loadInsurance());
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -321,7 +326,7 @@ async function addBenefit(e) {
       cost_type: document.getElementById('hl-b-type').value, amount: amt === '' ? undefined : Number(amt),
       network: document.getElementById('hl-b-net').value, after_deductible: document.getElementById('hl-b-after').checked,
     });
-    toast('coverage added', 'ok'); document.getElementById('hl-benefit-form').reset(); loadInsurance();
+    toast('coverage added', 'ok'); document.getElementById('hl-benefit-form').reset(); background(loadInsurance());
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -331,12 +336,12 @@ async function updateProgress(id) {
       deductible_met: Number(document.getElementById('hl-ded-met').value || 0),
       oop_met: Number(document.getElementById('hl-oop-met').value || 0),
     });
-    toast('updated', 'ok'); loadInsurance();
+    toast('updated', 'ok'); background(loadInsurance());
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function delPlan(id) { if (!confirm('Delete this plan and its coverage lines?')) { return; } try { await api('DELETE', `${H}/insurance/plans/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
-async function delBenefit(id) { try { await api('DELETE', `${H}/insurance/benefits/${id}`); loadInsurance(); } catch (e) { toast(e.message, 'err'); } }
+async function delPlan(id) { if (!confirm('Delete this plan and its coverage lines?')) { return; } try { await api('DELETE', `${H}/insurance/plans/${id}`); background(loadInsurance()); } catch (e) { toast(e.message, 'err'); } }
+async function delBenefit(id) { try { await api('DELETE', `${H}/insurance/benefits/${id}`); background(loadInsurance()); } catch (e) { toast(e.message, 'err'); } }
 
 async function loadDocs() {
   const el = document.getElementById('hl-docs'); if (!el) return;
@@ -353,7 +358,7 @@ async function dumpDoc(e) {
   e.preventDefault();
   try {
     await api('POST', `${H}/documents`, { category: 'benefits', title: document.getElementById('hl-d-title').value.trim(), text: document.getElementById('hl-d-text').value });
-    toast('document stored', 'ok'); document.getElementById('hl-doc-form').reset(); loadDocs();
+    toast('document stored', 'ok'); document.getElementById('hl-doc-form').reset(); background(loadDocs());
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -366,7 +371,7 @@ async function docSearch() {
     el.innerHTML = hits.length ? hits.map(h => `<div class="doc-hit"><span class="muted">[${esc(h.title)}]</span> ${esc(h.snippet)}</div>`).join('') : '<p class="muted">(no matches)</p>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
-async function delDoc(id) { try { await api('DELETE', `${H}/documents/${id}`); loadDocs(); } catch (e) { toast(e.message, 'err'); } }
+async function delDoc(id) { try { await api('DELETE', `${H}/documents/${id}`); background(loadDocs()); } catch (e) { toast(e.message, 'err'); } }
 
 registerTab('health-overview', renderOverviewPane);
 registerTab('health-log', renderLogPane);
@@ -401,8 +406,8 @@ function importSkeleton() {
 function renderImportPane(pane) {
   pane.innerHTML = importSkeleton();
   pane.querySelector('#hl-ingest-form').addEventListener('submit', submitIngest);
-  loadIngestTypes();
-  loadIngestList();
+  background(loadIngestTypes());
+  background(loadIngestList());
 }
 async function loadIngestTypes() {
   try {
@@ -423,7 +428,7 @@ async function submitIngest(e) {
   else { toast('paste text or choose an image', 'err'); return; }
   const review = document.getElementById('hl-ingest-review');
   review.innerHTML = '<p class="muted">extracting… (a vision read can take a few seconds)</p>';
-  try { renderReview(await api('POST', `${H}/ingest`, body)); loadIngestList(); }
+  try { renderReview(await api('POST', `${H}/ingest`, body)); background(loadIngestList()); }
   catch (err) { review.innerHTML = ''; toast(err.message, 'err'); }
 }
 function renderReview(rec) {
@@ -442,15 +447,15 @@ async function confirmIngest(id) {
   const ta = document.getElementById('hl-i-extracted');
   let data;
   try { data = ta ? JSON.parse(ta.value) : undefined; } catch { toast('the extracted JSON is invalid — fix it first', 'err'); return; }
-  try { await api('POST', `${H}/ingest/${id}/confirm`, { data }); toast('committed', 'ok'); document.getElementById('hl-ingest-review').innerHTML = ''; loadIngestList(); }
+  try { await api('POST', `${H}/ingest/${id}/confirm`, { data }); toast('committed', 'ok'); document.getElementById('hl-ingest-review').innerHTML = ''; background(loadIngestList()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function rejectIngest(id) {
-  try { await api('POST', `${H}/ingest/${id}/reject`, {}); document.getElementById('hl-ingest-review').innerHTML = ''; loadIngestList(); }
+  try { await api('POST', `${H}/ingest/${id}/reject`, {}); document.getElementById('hl-ingest-review').innerHTML = ''; background(loadIngestList()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function openIngest(id) { try { renderReview(await api('GET', `${H}/ingest/${id}`)); } catch (e) { toast(e.message, 'err'); } }
-async function delIngest(id) { try { await api('DELETE', `${H}/ingest/${id}`); loadIngestList(); } catch (e) { toast(e.message, 'err'); } }
+async function delIngest(id) { try { await api('DELETE', `${H}/ingest/${id}`); background(loadIngestList()); } catch (e) { toast(e.message, 'err'); } }
 async function loadIngestList() {
   const el = document.getElementById('hl-ingest-list'); if (!el) return;
   try {
