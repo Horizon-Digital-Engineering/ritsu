@@ -438,6 +438,7 @@ export const healthPlugin: Plugin = {
     id: 'health',
     name: 'Health',
     version: '0.1.0',
+    icon: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z',
     description: 'Personal health hub: labs, meds, weight, vitals, and insurance coverage on one timeline — trends, correlations, and an evidence-backed advisor.',
     nav: [
       { id: 'health', label: 'Health', tabs: [

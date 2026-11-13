@@ -1,155 +1,258 @@
 /**
- * Reporting over the synced finance cache. Pure functions on plain arrays so
- * they're deterministic + unit-testable — the date-dependent windowing ("this
- * month", "last 90 days") is the caller's job (it passes filtered rows / month
- * keys). Spend = positive amount (Plaid convention); income = negative.
+ * Reporting over the ledger. Pure functions on plain arrays so they're
+ * deterministic and unit-testable; the store does the windowing. Sign
+ * convention: inflow positive, outflow negative, liability balances negative.
  */
-import type { Account, Transaction, CategoryTarget } from './store.js';
-
-// Plaid account types: depository (checking/savings), investment/brokerage,
-// credit (card), loan. Credit + loan balances are amounts OWED → liabilities.
-const LIABILITY_TYPES = new Set(['credit', 'loan']);
+import type { Account, Transaction, Split, Category, Budget, Recurring, Goal } from './store.js';
+import { LIABILITY_TYPES } from './store.js';
+import { UNCATEGORIZED } from './categories.js';
 
 export interface NetWorth {
-  assets: number;
-  liabilities: number;
-  net: number;
+  net: number; assets: number; liabilities: number; currency: string;
   byType: Array<{ type: string; total: number; accounts: number }>;
-  currency: string;
 }
 
 export function netWorth(accounts: Account[]): NetWorth {
-  let assets = 0;
-  let liabilities = 0;
-  let currency = 'USD';
+  let assets = 0, liabilities = 0, currency = 'USD';
   const byType = new Map<string, { total: number; accounts: number }>();
   for (const a of accounts) {
-    const bal = a.current_balance ?? 0;
-    if (a.iso_currency) currency = a.iso_currency;
+    if (a.hidden || a.closed) continue;
+    if (a.currency) currency = a.currency;
     const g = byType.get(a.type) ?? { total: 0, accounts: 0 };
-    g.total += bal;
-    g.accounts += 1;
+    g.total += a.balance; g.accounts += 1;
     byType.set(a.type, g);
-    if (LIABILITY_TYPES.has(a.type)) liabilities += bal;
-    else assets += bal;
+    if (LIABILITY_TYPES.has(a.type)) liabilities += -a.balance; else assets += a.balance;
   }
   return {
-    assets, liabilities, net: assets - liabilities, currency,
-    byType: [...byType.entries()].map(([type, v]) => ({ type, ...v })).sort((a, b) => b.total - a.total),
+    net: assets - liabilities, assets, liabilities, currency,
+    byType: [...byType.entries()].map(([type, v]) => ({ type, ...v })).sort((a, b) => Math.abs(b.total) - Math.abs(a.total)),
   };
 }
 
-export interface CategorySpend { category: string; total: number; count: number }
-
-export function spendByCategory(txns: Transaction[]): CategorySpend[] {
-  const m = new Map<string, { total: number; count: number }>();
-  for (const t of txns) {
-    if (t.amount <= 0) continue;
-    const cat = t.category || 'Uncategorized';
-    const g = m.get(cat) ?? { total: 0, count: 0 };
-    g.total += t.amount; g.count += 1;
-    m.set(cat, g);
-  }
-  return [...m.entries()].map(([category, v]) => ({ category, ...v })).sort((a, b) => b.total - a.total);
-}
-
-export function spendByMonth(txns: Transaction[]): Array<{ month: string; total: number }> {
-  const m = new Map<string, number>();
-  for (const t of txns) {
-    if (t.amount <= 0) continue;
-    const mo = t.date.slice(0, 7);
-    m.set(mo, (m.get(mo) ?? 0) + t.amount);
-  }
-  return [...m.entries()].map(([month, total]) => ({ month, total })).sort((a, b) => (a.month < b.month ? 1 : -1));
-}
-
-export function topMerchants(txns: Transaction[], n = 10): Array<{ merchant: string; total: number; count: number }> {
-  const m = new Map<string, { total: number; count: number }>();
-  for (const t of txns) {
-    if (t.amount <= 0) continue;
-    const name = t.merchant_name || t.name || 'Unknown';
-    const g = m.get(name) ?? { total: 0, count: 0 };
-    g.total += t.amount; g.count += 1;
-    m.set(name, g);
-  }
-  return [...m.entries()].map(([merchant, v]) => ({ merchant, ...v })).sort((a, b) => b.total - a.total).slice(0, n);
-}
-
-/** Keep only transactions in the given YYYY-MM month. */
-export function inMonth(txns: Transaction[], month: string): Transaction[] {
-  return txns.filter(t => t.date.slice(0, 7) === month);
-}
-
-export interface Subscription { merchant: string; avgAmount: number; occurrences: number; lastDate: string; cadence: string }
+export interface NetWorthPoint { date: string; net: number; assets: number; liabilities: number }
 
 /**
- * Heuristic recurring-charge detection over the passed window: a merchant that
- * charges ≥2 times with roughly-consistent amounts and a regular cadence
- * (weekly / biweekly / monthly / yearly). A stand-in until Plaid's recurring
- * endpoint is wired — deliberately conservative to avoid false "subscriptions".
+ * Daily net worth from balance snapshots, carrying each account's last known
+ * balance forward. `seed` is each account's last balance before `from`, so a
+ * window that starts after an account was created still counts it.
  */
-export function detectSubscriptions(txns: Transaction[]): Subscription[] {
-  const byMerchant = groupSpendByMerchant(txns);
-  const subs: Subscription[] = [];
-  for (const list of byMerchant.values()) {
-    const sub = subscriptionFrom(list);
-    if (sub) subs.push(sub);
+export function netWorthSeries(
+  history: Array<{ account_id: string; date: string; balance: number }>,
+  seed: Array<{ account_id: string; date: string; balance: number }>,
+  accounts: Account[],
+  from: string,
+  to: string,
+): NetWorthPoint[] {
+  const types = new Map(accounts.filter(a => !a.hidden).map(a => [a.id, a.type]));
+  const current = new Map<string, number>();
+  for (const s of seed) if (types.has(s.account_id)) current.set(s.account_id, s.balance);
+  const byDate = new Map<string, Array<{ account_id: string; balance: number }>>();
+  for (const h of history) {
+    if (!types.has(h.account_id)) continue;
+    const arr = byDate.get(h.date); if (arr) arr.push(h); else byDate.set(h.date, [h]);
   }
-  return subs.sort((a, b) => b.avgAmount - a.avgAmount);
+  const out: NetWorthPoint[] = [];
+  const dates = [...new Set([from, ...byDate.keys(), to])].filter(d => d >= from && d <= to).sort((a, b) => a.localeCompare(b));
+  for (const d of dates) {
+    for (const h of byDate.get(d) ?? []) current.set(h.account_id, h.balance);
+    // Before the first snapshot there is nothing to plot; a zero there would read as a crash.
+    if (current.size === 0) continue;
+    let assets = 0, liabilities = 0;
+    for (const [id, bal] of current) {
+      if (LIABILITY_TYPES.has(types.get(id) ?? '')) liabilities += -bal; else assets += bal;
+    }
+    out.push({ date: d, net: assets - liabilities, assets, liabilities });
+  }
+  return out;
 }
 
-function groupSpendByMerchant(txns: Transaction[]): Map<string, Transaction[]> {
-  const byMerchant = new Map<string, Transaction[]>();
+/** One categorized amount. A split transaction contributes its splits, not its own category. */
+export interface Line { date: string; category_id: string; amount: number; payee: string; account_id: string; transaction_id: string }
+
+export function expandLines(txns: Transaction[], splits: Map<string, Split[]>): Line[] {
+  const out: Line[] = [];
   for (const t of txns) {
-    if (t.amount <= 0) continue;
-    const key = (t.merchant_name || t.name || '').trim().toLowerCase();
-    if (!key) continue;
-    const arr = byMerchant.get(key);
-    if (arr) arr.push(t); else byMerchant.set(key, [t]);
+    const s = splits.get(t.id);
+    if (s?.length) {
+      for (const x of s) out.push({ date: t.date, category_id: x.category_id ?? UNCATEGORIZED, amount: x.amount, payee: t.payee, account_id: t.account_id, transaction_id: t.id });
+    } else {
+      out.push({ date: t.date, category_id: t.category_id ?? UNCATEGORIZED, amount: t.amount, payee: t.payee, account_id: t.account_id, transaction_id: t.id });
+    }
   }
-  return byMerchant;
+  return out;
 }
 
-function subscriptionFrom(list: Transaction[]): Subscription | null {
-  if (list.length < 2) return null;
-  const amounts = list.map(t => t.amount);
-  const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
-  if (!amounts.every(a => Math.abs(a - avg) <= Math.max(1, avg * 0.25))) return null;
-  const dates = list.map(t => t.date).sort((a, b) => a.localeCompare(b));
-  const gaps: number[] = [];
-  for (let i = 1; i < dates.length; i++) gaps.push(dayGap(dates[i - 1], dates[i]));
-  const cadence = classifyCadence(gaps.reduce((a, b) => a + b, 0) / gaps.length);
-  if (cadence === 'irregular') return null;
-  return {
-    merchant: list[0].merchant_name || list[0].name,
-    avgAmount: avg, occurrences: list.length, lastDate: dates.at(-1)!, cadence,
-  };
+const kindOf = (cats: Map<string, Category>, id: string) => cats.get(id)?.kind ?? 'expense';
+
+export interface CashFlowMonth { month: string; income: number; expenses: number; net: number; savings_rate: number | null }
+
+/** Per-month income vs spend; transfers are skipped regardless of sign. */
+export function cashFlow(lines: Line[], categories: Category[], months: string[]): CashFlowMonth[] {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const m = new Map(months.map(mo => [mo, { income: 0, expenses: 0 }]));
+  for (const l of lines) {
+    const mo = l.date.slice(0, 7);
+    const g = m.get(mo); if (!g) continue;
+    if (kindOf(cats, l.category_id) === 'transfer') continue;
+    if (l.amount > 0) g.income += l.amount; else g.expenses += -l.amount;
+  }
+  return months.map(month => {
+    const g = m.get(month)!;
+    const net = g.income - g.expenses;
+    return { month, income: g.income, expenses: g.expenses, net, savings_rate: g.income > 0 ? net / g.income : null };
+  });
 }
 
-export interface BudgetLine { category: string; spent: number; limit: number; remaining: number; over: boolean }
+export interface CategorySpend { category_id: string; name: string; group: string; total: number; count: number }
 
-/** Overlay per-category monthly targets on this month's spend. `monthSpend`
- *  should already be scoped to the month being judged. */
-export function budgetStatus(monthSpend: CategorySpend[], targets: CategoryTarget[]): BudgetLine[] {
-  const spent = new Map(monthSpend.map(s => [s.category, s.total]));
-  return targets
-    .map(t => {
-      const s = spent.get(t.category) ?? 0;
-      return { category: t.category, spent: s, limit: t.monthly_limit, remaining: t.monthly_limit - s, over: s > t.monthly_limit };
-    })
-    .sort((a, b) => (b.spent - b.limit) - (a.spent - a.limit));
+/** Outflows by category (or by group with `byGroup`), largest first. */
+export function spendByCategory(lines: Line[], categories: Category[], byGroup = false): CategorySpend[] {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const m = new Map<string, CategorySpend>();
+  for (const l of lines) {
+    if (l.amount >= 0) continue;
+    const c = cats.get(l.category_id);
+    if (c?.kind === 'transfer') continue;
+    const key = byGroup ? (c?.group_name || 'Other') : l.category_id;
+    const g = m.get(key) ?? { category_id: byGroup ? '' : l.category_id, name: byGroup ? key : (c?.name ?? l.category_id), group: c?.group_name ?? '', total: 0, count: 0 };
+    g.total += -l.amount; g.count += 1;
+    m.set(key, g);
+  }
+  return [...m.values()].sort((a, b) => b.total - a.total);
 }
 
-// ---- date helpers (YYYY-MM-DD strings) ------------------------------------
-function dayGap(a: string, b: string): number {
-  return Math.abs(Date.parse(b) - Date.parse(a)) / 86_400_000;
+export function spendByPayee(lines: Line[], categories: Category[], n = 15): Array<{ payee: string; total: number; count: number }> {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const m = new Map<string, { total: number; count: number }>();
+  for (const l of lines) {
+    if (l.amount >= 0 || kindOf(cats, l.category_id) === 'transfer') continue;
+    const key = l.payee || 'Unknown';
+    const g = m.get(key) ?? { total: 0, count: 0 };
+    g.total += -l.amount; g.count += 1;
+    m.set(key, g);
+  }
+  return [...m.entries()].map(([payee, v]) => ({ payee, ...v })).sort((a, b) => b.total - a.total).slice(0, n);
 }
 
-function classifyCadence(avgDays: number): 'weekly' | 'biweekly' | 'monthly' | 'yearly' | 'irregular' {
-  const near = (target: number, tol: number) => Math.abs(avgDays - target) <= tol;
-  if (near(7, 2)) return 'weekly';
-  if (near(14, 3)) return 'biweekly';
-  if (near(30, 6)) return 'monthly';
-  if (near(365, 30)) return 'yearly';
-  return 'irregular';
+export function incomeBySource(lines: Line[], categories: Category[]): Array<{ payee: string; total: number; count: number }> {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const m = new Map<string, { total: number; count: number }>();
+  for (const l of lines) {
+    if (l.amount <= 0 || kindOf(cats, l.category_id) === 'transfer') continue;
+    const key = l.payee || 'Unknown';
+    const g = m.get(key) ?? { total: 0, count: 0 };
+    g.total += l.amount; g.count += 1;
+    m.set(key, g);
+  }
+  return [...m.entries()].map(([payee, v]) => ({ payee, ...v })).sort((a, b) => b.total - a.total);
+}
+
+/** Monthly totals for one category (or group) across `months`. */
+export function categoryTrend(lines: Line[], categories: Category[], months: string[], categoryId?: string, group?: string): Array<{ month: string; total: number }> {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const m = new Map(months.map(mo => [mo, 0]));
+  for (const l of lines) {
+    const mo = l.date.slice(0, 7);
+    if (!m.has(mo)) continue;
+    const c = cats.get(l.category_id);
+    if (categoryId && l.category_id !== categoryId) continue;
+    if (group && (c?.group_name ?? '') !== group) continue;
+    if (c?.kind === 'income') m.set(mo, m.get(mo)! + l.amount);
+    else if (l.amount < 0) m.set(mo, m.get(mo)! + -l.amount);
+  }
+  return months.map(month => ({ month, total: m.get(month)! }));
+}
+
+export interface BudgetLine { category_id: string; name: string; group: string; kind: string; budget: number; actual: number; remaining: number; over: boolean; source: 'month' | 'default' }
+export interface BudgetReport {
+  month: string; lines: BudgetLine[];
+  totals: { budgeted_expenses: number; actual_expenses: number; budgeted_income: number; actual_income: number; unbudgeted_expenses: number };
+}
+
+/** The month's actuals against its budget: a per-month amount wins over the default ('*'). */
+export function budgetReport(monthLines: Line[], categories: Category[], budgets: Budget[], month: string): BudgetReport {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const actual = new Map<string, number>();
+  for (const l of monthLines) {
+    const c = cats.get(l.category_id);
+    if (c?.kind === 'transfer') continue;
+    const v = c?.kind === 'income' ? l.amount : -l.amount;
+    actual.set(l.category_id, (actual.get(l.category_id) ?? 0) + v);
+  }
+  const chosen = new Map<string, { amount: number; source: 'month' | 'default' }>();
+  for (const b of budgets) {
+    if (b.month === month) chosen.set(b.category_id, { amount: b.amount, source: 'month' });
+    else if (b.month === '*' && !chosen.has(b.category_id)) chosen.set(b.category_id, { amount: b.amount, source: 'default' });
+  }
+  const lines: BudgetLine[] = [];
+  const totals = { budgeted_expenses: 0, actual_expenses: 0, budgeted_income: 0, actual_income: 0, unbudgeted_expenses: 0 };
+  for (const [id, b] of chosen) {
+    const c = cats.get(id);
+    const kind = c?.kind ?? 'expense';
+    const a = actual.get(id) ?? 0;
+    lines.push({ category_id: id, name: c?.name ?? id, group: c?.group_name ?? '', kind, budget: b.amount, actual: a, remaining: b.amount - a, over: kind === 'expense' && a > b.amount, source: b.source });
+    if (kind === 'income') { totals.budgeted_income += b.amount; totals.actual_income += a; }
+    else { totals.budgeted_expenses += b.amount; totals.actual_expenses += a; }
+  }
+  for (const [id, a] of actual) {
+    if (chosen.has(id)) continue;
+    const kind = cats.get(id)?.kind ?? 'expense';
+    if (kind === 'income') totals.actual_income += a;
+    else { totals.actual_expenses += a; totals.unbudgeted_expenses += a; }
+  }
+  lines.sort((a, b) => (a.kind === b.kind ? (b.actual - b.budget) - (a.actual - a.budget) : a.kind === 'income' ? -1 : 1));
+  return { month, lines, totals };
+}
+
+/** Confirmed and detected recurring items due within the horizon, soonest first. */
+export function upcomingRecurring(items: Recurring[], today: string, horizonDays = 30): Array<Recurring & { days_until: number }> {
+  const end = addDays(today, horizonDays);
+  return items
+    .filter(r => r.status !== 'dismissed' && r.next_date && r.next_date <= end)
+    .map(r => ({ ...r, days_until: Math.round((Date.parse(r.next_date) - Date.parse(today)) / 86_400_000) }))
+    .sort((a, b) => a.next_date.localeCompare(b.next_date));
+}
+
+export interface GoalProgress { goal: Goal; current: number; progress: number; remaining: number; on_track: boolean | null; monthly_needed: number | null }
+
+export function goalProgress(goal: Goal, accounts: Account[], today: string): GoalProgress {
+  const linked = accounts.filter(a => goal.account_ids.includes(a.id));
+  const sum = linked.reduce((s, a) => s + a.balance, 0);
+  // A payoff goal measures debt retired since it was set; a savings goal measures the balance itself.
+  const current = goal.kind === 'payoff' ? Math.max(0, (goal.start_balance ?? sum) - sum) * -1 + 0 : sum;
+  const cur = goal.kind === 'payoff' ? Math.abs((goal.start_balance ?? sum) - sum) : current;
+  const progress = goal.target_amount > 0 ? Math.min(1, Math.max(0, cur / goal.target_amount)) : 0;
+  const remaining = Math.max(0, goal.target_amount - cur);
+  let monthly_needed: number | null = null, on_track: boolean | null = null;
+  if (goal.target_date) {
+    const months = Math.max(0.5, (Date.parse(goal.target_date) - Date.parse(today)) / (30.44 * 86_400_000));
+    monthly_needed = remaining / months;
+    const elapsed = (Date.parse(today) - goal.created_at * 1000) / (30.44 * 86_400_000);
+    const totalMonths = (Date.parse(goal.target_date) - goal.created_at * 1000) / (30.44 * 86_400_000);
+    on_track = totalMonths <= 0 ? remaining === 0 : progress >= Math.min(1, elapsed / totalMonths) - 0.02;
+  }
+  return { goal, current: cur, progress, remaining, on_track, monthly_needed };
+}
+
+// ---- date helpers (YYYY-MM-DD) ----------------------------------------------
+export function addDays(date: string, n: number): string {
+  return new Date(Date.parse(date) + n * 86_400_000).toISOString().slice(0, 10);
+}
+export function monthKey(date: string | Date): string {
+  return (typeof date === 'string' ? date : date.toISOString()).slice(0, 7);
+}
+export function monthRange(month: string): { from: string; to: string } {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
+}
+/** The last `n` months ending at `month`, oldest first. */
+export function lastMonths(month: string, n: number): string[] {
+  const [y, m] = month.split('-').map(Number);
+  const out: string[] = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(y, m - 1 - i, 1));
+    out.push(d.toISOString().slice(0, 7));
+  }
+  return out;
 }

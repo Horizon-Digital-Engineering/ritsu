@@ -1,0 +1,53 @@
+/* Plugin app page layout. app.css (loaded first) supplies the tokens, the
+ * rail, header, tabs, panes and every component class plugin UIs use; this
+ * file only adds what the app shell itself needs. */
+
+.rail-sep { width: 28px; height: 1px; background: #1c212b; margin: 6px 0; }
+
+header h1 { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+header h1 small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+header .info { display: flex; align-items: center; gap: 8px; }
+header .info a.chip { text-decoration: none; }
+
+/* The app's home link doubles for the hidden rail on phones. */
+.only-mobile { display: none; }
+.app-home { width: 28px; height: 28px; margin: 0; font-size: 13px; border-radius: 8px; }
+
+/* One row of tabs; scrolls sideways instead of wrapping so a wide app stays
+   one line tall on a phone. */
+nav.app-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+nav.app-tabs::-webkit-scrollbar { display: none; }
+nav.app-tabs button { flex: 0 0 auto; white-space: nowrap; }
+nav.app-tabs:empty { display: none; }
+
+.app-missing { max-width: 520px; margin: 3rem auto; }
+
+/* Toast + login modal: same shapes as the other pages. */
+.toast {
+  position: fixed; top: 1rem; right: 1rem; z-index: 1100;
+  padding: 9px 13px; border-radius: 6px; font-size: 0.85rem; max-width: 70vw;
+}
+.toast.ok { background: #1a2e1f; color: var(--ok); border: 1px solid #2d4a33; }
+.toast.err { background: #2e1a1a; color: var(--err); border: 1px solid #4a2d2d; }
+.modal-fullpage {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.88);
+  display: none; align-items: center; justify-content: center; padding: 20px;
+}
+.modal-fullpage.open { display: flex; }
+.admin-login-card {
+  background: var(--panel); padding: 1.5rem 1.75rem; border-radius: 10px;
+  min-width: 340px; max-width: 92vw; border: 1px solid var(--line);
+}
+.admin-login-title { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 600; }
+.admin-login-msg { color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem; }
+.admin-login-label { display: block; color: var(--muted); font-size: 0.75rem; margin-bottom: 4px; }
+.admin-login-input { width: 100%; margin-bottom: 1rem; }
+.admin-login-card button { width: 100%; padding: 9px; }
+
+@media (max-width: 900px) {
+  .only-mobile { display: flex; }
+  header { flex-wrap: nowrap; }
+  header .info { width: auto; margin-left: auto; }
+  nav.app-tabs { flex-wrap: nowrap; }
+}

@@ -4,7 +4,7 @@
 # Idempotent + safe: aborts on uncommitted changes, only restarts if
 # the build succeeded, prints status at the end.
 #
-# Usage:
+# Usage (update-ritsu is the installed shim for this script):
 #   update-ritsu                       # deploy origin/main (default)
 #   update-ritsu --branch feat/x       # deploy origin/feat/x (test a PR branch)
 #   update-ritsu -b feat/x             # short form
@@ -88,6 +88,10 @@ SHIM
 else
   note "dist/cli.js missing — skipping (build failed?)"
 fi
+
+bold "==> Refresh /usr/local/bin/update-ritsu"
+sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/update-ritsu" /usr/local/bin/update-ritsu
+note "refreshed /usr/local/bin/update-ritsu"
 
 bold "==> Restart"
 sudo systemctl restart "${SERVICE_NAME}"

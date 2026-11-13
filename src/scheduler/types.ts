@@ -52,6 +52,12 @@ export const PayloadSchema = z.discriminatedUnion('kind', [
     max_output_bytes: z.number().int().positive().max(1_048_576).default(65536),
   }),
   z.object({
+    kind: z.literal('plugin_task'),
+    /** In-process work the named plugin registered when it declared the job. No shell, no model. */
+    plugin_id: z.string().min(1),
+    task: z.string().min(1),
+  }),
+  z.object({
     kind: z.literal('agent_turn'),
     agent_id: z.string().min(1),
     message: z.string().min(1),

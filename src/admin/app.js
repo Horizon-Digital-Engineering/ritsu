@@ -308,7 +308,6 @@ function switchTab(name) {
   renderNav();
   if (name === 'tiles') startTilesPolling();
   else stopTilesPolling();
-  if (pluginTabs[name]) pluginTabs[name](document.getElementById(`pane-${name}`));
   if (Object.hasOwn(TAB_LOADERS, name)) TAB_LOADERS[name]();
   if (name !== 'logs') closeLogStream();
 }
@@ -3061,67 +3060,17 @@ const ACTIONS = {
   'revoke-oauth-client':    (el) => revokeOAuthClient(el.dataset.client, el.dataset.name),
 };
 
-// ---- plugin bridge ----------------------------------------------------
-// Plugins ship their own UI (served from /admin/plugins/<id>/) and register
-// tab renderers + action handlers through window.ritsu. Core stays generic:
-// it knows how to mount a plugin, not what any plugin does.
-const pluginTabs = {};
-const pluginActions = {};
-const pluginChanges = {};
+// ---- plugins ----------------------------------------------------------
+// A plugin's UI is its own app at /admin/apps/<id> (the rail is the launcher);
+// Studio only needs the list, for the per-agent plugin allowlist checkboxes
+// and the Server › Plugins manager.
 let installedPlugins = [];
-window.ritsu = {
-  api, esc, toast,
-  registerTab(tabId, fn) { pluginTabs[tabId] = fn; if (activeTab === tabId) fn(document.getElementById(`pane-${tabId}`)); },
-  registerAction(name, fn) { pluginActions[name] = fn; },
-  registerChange(name, fn) { pluginChanges[name] = fn; },
-};
-
-/** Mount one plugin nav group: row-1 button, tab→group entries, pane sections. */
-function mountPluginNavGroup(g, primary, main) {
-  if (!NAV_GROUPS.some(x => x.id === g.id)) NAV_GROUPS.push(g);
-  if (!primary.querySelector(`[data-group="${g.id}"]`)) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.dataset.action = 'switch-group';
-    btn.dataset.group = g.id;
-    btn.textContent = g.label;
-    primary.appendChild(btn);
-  }
-  for (const t of (g.tabs || [])) {
-    TAB_TO_GROUP.set(t.id, g.id);
-    if (!document.getElementById(`pane-${t.id}`)) {
-      const sec = document.createElement('section');
-      sec.id = `pane-${t.id}`;
-      sec.className = 'pane';
-      main.appendChild(sec);
-    }
-  }
-}
 
 async function loadPlugins() {
   let plugins = [];
   try { ({ plugins } = await api('GET', '/admin/api/plugins')); }
   catch { return; }
   installedPlugins = plugins;
-  const primary = $('nav-primary');
-  const main = document.querySelector('main');
-  for (const p of plugins) {
-    if (p.enabled === false) continue;
-    for (const g of (p.nav || [])) mountPluginNavGroup(g, primary, main);
-    if (p.assets?.css) {
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = p.assets.css;
-      document.head.appendChild(link);
-    }
-    if (p.assets?.js) {
-      const s = document.createElement('script');
-      s.type = 'module';
-      s.src = p.assets.js;
-      document.head.appendChild(s);
-    }
-  }
-  renderNav();
   renderPluginCheckboxes(readPlugins());
 }
 
@@ -3156,6 +3105,7 @@ function renderPluginsManager(plugins) {
       <td>${p.installed_at ? new Date(p.installed_at * 1000).toISOString().slice(0, 10) : '—'}</td>
       <td>${p.enabled ? '<span class="badge ok-tint">enabled</span>' : '<span class="badge">disabled</span>'}</td>
       <td class="row-actions">
+        ${p.nav?.length && p.enabled ? `<a href="/admin/apps/${encodeURIComponent(p.id)}" title="open the ${esc(p.name)} app">open</a>` : ''}
         ${p.agent ? `<button data-action="load-plugin-agent" data-id="${esc(p.id)}" title="create the ${esc(p.agent.name)} agent from this plugin's preset">load agent</button>` : ''}
         <button data-action="toggle-plugin" data-id="${esc(p.id)}" data-enabled="${p.enabled ? 1 : 0}">${p.enabled ? 'disable' : 'enable'}</button>
         <button class="danger" data-action="uninstall-plugin" data-id="${esc(p.id)}" data-name="${esc(p.name)}" data-tables="${(p.tables || []).length}">uninstall</button>
@@ -3408,16 +3358,12 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;
-  const handler = ACTIONS[action] || pluginActions[action];
+  const handler = ACTIONS[action];
   if (handler) handler(el, e);
 });
 
 document.addEventListener('change', (e) => {
-  if (e.target.id === 'merge-file') { mergeFilePicked(e.target); return; }
-  const el = e.target.closest('[data-change]');
-  if (!el) return;
-  const handler = pluginChanges[el.dataset.change];
-  if (handler) handler(el, e);
+  if (e.target.id === 'merge-file') void mergeFilePicked(e.target);
 });
 
 // ---- bootstrap --------------------------------------------------------

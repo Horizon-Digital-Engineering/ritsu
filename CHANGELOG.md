@@ -6,6 +6,38 @@ versioning per [semver](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Finance is a full personal-finance ledger.** Accounts from a bank feed or
+  entered by hand (house, car, cash), net worth with daily history, every
+  transaction with categories, splits, tags, notes and review state, operator
+  rules that categorize new rows, monthly budgets with per-month overrides,
+  recurring-charge detection with confirm/dismiss, cash flow, spending and
+  trend reports, savings and payoff goals, and investment holdings where the
+  provider supplies them. Data comes in through SimpleFIN or Plaid, or by
+  importing any bank's CSV or OFX/QFX file with preview and de-duplication;
+  a daily job keeps connections synced. Ten read-only agent tools answer over
+  the ledger and report how fresh the data is. Everything stays in the local
+  database.
+- **Apps on the rail.** A plugin that ships a UI and an icon is an app: it gets
+  its own page at `/admin/apps/<id>` and an icon on the rail next to Workspace.
+  Studio no longer hosts plugin tabs; its Extensions and Plugins pages keep the
+  enable / disable / uninstall / load-agent controls and link to each app.
+- Plugins can declare scheduled work that runs in-process (`run`) as well as
+  shell commands, so a sync can use the plugin's own tables and credentials
+  without shelling out with a token.
+- The installer puts an `update-ritsu` command on the box; it pulls, rebuilds
+  and restarts, and `--branch` deploys a branch for testing.
+
+### Changed
+
+- The Finance plugin's storage was rebuilt for the ledger (plugin version
+  0.2.0). The earlier aggregation-cache tables are replaced on first boot.
+
+### Fixed
+
+- The Operations board showed a job's next run in the wrong units.
+
 ## [0.13.1] — 2026-09-06
 
 ### Fixed

@@ -22,8 +22,8 @@ function fmtRelativeSeconds(deltaSec) {
   return `${Math.floor(deltaSec / 86400)}d ago`;
 }
 /** "in 4m" / "in 2h" for a future unix timestamp; past reads as "now". */
-function fmtUntil(epoch) {
-  const d = Math.floor(epoch - Date.now() / 1000);
+function fmtUntil(epochMs) {
+  const d = Math.floor((epochMs - Date.now()) / 1000);
   if (d <= 0) return 'now';
   if (d < 60) return `in ${d}s`;
   if (d < 3600) return `in ${Math.floor(d / 60)}m`;

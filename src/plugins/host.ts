@@ -126,6 +126,8 @@ export class PluginHost {
   private readonly pluginTools = new Map<string, PluginToolDef[]>();
   /** Set once the scheduler exists; plugin job declarations are no-ops without it. */
   private jobs?: JobStore;
+  /** In-process job bodies keyed `<plugin>/<task>`, rebuilt from declarations on every boot. */
+  private readonly tasks = new Map<string, () => Promise<string | void> | string | void>();
 
   constructor(private readonly db: Db, private readonly secrets: SecretStore) {}
 
@@ -263,13 +265,19 @@ export class PluginHost {
    */
   private declareJob(pluginId: string, spec: PluginJobSpec): string {
     const id = `plugin-${pluginId}-${spec.name}`;
+    if ((spec.command == null) === (spec.run == null)) {
+      throw new Error(`plugin '${pluginId}' job '${spec.name}': set exactly one of command / run`);
+    }
+    if (spec.run) this.tasks.set(`${pluginId}/${spec.name}`, spec.run);
     if (!this.jobs) return id;
     try {
       this.jobs.upsert({
         id,
         name: spec.title,
         schedule: { kind: spec.kind, spec: spec.spec, tz: spec.tz ?? null },
-        payload: { kind: 'script', command: spec.command },
+        payload: spec.command != null
+          ? { kind: 'script', command: spec.command }
+          : { kind: 'plugin_task', plugin_id: pluginId, task: spec.name },
         delivery: { channel_ids: spec.channel_ids ?? [] },
         owner: PluginHost.jobOwner(pluginId),
       });
@@ -286,6 +294,16 @@ export class PluginHost {
       logger.error('plugin.job-declare-failed', { plugin: pluginId, job: id, err: (err as Error).message });
     }
     return id;
+  }
+
+  /** Run a declared in-process job body. Refuses for a disabled plugin so a
+   *  paused plugin's sync cannot keep writing. */
+  async runTask(pluginId: string, task: string): Promise<string> {
+    if (!this.isEnabled(pluginId)) throw new Error(`plugin '${pluginId}' is disabled`);
+    const fn = this.tasks.get(`${pluginId}/${task}`);
+    if (!fn) throw new Error(`plugin '${pluginId}' declares no task '${task}'`);
+    const out = await fn();
+    return typeof out === 'string' ? out : '';
   }
 
   /**

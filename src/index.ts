@@ -176,6 +176,7 @@ async function main(): Promise<void> {
     store: jobStore,
     delivery: channels,
     agents: { get: (id: string) => host.get(id) },
+    plugins: pluginHost,
   });
   scheduler.start();
   pruneRuns = () => scheduler.prune();
