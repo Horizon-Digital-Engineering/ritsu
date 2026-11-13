@@ -632,7 +632,7 @@ export const financePlugin: Plugin = {
     name: 'Finance',
     version: '0.2.0',
     description: 'Your money in one place: accounts and net worth, a full transaction ledger with categories, rules and splits, budgets, recurring bills, cash flow and reports. Read-only bank aggregation plus file import; the data stays in your database.',
-    icon: 'M12 2v20M17 6.5c0-1.9-2.2-3.5-5-3.5S7 4.6 7 6.5 9.2 10 12 10s5 1.6 5 3.5-2.2 3.5-5 3.5-5-1.6-5-3.5',
+    icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
     nav: [
       { id: 'finance', label: 'Finance', tabs: [
         { id: 'finance-dashboard', label: 'Dashboard' },
