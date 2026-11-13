@@ -11,6 +11,11 @@
 // bottom (data-action clicks, data-change inputs) — no inline handlers, no
 // style="…" attributes, same contract as workspace.js.
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 // ---- helpers ---------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -333,7 +338,7 @@ async function loadDecidedApprovals() {
 /** Approve is one click; reject is two-step (first reveals the reason box). */
 function approveApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
-  if (id) decideApproval(id, 'approved', '', cardEl);
+  if (id) background(decideApproval(id, 'approved', '', cardEl));
 }
 function rejectApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
@@ -346,7 +351,7 @@ function rejectApprovalClick(cardEl) {
     if (btn) btn.textContent = 'Confirm reject';
     return;
   }
-  decideApproval(id, 'rejected', cardEl.querySelector('.approval-reason')?.value.trim() || '', cardEl);
+  background(decideApproval(id, 'rejected', cardEl.querySelector('.approval-reason')?.value.trim() || '', cardEl));
 }
 
 async function decideApproval(id, decision, reason, cardEl) {
@@ -360,7 +365,7 @@ async function decideApproval(id, decision, reason, cardEl) {
   } catch (e) {
     toast(e.message, 'err');   // 409 = already decided (race)
     cardEl?.querySelectorAll('button').forEach(b => { b.disabled = false; });
-    loadPendingApprovals();
+    background(loadPendingApprovals());
   }
 }
 
@@ -538,7 +543,7 @@ document.addEventListener('change', (e) => {
   if (!el) return;
   if (el.dataset.change === 'tail-filter') {
     tailWarnOnly = el.checked;
-    loadRecentLogs();
+    background(loadRecentLogs());
   }
 });
 
@@ -559,15 +564,15 @@ async function boot() {
   let approvalsUp = false, eventsUp = false;
   const updateDot = () => setLive(approvalsUp || eventsUp);
   sseFetch('/admin/api/approvals/stream', () => {
-    loadPendingApprovals();
-    loadDecidedApprovals();
-    loadDenials();
+    background(loadPendingApprovals());
+    background(loadDecidedApprovals());
+    background(loadDenials());
   }, bootAbort.signal, (up) => { approvalsUp = up; updateDot(); });
-  sseFetch('/admin/api/events/stream', appendLogLine, bootAbort.signal, (up) => { eventsUp = up; updateDot(); });
+  background(sseFetch('/admin/api/events/stream', appendLogLine, bootAbort.signal, (up) => { eventsUp = up; updateDot(); }));
 
   // The slow-moving cards poll gently; ages on cards refresh with them.
-  setInterval(() => { loadJobs(); loadChannels(); loadHealth(); }, 60_000);
-  setInterval(() => { loadPendingApprovals(); loadDecidedApprovals(); }, 90_000);
+  setInterval(() => { background(loadJobs()); background(loadChannels()); background(loadHealth()); }, 60_000);
+  setInterval(() => { background(loadPendingApprovals()); background(loadDecidedApprovals()); }, 90_000);
 }
 
 await boot();

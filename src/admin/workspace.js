@@ -12,6 +12,11 @@
 //   #/a/<agentId>/p/<projId>   → a project
 //   #/a/<agentId>/files        → the workspace file browser
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 // ---- helpers ---------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -636,7 +641,7 @@ function sendLiteral(text) {
   cancelEdit();
   $('ask-input').value = text;
   autosize();
-  sendAsk();
+  background(sendAsk());
 }
 
 /** Authoritative re-render from server state — wipes optimistic bubbles and
@@ -1335,7 +1340,7 @@ function approvalStampHtml(a) {
 /** Approve is one click; reject is two-step (first reveals the reason box). */
 function approveApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
-  if (id) decideApproval(id, 'approved', '', cardEl);
+  if (id) background(decideApproval(id, 'approved', '', cardEl));
 }
 function rejectApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
@@ -1348,7 +1353,7 @@ function rejectApprovalClick(cardEl) {
     if (btn) btn.textContent = 'Confirm reject';
     return;
   }
-  decideApproval(id, 'rejected', cardEl.querySelector('.approval-reason')?.value.trim() || '', cardEl);
+  background(decideApproval(id, 'rejected', cardEl.querySelector('.approval-reason')?.value.trim() || '', cardEl));
 }
 
 async function decideApproval(id, decision, reason, cardEl) {
@@ -1442,7 +1447,7 @@ function renderProjectView(pid) {
   $('proj-prompt').value = p.system_prompt || '';
 
   if (!filesLoaded && !filesLoading) {
-    loadFiles().then(() => { if (parseHash()?.pid === pid) renderProjectView(pid); });
+    background(loadFiles().then(() => { if (parseHash()?.pid === pid) renderProjectView(pid); }));
   }
 }
 
@@ -1656,11 +1661,11 @@ let approvalSseAbort = null;
 function openStreams() {
   if (!convoSseAbort) {
     convoSseAbort = new AbortController();
-    sseFetch('/admin/api/conversations/stream', onConvoEvent, convoSseAbort.signal);
+    background(sseFetch('/admin/api/conversations/stream', onConvoEvent, convoSseAbort.signal));
   }
   if (!approvalSseAbort) {
     approvalSseAbort = new AbortController();
-    sseFetch('/admin/api/approvals/stream', onApprovalEvent, approvalSseAbort.signal);
+    background(sseFetch('/admin/api/approvals/stream', onApprovalEvent, approvalSseAbort.signal));
   }
 }
 function closeStreams() {
@@ -1677,7 +1682,7 @@ function onConvoEvent(ev) {
   if (ev.kind === 'ask-start') inFlight.add(ev.conversation_id);
   if (ev.kind === 'ask-end') inFlight.delete(ev.conversation_id);
   if (ev.conversation_id !== convoId) return;
-  if (ev.kind === 'message') reloadTranscript();
+  if (ev.kind === 'message') background(reloadTranscript());
   else if (ev.kind === 'ask-start') ensurePendingBubble();
   else if (ev.kind === 'ask-end') removePendingBubble();
 }
@@ -1686,7 +1691,7 @@ function onApprovalEvent(ev) {
   const a = ev?.approval;
   if (!a || a.conversation_id !== convoId) return;
   if (ev.kind === 'requested') {
-    refreshInlineApprovals();
+    background(refreshInlineApprovals());
   } else if (ev.kind === 'decided') {
     // Flip the card to a stamp in place; the next full transcript reload
     // clears it once the agent's follow-up message lands.
@@ -1702,7 +1707,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !agentId) return;
   closeStreams();
   openStreams();
-  reloadTranscript();
+  background(reloadTranscript());
   scheduleRefresh();
 });
 
@@ -1789,7 +1794,7 @@ function renderMath(root) {
         el.textContent = src;   // put the source back if katex bailed hard
       }
     }
-  });
+  }).catch(err => console.warn('math render failed', err));
 }
 
 // Mermaid emits its theme CSS as a <style> inside the SVG, which style-src
@@ -1881,7 +1886,7 @@ function renderMermaid(root) {
         box.appendChild(err);
       }
     }
-  });
+  }).catch(err => console.warn('diagram render failed', err));
 }
 
 // ---- artifacts --------------------------------------------------------------
@@ -2677,12 +2682,12 @@ const ACTIONS = {
   'open-files': () => go(filesPath(agentId)),
   'new-project': newProject,
   'toggle-project-menu': (el) => toggleProjectMenu(el),
-  'rename-project': (el) => { closeMenus(); renameProject(Number(el.dataset.pid), el.dataset.name); },
-  'delete-project': (el) => { closeMenus(); deleteProject(Number(el.dataset.pid), el.dataset.name); },
+  'rename-project': (el) => { closeMenus(); background(renameProject(Number(el.dataset.pid), el.dataset.name)); },
+  'delete-project': (el) => { closeMenus(); background(deleteProject(Number(el.dataset.pid), el.dataset.name)); },
   'pick-attachment': () => { closeMenus(); $('ask-file').click(); },
   'remove-attachment': (el) => { attachments.splice(Number(el.dataset.idx), 1); renderAttachTray(); },
   'toggle-attach-menu': (el) => toggleProjectMenu(el),
-  'attach-webpage': () => { closeMenus(); attachWebpage(); },
+  'attach-webpage': () => { closeMenus(); background(attachWebpage()); },
   'reference-chat': () => { closeMenus(); openChatPicker(); },
   'pick-ref-chat': (el) => referenceChat(Number(el.dataset.cid)),
   'remove-chip': (el) => { contextChips.splice(Number(el.dataset.idx), 1); renderAttachTray(); },
@@ -2697,7 +2702,7 @@ const ACTIONS = {
     pathChoice[el.dataset.parent] = child;
     savePathChoice(convoId, pathChoice);
     renderPath();
-    refreshInlineApprovals();
+    background(refreshInlineApprovals());
   },
   'edit-msg': (el) => startEdit(Number(el.dataset.idx)),
   'cancel-edit': cancelEdit,
@@ -2790,7 +2795,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---- composer wiring -------------------------------------------------------
-$('ask-form').addEventListener('submit', (e) => { e.preventDefault(); sendAsk(); });
+$('ask-form').addEventListener('submit', (e) => { e.preventDefault(); background(sendAsk()); });
 $('ask-input').addEventListener('keydown', (e) => {
   // The palette owns the arrows and Enter while it is open.
   if (paletteOpen()) {
@@ -2800,7 +2805,7 @@ $('ask-input').addEventListener('keydown', (e) => {
     if (e.key === 'Tab') { e.preventDefault(); pickPalette(paletteIdx); return; }
     if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
   }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAsk(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); background(sendAsk()); }
 });
 $('ask-input').addEventListener('input', () => { autosize(); syncPalette(); });
 $('ask-input').addEventListener('blur', () => {
@@ -2812,14 +2817,14 @@ $('ask-input').addEventListener('paste', (e) => {
     .filter(it => it.kind === 'file' && it.type.startsWith('image/'))
     .map(it => it.getAsFile())
     .filter(Boolean);
-  if (files_.length) { e.preventDefault(); addAttachmentFiles(files_); }
+  if (files_.length) { e.preventDefault(); background(addAttachmentFiles(files_)); }
 });
 $('ask-file').addEventListener('change', (e) => {
-  addAttachmentFiles(e.target.files);
+  background(addAttachmentFiles(e.target.files));
   e.target.value = '';   // allow re-picking the same file
 });
 $('upload-file').addEventListener('change', (e) => {
-  uploadFiles(e.target.files);
+  background(uploadFiles(e.target.files));
   e.target.value = '';
 });
 
@@ -2833,7 +2838,7 @@ composer.addEventListener('dragleave', (e) => { if (e.target === composer) compo
 composer.addEventListener('drop', (e) => {
   composer.classList.remove('dragging');
   const dropped = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
-  if (dropped.length) { e.preventDefault(); addAttachmentFiles(dropped); }
+  if (dropped.length) { e.preventDefault(); background(addAttachmentFiles(dropped)); }
 });
 
 $('sidebar').addEventListener('mouseover', (e) => {
@@ -2848,10 +2853,10 @@ $('sidebar').addEventListener('scroll', hideHoverPreview, true);
 $('side-search').addEventListener('input', debounce((e) => {
   searchQuery = e.target.value.trim().toLowerCase();
   renderSidebar();          // instant client-side pass
-  runDeepSearch();          // then the server pass over message bodies
+  background(runDeepSearch());          // then the server pass over message bodies
 }, 120));
 
-window.addEventListener('hashchange', () => { onRoute(); });
+window.addEventListener('hashchange', () => { background(onRoute()); });
 window.visualViewport?.addEventListener('resize', syncViewport);
 window.addEventListener('resize', syncViewport);
 
@@ -2871,7 +2876,7 @@ async function refreshRailOpsBadge() {
 
 async function boot() {
   syncViewport();
-  refreshRailOpsBadge();
+  background(refreshRailOpsBadge());
   setInterval(refreshRailOpsBadge, 30_000);
   try {
     await loadAgents();

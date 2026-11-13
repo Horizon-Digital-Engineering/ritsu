@@ -3,6 +3,11 @@ const P = '/admin/api/plugins/projects';
 const TASK_STATUSES = ['backlog', 'doing', 'done', 'blocked'];
 const STATUS_VIEW_ORDER = ['doing', 'blocked', 'backlog', 'done'];
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 let projectCache = [];
 let editingProjectId = null;
 let taskCache = [];
@@ -40,8 +45,8 @@ function projectsSkeleton() {
 
 function renderProjectsPane(pane) {
   pane.innerHTML = projectsSkeleton();
-  pane.querySelector('#pj-form').addEventListener('submit', (e) => { e.preventDefault(); saveProject(); });
-  loadProjects();
+  pane.querySelector('#pj-form').addEventListener('submit', (e) => { e.preventDefault(); background(saveProject()); });
+  background(loadProjects());
 }
 
 async function loadProjects() {
@@ -105,7 +110,7 @@ async function saveProject() {
     description: document.getElementById('pj-desc').value.trim(),
     enabled: document.getElementById('pj-enabled').checked,
   };
-  try { await api('POST', `${P}/projects`, body); clearProjectForm(); loadProjects(); }
+  try { await api('POST', `${P}/projects`, body); clearProjectForm(); background(loadProjects()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
@@ -114,7 +119,7 @@ async function deleteProject(id, name) {
   try {
     await api('DELETE', `${P}/projects/${encodeURIComponent(id)}`);
     if (editingProjectId === id) clearProjectForm();
-    loadProjects();
+    background(loadProjects());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -141,8 +146,8 @@ function backlogSkeleton() {
 
 function renderBacklogPane(pane) {
   pane.innerHTML = backlogSkeleton();
-  pane.querySelector('#pj-task-form').addEventListener('submit', (e) => { e.preventDefault(); addTask(); });
-  loadBacklog();
+  pane.querySelector('#pj-task-form').addEventListener('submit', (e) => { e.preventDefault(); background(addTask()); });
+  background(loadBacklog());
 }
 
 async function loadBacklog() {
@@ -220,24 +225,24 @@ async function addTask() {
   try {
     await api('POST', `${P}/tasks`, { project_id, title, status });
     document.getElementById('pj-task-title').value = '';
-    loadBacklog();
+    background(loadBacklog());
   } catch (e) { toast(e.message, 'err'); }
 }
 
 async function setTaskStatus(id, status) {
-  try { await api('PATCH', `${P}/tasks/${id}`, { status }); loadBacklog(); }
+  try { await api('PATCH', `${P}/tasks/${id}`, { status }); background(loadBacklog()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
 async function deleteTask(id) {
-  try { await api('DELETE', `${P}/tasks/${id}`); loadBacklog(); }
+  try { await api('DELETE', `${P}/tasks/${id}`); background(loadBacklog()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
 // ---- Dashboard ------------------------------------------------------------
 function renderDashboardPane(pane) {
   pane.innerHTML = '<div class="panel"><h2>Overview</h2><div id="pj-dash">loading…</div></div>';
-  loadDashboard();
+  background(loadDashboard());
 }
 async function loadDashboard() {
   const el = document.getElementById('pj-dash');

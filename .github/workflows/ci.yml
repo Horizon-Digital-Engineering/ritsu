@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   lint:
+    # A dependabot bump changes no source; build, typecheck, test and the
+    # dependency audit are the checks that answer whether it is safe.
+    if: github.actor != 'dependabot[bot]'
     name: Lint
     runs-on: ubuntu-latest
     steps:

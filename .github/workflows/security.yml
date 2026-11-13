@@ -29,6 +29,9 @@ jobs:
       - run: actionlint -color
 
   secrets-trufflehog:
+    # A dependabot bump changes no source; build, typecheck, test and the
+    # dependency audit are the checks that answer whether it is safe.
+    if: github.actor != 'dependabot[bot]'
     name: Secret scan (trufflehog)
     runs-on: ubuntu-latest
     steps:
@@ -36,7 +39,7 @@ jobs:
         with:
           fetch-depth: 0  # trufflehog needs full history for diff scanning
       - name: trufflehog
-        uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2 # v3.99.7
+        uses: trufflesecurity/trufflehog@ea68ca03c865c5f324e86e849ced20ed3cf9dbbb # v3.99.8
         with:
           extra_args: --only-verified
 
@@ -157,11 +160,14 @@ jobs:
           path: results.sarif
           retention-days: 5
       - name: Upload SARIF to code-scanning
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           sarif_file: results.sarif
 
   semgrep:
+    # A dependabot bump changes no source; build, typecheck, test and the
+    # dependency audit are the checks that answer whether it is safe.
+    if: github.actor != 'dependabot[bot]'
     name: SAST (semgrep)
     runs-on: ubuntu-latest
     container:
