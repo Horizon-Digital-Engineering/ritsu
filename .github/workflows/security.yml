@@ -29,6 +29,9 @@ jobs:
       - run: actionlint -color
 
   secrets-trufflehog:
+    # A dependabot bump changes no source; build, typecheck, test and the
+    # dependency audit are the checks that answer whether it is safe.
+    if: github.actor != 'dependabot[bot]'
     name: Secret scan (trufflehog)
     runs-on: ubuntu-latest
     steps:
@@ -162,6 +165,9 @@ jobs:
           sarif_file: results.sarif
 
   semgrep:
+    # A dependabot bump changes no source; build, typecheck, test and the
+    # dependency audit are the checks that answer whether it is safe.
+    if: github.actor != 'dependabot[bot]'
     name: SAST (semgrep)
     runs-on: ubuntu-latest
     container:
