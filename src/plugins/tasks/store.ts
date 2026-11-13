@@ -81,7 +81,8 @@ const TAG_LIMIT = 8;
 
 /** Tags are a shared vocabulary, so they are folded to one spelling. */
 export function normalizeTag(raw: string): string {
-  return raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+  // The first replace collapses runs, so at most one dash can sit at either end.
+  return raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
 }
 
 export function normalizeTags(raw: string[] | undefined): string[] {
