@@ -6,9 +6,14 @@
 export interface OfxTransaction { fitid: string; date: string; amount: number; name: string; memo: string; type: string }
 export interface OfxStatement { account_id: string; account_type: string; currency: string; balance: number | null; balance_date: string | null; transactions: OfxTransaction[] }
 
+/** Value of the first <NAME> in a block: text up to the next tag or line end (SGML has no close tag). */
 const tag = (block: string, name: string): string => {
-  const m = new RegExp(`<${name}>([^<\\r\\n]*)`, 'i').exec(block);
-  return m ? decode(m[1].trim()) : '';
+  const i = block.toUpperCase().indexOf(`<${name.toUpperCase()}>`);
+  if (i < 0) return '';
+  const start = i + name.length + 2;
+  let end = start;
+  while (end < block.length && block[end] !== '<' && block[end] !== '\r' && block[end] !== '\n') end++;
+  return decode(block.slice(start, end).trim());
 };
 const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 
