@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   sonarqube:
+    # Dependabot-triggered runs get no repository secrets, so the scan cannot
+    # authenticate; a version bump has nothing for Sonar to say anyway.
+    if: github.actor != 'dependabot[bot]'
     name: SonarQube
     runs-on: ubuntu-latest
     steps:
