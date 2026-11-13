@@ -6,7 +6,32 @@
  * and access tokens are passed in per call from the SecretStore; this module
  * never persists or logs them. `fetchImpl` is injectable for tests.
  */
+import type { Provider, ProviderAccount, ProviderTransaction } from './types.js';
+
 export type PlaidEnv = 'sandbox' | 'production';
+
+/** Cap on sync pages so a misbehaving/never-ending has_more can't loop forever. */
+const MAX_SYNC_PAGES = 50;
+const LIABILITY = new Set(['credit', 'loan']);
+
+/** Plaid reports what is owed as positive and spend as positive; the ledger flips both. */
+function toProviderAccount(a: PlaidAccount, institution: string): ProviderAccount {
+  const cur = a.balances?.current ?? 0;
+  return {
+    provider_account_id: a.account_id, name: a.name ?? '', official_name: a.official_name ?? '', type: a.type ?? 'depository',
+    subtype: a.subtype ?? '', mask: a.mask ?? '', institution,
+    balance: LIABILITY.has(a.type) ? -cur : cur, available_balance: a.balances?.available ?? null,
+    currency: a.balances?.iso_currency_code ?? 'USD', balance_as_of: new Date().toISOString().slice(0, 10),
+  };
+}
+function toProviderTxn(t: PlaidTransaction): ProviderTransaction {
+  const cats = [t.personal_finance_category?.detailed, t.personal_finance_category?.primary, ...(t.category ?? [])].filter((x): x is string => !!x);
+  return {
+    provider_transaction_id: t.transaction_id, provider_account_id: t.account_id, date: t.date,
+    description: t.name ?? '', payee: t.merchant_name ?? '', amount: -t.amount, currency: t.iso_currency_code ?? 'USD',
+    provider_categories: cats, pending: t.pending,
+  };
+}
 
 export interface PlaidCreds { clientId: string; secret: string; env: PlaidEnv }
 
@@ -58,6 +83,27 @@ export interface ExchangeResponse { access_token: string; item_id: string }
 
 export class PlaidClient {
   constructor(private readonly opts: PlaidClientOpts) {}
+
+  /** Sync adapter over one linked Item: incremental via the stored cursor. */
+  provider(accessToken: string, institution: string): Provider {
+    return {
+      name: 'plaid',
+      fetch: async (conn) => {
+        const accounts = (await this.getBalances(accessToken)).map(a => toProviderAccount(a, institution));
+        let cursor = conn.cursor ?? undefined;
+        const added: ProviderTransaction[] = [], modified: ProviderTransaction[] = [], removed: string[] = [];
+        for (let page = 0; page < MAX_SYNC_PAGES; page++) {
+          const r = await this.syncTransactions(accessToken, cursor);
+          added.push(...r.added.map(toProviderTxn));
+          modified.push(...r.modified.map(toProviderTxn));
+          removed.push(...r.removed.map(x => x.transaction_id));
+          cursor = r.next_cursor;
+          if (!r.has_more) break;
+        }
+        return { accounts, added, modified, removed, holdings: [], cursor: cursor ?? null };
+      },
+    };
+  }
 
   private base(): string {
     return this.opts.creds.env === 'production' ? 'https://production.plaid.com' : 'https://sandbox.plaid.com';

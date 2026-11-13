@@ -275,6 +275,10 @@ describe('workspace API routes', () => {
       ['/admin/ops', 'Operations'],
       ['/admin/ops.js', 'operations board'],
       ['/admin/ops.css', '--rail-w'],
+      ['/admin/apps/finance', 'app-tabs'],
+      ['/admin/apps.js', 'Plugin app page'],
+      ['/admin/apps.css', 'rail-sep'],
+      ['/admin/rail.js', 'app launcher'],
     ] as const) {
       const res = await fetch(`${baseUrl}${path}`);
       assert.equal(res.status, 200, `${path} should be auth-exempt static chrome`);

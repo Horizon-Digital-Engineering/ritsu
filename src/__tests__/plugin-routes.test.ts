@@ -1,6 +1,9 @@
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
+
+// Plugin routes write connector credentials through the SecretStore, which needs a key.
+process.env.RITSU_MASTER_KEY = randomBytes(32).toString('base64');
 import { openDatabase } from '../db.js';
 import { ScopedDb, PluginHost } from '../plugins/host.js';
 import { SecretStore } from '../auth/secret-store.js';
@@ -19,6 +22,8 @@ function mockRes() {
   const res = {
     status(code: number) { cap.status = code; return res; },
     json(payload: unknown) { cap.body = payload; cap.ended = true; return res; },
+    send(payload: unknown) { cap.body = payload; cap.ended = true; return res; },
+    setHeader() { return res; },
     end() { cap.ended = true; return res; },
   };
   return { res: res as unknown as Parameters<RouteHandler>[1], cap };
@@ -120,52 +125,105 @@ describe('projects plugin HTTP routes', () => {
   });
 });
 
-describe('finance plugin HTTP routes (no Plaid network)', () => {
-  beforeEach(() => { process.env.RITSU_MASTER_KEY = randomBytes(32).toString('base64'); });
+describe('finance plugin HTTP routes (no network)', () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
 
-  it('status/config/accounts/report/targets/items round-trip without a bank link', async () => {
+  it('connections status, manual accounts, transactions, splits, rules, budgets, goals', async () => {
     const { db, secretStore, host } = freshHost();
     host.register(financePlugin);
     const { call } = mountRoutes(financePlugin, secretStore, db);
     const store = new FinanceStore(new ScopedDb(db, 'finance'));
 
-    // status before config → not configured
-    let r = await call('get /status');
-    assert.equal((r.body as { configured: boolean }).configured, false);
-
-    // config sets the credentials (secrets), status flips
-    r = await call('post /config', mockReq({ body: { client_id: 'c', secret: 's', env: 'sandbox' } }));
+    let r = await call('get /connections');
+    assert.equal((r.body as { plaid: { configured: boolean } }).plaid.configured, false);
+    r = await call('post /connections/plaid/config', mockReq({ body: { client_id: 'c', secret: 's', env: 'sandbox' } }));
     assert.equal((r.body as { configured: boolean }).configured, true);
-    r = await call('get /status');
-    assert.equal((r.body as { configured: boolean }).configured, true);
+    r = await call('post /connections/plaid/link/complete');
+    assert.equal(r.status, 409);  // configured, but no pending link session
 
-    // seed an account + transaction, then read accounts + report
-    store.upsertAccount({ account_id: 'a', item_id: 'i', name: 'Chk', official_name: '', type: 'depository', subtype: 'checking', mask: '1', current_balance: 100, available_balance: 100, iso_currency: 'USD' });
-    store.upsertTransaction({ transaction_id: 't', account_id: 'a', date: new Date().toISOString().slice(0, 10), name: 'Store', merchant_name: 'Store', amount: 20, iso_currency: 'USD', category: 'SHOPPING', category_detailed: '', pending: false });
-    r = await call('get /accounts');
-    assert.equal((r.body as { accounts: unknown[] }).accounts.length, 1);
-    r = await call('get /report', mockReq({ query: { days: '30' } }));
-    assert.ok((r.body as { byCategory: unknown[] }).byCategory.length >= 1);
-
-    // targets: create then delete
-    r = await call('post /targets', mockReq({ body: { category: 'SHOPPING', monthly_limit: 200 } }));
+    // manual account + balance update
+    r = await call('post /accounts', mockReq({ body: { name: 'House', type: 'property', balance: 350000 } }));
     assert.equal(r.status, 201);
-    r = await call('delete /targets/:category', mockReq({ params: { category: 'SHOPPING' } }));
-    assert.equal(r.status, 204);
-    r = await call('delete /targets/:category', mockReq({ params: { category: 'nope' } }));
+    const house = (r.body as { account: { id: string } }).account.id;
+    r = await call('put /accounts/:id/balance', mockReq({ params: { id: house }, body: { balance: 355000 } }));
+    assert.equal((r.body as { account: { balance: number } }).account.balance, 355000);
+    r = await call('post /accounts', mockReq({ body: { name: 'Chk', type: 'depository', balance: 1000 } }));
+    const chk = (r.body as { account: { id: string } }).account.id;
+    r = await call('get /accounts');
+    assert.equal((r.body as { net_worth: { net: number } }).net_worth.net, 356000);
+
+    // manual transaction → keyword category; patch; splits must balance
+    r = await call('post /transactions', mockReq({ body: { account_id: chk, date: today, payee: 'Trader Joes', amount: -80 } }));
+    assert.equal(r.status, 201);
+    const tid = (r.body as { transaction: { id: string; category_id: string } }).transaction.id;
+    assert.equal((r.body as { transaction: { category_id: string } }).transaction.category_id, 'groceries');
+    r = await call('patch /transactions/:id', mockReq({ params: { id: tid }, body: { notes: 'weekly', tags: ['Food'], reviewed: true } }));
+    assert.deepEqual((r.body as { transaction: { tags: string[] } }).transaction.tags, ['food']);
+    r = await call('put /transactions/:id/splits', mockReq({ params: { id: tid }, body: { splits: [{ category_id: 'groceries', amount: -50 }, { category_id: 'home_goods', amount: -20 }] } }));
+    assert.equal(r.status, 400);
+    r = await call('put /transactions/:id/splits', mockReq({ params: { id: tid }, body: { splits: [{ category_id: 'groceries', amount: -50 }, { category_id: 'home_goods', amount: -30 }] } }));
+    assert.equal((r.body as { splits: unknown[] }).splits.length, 2);
+    r = await call('get /transactions', mockReq({ query: { q: 'trader', limit: '10' } }));
+    assert.equal((r.body as { total: number }).total, 1);
+    r = await call('post /transactions', mockReq({ body: { account_id: 'nope', date: today, payee: 'x', amount: 1 } }));
     assert.equal(r.status, 404);
 
-    // a Plaid-requiring route 409s when Plaid is configured but we don't call out
-    // (delete item never touches the network)
-    r = await call('delete /items/:itemId', mockReq({ params: { itemId: 'i' } }));
+    // rules: create with apply_to_existing recategorizes rows not set by hand
+    store.upsertTransaction({ id: 'sync1', account_id: chk, date: today, description: 'SQ *MYSTERY SHOP', amount: -12 });
+    r = await call('post /rules', mockReq({ body: { pattern: 'mystery', set_category_id: 'coffee', apply_to_existing: true } }));
+    assert.equal(r.status, 201);
+    assert.equal((r.body as { applied: number }).applied, 1);
+    assert.equal(store.getTransaction('sync1')!.category_id, 'coffee');
+    assert.equal(store.getTransaction('sync1')!.category_source, 'rule');
+
+    // budgets
+    r = await call('put /budgets', mockReq({ body: { category_id: 'groceries', amount: 400 } }));
+    assert.equal(r.status, 200);
+    r = await call('get /budgets', mockReq({ query: { month } }));
+    const line = (r.body as { lines: Array<{ category_id: string; actual: number; budget: number }> }).lines.find(l => l.category_id === 'groceries')!;
+    assert.equal(line.budget, 400);
+    assert.equal(line.actual, 50);  // the split, not the parent
+    r = await call('delete /budgets/:category/:month', mockReq({ params: { category: 'groceries', month: '*' } }));
     assert.equal(r.status, 204);
+
+    // categories
+    r = await call('post /categories', mockReq({ body: { id: 'kids', name: 'Kids', group_name: 'Personal' } }));
+    assert.equal(r.status, 201);
+    r = await call('post /categories', mockReq({ body: { id: 'kids', name: 'Kids', group_name: 'Personal' } }));
+    assert.equal(r.status, 409);
+    r = await call('delete /categories/:id', mockReq({ params: { id: 'uncategorized' } }));
+    assert.equal(r.status, 404);
+
+    // goals + recurring + overview
+    r = await call('post /goals', mockReq({ body: { name: 'Cushion', target_amount: 2000, account_ids: [chk] } }));
+    assert.equal(r.status, 201);
+    r = await call('get /goals');
+    assert.equal((r.body as { goals: Array<{ progress: number }> }).goals[0].progress, 0.5);
+    r = await call('post /recurring', mockReq({ body: { display_name: 'Netflix', amount: -15.49, cadence: 'monthly', next_date: today } }));
+    assert.equal(r.status, 201);
+    r = await call('get /overview');
+    const ov = r.body as { net_worth: { net: number }; upcoming: unknown[]; uncategorized_count: number };
+    assert.equal(ov.net_worth.net, 356000);
+    assert.equal(ov.upcoming.length, 1);
+
+    // export
+    r = await call('get /transactions/export.csv');
+    assert.equal(r.status, 200);
+
+    // import preview + commit through the routes
+    const csv = 'Date,Description,Amount\n2026-01-05,COFFEE PLACE,-4.50\n';
+    r = await call('post /import/preview', mockReq({ body: { account_id: chk, filename: 'a.csv', content: csv } }));
+    assert.equal((r.body as { total: number }).total, 1);
+    r = await call('post /import/commit', mockReq({ body: { account_id: chk, filename: 'a.csv', content: csv } }));
+    assert.equal((r.body as { added: number }).added, 1);
   });
 
-  it('link routes 409 when Plaid is not configured', async () => {
+  it('plaid-requiring routes 409 when Plaid is not configured', async () => {
     const { db, secretStore, host } = freshHost();
     host.register(financePlugin);
     const { call } = mountRoutes(financePlugin, secretStore, db);
-    const r = await call('post /link/start');
+    const r = await call('post /connections/plaid/link/start');
     assert.equal(r.status, 409);
   });
 });

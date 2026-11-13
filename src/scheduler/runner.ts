@@ -28,10 +28,16 @@ export interface JobAgentHost {
   };
 }
 
+/** What the runner needs from the plugin host: run a task a plugin declared. */
+export interface JobPluginHost {
+  runTask(pluginId: string, task: string): Promise<string>;
+}
+
 export interface RunnerDeps {
   store: JobStore;
   delivery: JobDelivery;
   agents: JobAgentHost;
+  plugins?: JobPluginHost;
   /** Injectable so tests can drive a fixed clock. */
   now?: () => number;
 }
@@ -45,6 +51,8 @@ interface PayloadResult {
 const TICK_MS = 60_000;
 /** An agent turn has no internal timeout; without one a wedged host stalls a job forever. */
 const AGENT_TURN_TIMEOUT_MS = 10 * 60_000;
+/** A provider sync against a slow upstream; the same ceiling as an agent turn. */
+const PLUGIN_TASK_TIMEOUT_MS = 10 * 60_000;
 /** Run history kept per job. Definitions are tiny; history is not, and it's backed up daily. */
 const KEEP_RUNS_PER_JOB = 200;
 /** How stale an upstream output may be before a downstream job refuses it. */
@@ -54,6 +62,7 @@ export class SchedulerRunner {
   private readonly store: JobStore;
   private readonly delivery: JobDelivery;
   private readonly agents: JobAgentHost;
+  private readonly plugins: JobPluginHost | null;
   private readonly now: () => number;
 
   /**
@@ -75,6 +84,7 @@ export class SchedulerRunner {
     this.store = deps.store;
     this.delivery = deps.delivery;
     this.agents = deps.agents;
+    this.plugins = deps.plugins ?? null;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -292,6 +302,16 @@ export class SchedulerRunner {
         case 'script': {
           const out = await runCommand(
             job.payload.command, job.payload.timeout_s, job.payload.max_output_bytes, {},
+          );
+          return { status: 'ok', output: out, error: null };
+        }
+
+        case 'plugin_task': {
+          if (!this.plugins) throw new Error('no plugin host wired for plugin tasks');
+          const out = await withTimeout(
+            this.plugins.runTask(job.payload.plugin_id, job.payload.task),
+            PLUGIN_TASK_TIMEOUT_MS,
+            'plugin task',
           );
           return { status: 'ok', output: out, error: null };
         }

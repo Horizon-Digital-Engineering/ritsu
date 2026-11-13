@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed at /usr/local/bin/update-ritsu. Pulls, rebuilds and restarts the
+# service from the installed checkout; run as yourself, sudo is asked for the
+# privileged steps. Flags pass through (see scripts/update.sh).
+exec bash "${RITSU_INSTALL_DIR:-/opt/ritsu}/scripts/update.sh" "$@"

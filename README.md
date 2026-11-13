@@ -111,7 +111,7 @@ Bind-mounts the host's `~/.claude/` so a local session is available if you have 
 |---|---|
 | `GET /mcp` (port 7333) | Real `@modelcontextprotocol/sdk` Streamable HTTP transport. Bearer-token-gated (`rt_*`). |
 | `POST /oauth/{register,authorize,token}` | RFC 7591/8414/9728/8707 OAuth 2.1 + DCR + PKCE for spec-compliant clients (claude.ai web, Claude Desktop Connectors). |
-| `/admin` (port 7334) | Tabbed UI: Dashboard, Agents, Workspaces, Memories, Conversations, Approvals, Tools, Plugins, Extensions, MCP, Channels, Tokens, API Keys, OAuth Clients, System, Logs, Audit. |
+| `/admin` (port 7334) | Three areas on an icon rail — Workspace (chat), Operations (approvals, jobs, health, logs) and Studio (agents and configuration) — plus one app page per plugin that ships a UI (`/admin/apps/<id>`, e.g. Finance, Health, Projects). |
 | `GET /healthz`, `/readyz`, `/version` | Liveness / readiness. |
 | `GET /metrics` | Prometheus exposition. |
 | `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `master-key`, `backup`, `url`, `doctor`. Full reference: [`docs/cli.md`](./docs/cli.md). |

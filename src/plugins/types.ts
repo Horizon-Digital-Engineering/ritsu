@@ -77,7 +77,15 @@ export interface PluginJobSpec {
    *
    * Silence means healthy — output is delivered, no output delivers nothing.
    */
-  command: string;
+  command?: string;
+  /**
+   * In-process alternative to `command`: a function the host runs on the
+   * plugin's behalf. For work that needs the plugin's own secrets and tables
+   * (a provider sync) and must not shell out with a token. Returns the text to
+   * deliver; nothing or an empty string delivers nothing. Exactly one of
+   * `command` / `run` is set.
+   */
+  run?: () => Promise<string | void> | string | void;
   /** Channels to deliver output to. Omit for none. */
   channel_ids?: number[];
 }
@@ -119,6 +127,10 @@ export interface PluginManifest {
   name: string;
   version: string;
   description?: string;
+  /** SVG path data (24-unit viewBox, stroked) for the plugin's rail icon. A
+   *  plugin with `nav` and an icon is an app on the rail; without an icon its
+   *  UI is reachable from Studio only. */
+  icon?: string;
   nav?: PluginNavGroup[];
 }
 

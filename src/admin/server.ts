@@ -692,6 +692,8 @@ export function createAdminApp(deps: AdminDeps) {
     if (req.path === '/' || req.path === '/index.html' || req.path === '/app.js' || req.path === '/app.css'
       || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
       || req.path === '/ops' || req.path === '/ops.js' || req.path === '/ops.css'
+      || req.path === '/apps.js' || req.path === '/apps.css' || req.path === '/rail.js'
+      || /^\/apps\/[^/]+$/.test(req.path)
       || req.path.startsWith('/vendor/')
       || req.path.startsWith('/plugins/')) {
       next();
@@ -876,6 +878,17 @@ export function createAdminApp(deps: AdminDeps) {
     return readFileSync(p, 'utf8');
   })();
 
+  // The plugin app page + the shared rail launcher — same boot-read model.
+  const readAdminAsset = (name: string): string => {
+    const p = join(__dirname, name);
+    if (!existsSync(p)) throw new Error(`admin/${name} missing at ${p} — run \`npm run build\``);
+    return readFileSync(p, 'utf8');
+  };
+  const appsHtml = readAdminAsset('apps.html');
+  const appsJs = readAdminAsset('apps.js');
+  const appsCss = readAdminAsset('apps.css');
+  const railJs = readAdminAsset('rail.js');
+
   // Vendored render libraries (mermaid/KaTeX) — boot-scanned into memory like
   // the other UI assets; the filename map IS the allowlist, so no path from
   // the request ever touches the filesystem.
@@ -966,6 +979,24 @@ export function createAdminApp(deps: AdminDeps) {
   app.get('/admin/ops.css', (_req: Request, res: Response) => {
     setNoCache(res);
     res.type('text/css').send(opsCss);
+  });
+
+  // Plugin apps — one page per plugin with a UI, the rail is the launcher.
+  app.get('/admin/apps/:id', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('html').send(appsHtml);
+  });
+  app.get('/admin/apps.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(appsJs);
+  });
+  app.get('/admin/apps.css', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('text/css').send(appsCss);
+  });
+  app.get('/admin/rail.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(railJs);
   });
 
   // ---- log level ---------------------------------------------------------

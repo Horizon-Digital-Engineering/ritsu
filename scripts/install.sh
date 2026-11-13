@@ -160,6 +160,12 @@ note "generate:  claude setup-token       (on any machine, needs a subscription)
 note "then save it under API Keys in the admin UI"
 note "agents cannot dispatch until one is stored" 
 
+bold "==> Update command"
+# A real file, not a heredoc through sudo: the heredoc form failed under some
+# shells and left a built-but-unrestarted service.
+sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/update-ritsu" /usr/local/bin/update-ritsu
+note "/usr/local/bin/update-ritsu — pulls, rebuilds, restarts (update-ritsu --branch feat/x to try a branch)"
+
 bold "==> Start"
 sudo systemctl enable "${SERVICE_NAME}" >/dev/null
 sudo systemctl restart "${SERVICE_NAME}"
@@ -179,5 +185,5 @@ note "admin healthz:  $(curl -s "http://127.0.0.1:${admin_port:-7334}/healthz" |
 bold "==> Done"
 note "logs:    sudo journalctl -u ${SERVICE_NAME} -f"
 note "env:     sudo \$EDITOR ${ENV_FILE}  &&  sudo systemctl restart ${SERVICE_NAME}"
-note "update:  git pull && bash scripts/install.sh   (from your clone — this script is the update path)"
+note "update:  update-ritsu   (from anywhere on this box; re-running this script also works)"
 note "admin:   ssh-tunnel localhost:${admin_port:-7334} then open http://localhost:${admin_port:-7334}/admin"
