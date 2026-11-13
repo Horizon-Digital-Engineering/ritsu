@@ -44,7 +44,6 @@ input, textarea, select {
   border-radius: 6px; padding: 6px 9px;
 }
 code { font-family: var(--mono); font-size: 0.9em; }
-.hidden { display: none !important; }
 .flex1 { flex: 1; }
 .txt-muted { color: var(--muted); }
 
@@ -292,3 +291,6 @@ code { font-family: var(--mono); font-size: 0.9em; }
   .bottom-grid { grid-template-columns: minmax(0, 1fr); }
   .board { padding: 14px 12px 20px; }
 }
+
+/* Last on purpose: same specificity as the component display rules above, so order decides. */
+.hidden { display: none; }

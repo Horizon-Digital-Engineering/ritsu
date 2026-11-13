@@ -46,24 +46,33 @@ export function netWorthSeries(
   const types = new Map(accounts.filter(a => !a.hidden).map(a => [a.id, a.type]));
   const current = new Map<string, number>();
   for (const s of seed) if (types.has(s.account_id)) current.set(s.account_id, s.balance);
-  const byDate = new Map<string, Array<{ account_id: string; balance: number }>>();
-  for (const h of history) {
-    if (!types.has(h.account_id)) continue;
-    const arr = byDate.get(h.date); if (arr) arr.push(h); else byDate.set(h.date, [h]);
-  }
+  const byDate = snapshotsByDate(history, types);
   const out: NetWorthPoint[] = [];
   const dates = [...new Set([from, ...byDate.keys(), to])].filter(d => d >= from && d <= to).sort((a, b) => a.localeCompare(b));
   for (const d of dates) {
     for (const h of byDate.get(d) ?? []) current.set(h.account_id, h.balance);
     // Before the first snapshot there is nothing to plot; a zero there would read as a crash.
     if (current.size === 0) continue;
-    let assets = 0, liabilities = 0;
-    for (const [id, bal] of current) {
-      if (LIABILITY_TYPES.has(types.get(id) ?? '')) liabilities += -bal; else assets += bal;
-    }
-    out.push({ date: d, net: assets - liabilities, assets, liabilities });
+    out.push({ date: d, ...splitBalances(current, types) });
   }
   return out;
+}
+
+function snapshotsByDate(history: Array<{ account_id: string; date: string; balance: number }>, types: Map<string, string>): Map<string, Array<{ account_id: string; balance: number }>> {
+  const byDate = new Map<string, Array<{ account_id: string; balance: number }>>();
+  for (const h of history) {
+    if (!types.has(h.account_id)) continue;
+    const arr = byDate.get(h.date); if (arr) arr.push(h); else byDate.set(h.date, [h]);
+  }
+  return byDate;
+}
+
+function splitBalances(current: Map<string, number>, types: Map<string, string>): { net: number; assets: number; liabilities: number } {
+  let assets = 0, liabilities = 0;
+  for (const [id, bal] of current) {
+    if (LIABILITY_TYPES.has(types.get(id) ?? '')) liabilities += -bal; else assets += bal;
+  }
+  return { net: assets - liabilities, assets, liabilities };
 }
 
 /** One categorized amount. A split transaction contributes its splits, not its own category. */
@@ -169,9 +178,10 @@ export interface BudgetReport {
   totals: { budgeted_expenses: number; actual_expenses: number; budgeted_income: number; actual_income: number; unbudgeted_expenses: number };
 }
 
-/** The month's actuals against its budget: a per-month amount wins over the default ('*'). */
-export function budgetReport(monthLines: Line[], categories: Category[], budgets: Budget[], month: string): BudgetReport {
-  const cats = new Map(categories.map(c => [c.id, c]));
+type BudgetChoice = { amount: number; source: 'month' | 'default' };
+
+/** Signed actuals per category: income positive, spend positive, transfers skipped. */
+function actualsByCategory(monthLines: Line[], cats: Map<string, Category>): Map<string, number> {
   const actual = new Map<string, number>();
   for (const l of monthLines) {
     const c = cats.get(l.category_id);
@@ -179,11 +189,30 @@ export function budgetReport(monthLines: Line[], categories: Category[], budgets
     const v = c?.kind === 'income' ? l.amount : -l.amount;
     actual.set(l.category_id, (actual.get(l.category_id) ?? 0) + v);
   }
-  const chosen = new Map<string, { amount: number; source: 'month' | 'default' }>();
+  return actual;
+}
+
+/** A per-month amount wins over the default ('*'). */
+function chosenBudgets(budgets: Budget[], month: string): Map<string, BudgetChoice> {
+  const chosen = new Map<string, BudgetChoice>();
   for (const b of budgets) {
     if (b.month === month) chosen.set(b.category_id, { amount: b.amount, source: 'month' });
     else if (b.month === '*' && !chosen.has(b.category_id)) chosen.set(b.category_id, { amount: b.amount, source: 'default' });
   }
+  return chosen;
+}
+
+/** Income lines first; within a kind, the most over budget first. */
+function budgetLineOrder(a: BudgetLine, b: BudgetLine): number {
+  if (a.kind === b.kind) return (b.actual - b.budget) - (a.actual - a.budget);
+  return a.kind === 'income' ? -1 : 1;
+}
+
+/** The month's actuals against its budget: a per-month amount wins over the default ('*'). */
+export function budgetReport(monthLines: Line[], categories: Category[], budgets: Budget[], month: string): BudgetReport {
+  const cats = new Map(categories.map(c => [c.id, c]));
+  const actual = actualsByCategory(monthLines, cats);
+  const chosen = chosenBudgets(budgets, month);
   const lines: BudgetLine[] = [];
   const totals = { budgeted_expenses: 0, actual_expenses: 0, budgeted_income: 0, actual_income: 0, unbudgeted_expenses: 0 };
   for (const [id, b] of chosen) {
@@ -200,7 +229,7 @@ export function budgetReport(monthLines: Line[], categories: Category[], budgets
     if (kind === 'income') totals.actual_income += a;
     else { totals.actual_expenses += a; totals.unbudgeted_expenses += a; }
   }
-  lines.sort((a, b) => (a.kind === b.kind ? (b.actual - b.budget) - (a.actual - a.budget) : a.kind === 'income' ? -1 : 1));
+  lines.sort(budgetLineOrder);
   return { month, lines, totals };
 }
 

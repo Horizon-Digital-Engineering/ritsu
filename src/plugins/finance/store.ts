@@ -75,6 +75,21 @@ const toRule = (r: Row): Rule => ({
   set_excluded: r.set_excluded == null ? null : bool(r.set_excluded),
   set_tags: JSON.parse(typeof r.set_tags === 'string' ? r.set_tags : '[]') as string[],
 });
+/** SQLite has no nullable boolean; a rule's set_excluded is 1/0/NULL. */
+const tri = (v: boolean | null | undefined): 0 | 1 | null => {
+  if (v == null) return null;
+  return v ? 1 : 0;
+};
+type RulePatch = Partial<Omit<Rule, 'id' | 'created_at'>>;
+const RULE_COLUMNS: Array<keyof RulePatch> = ['priority', 'enabled', 'field', 'op', 'pattern', 'amount_min', 'amount_max', 'account_id', 'set_category_id', 'set_payee', 'set_excluded', 'set_tags'];
+const ruleCell = (col: keyof RulePatch, v: RulePatch[keyof RulePatch]): unknown => {
+  switch (col) {
+    case 'enabled': return v ? 1 : 0;
+    case 'set_excluded': return tri(v as boolean | null);
+    case 'set_tags': return JSON.stringify(v);
+    default: return v;
+  }
+};
 const toGoal = (r: Row): Goal => ({ ...(r as unknown as Goal), account_ids: JSON.parse(typeof r.account_ids === 'string' ? r.account_ids : '[]') as string[] });
 
 /** Stable identity for de-duplicating imports against synced rows. */
@@ -434,24 +449,16 @@ export class FinanceStore {
       `INSERT INTO ${this.t('rules')} (priority, enabled, field, op, pattern, amount_min, amount_max, account_id, set_category_id, set_payee, set_excluded, set_tags)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(r.priority, r.enabled ? 1 : 0, r.field, r.op, r.pattern, r.amount_min, r.amount_max, r.account_id, r.set_category_id, r.set_payee,
-      r.set_excluded == null ? null : (r.set_excluded ? 1 : 0), JSON.stringify(r.set_tags));
+      tri(r.set_excluded), JSON.stringify(r.set_tags));
     return toRule(this.db.prepare(`SELECT * FROM ${this.t('rules')} WHERE id = ?`).get(Number(res.lastInsertRowid)) as Row);
   }
-  updateRule(id: number, patch: Partial<Omit<Rule, 'id' | 'created_at'>>): boolean {
+  updateRule(id: number, patch: RulePatch): boolean {
     const sets: string[] = []; const vals: unknown[] = [];
-    const push = (col: string, v: unknown) => { sets.push(`${col} = ?`); vals.push(v); };
-    if (patch.priority !== undefined) push('priority', patch.priority);
-    if (patch.enabled !== undefined) push('enabled', patch.enabled ? 1 : 0);
-    if (patch.field !== undefined) push('field', patch.field);
-    if (patch.op !== undefined) push('op', patch.op);
-    if (patch.pattern !== undefined) push('pattern', patch.pattern);
-    if (patch.amount_min !== undefined) push('amount_min', patch.amount_min);
-    if (patch.amount_max !== undefined) push('amount_max', patch.amount_max);
-    if (patch.account_id !== undefined) push('account_id', patch.account_id);
-    if (patch.set_category_id !== undefined) push('set_category_id', patch.set_category_id);
-    if (patch.set_payee !== undefined) push('set_payee', patch.set_payee);
-    if (patch.set_excluded !== undefined) push('set_excluded', patch.set_excluded == null ? null : (patch.set_excluded ? 1 : 0));
-    if (patch.set_tags !== undefined) push('set_tags', JSON.stringify(patch.set_tags));
+    for (const col of RULE_COLUMNS) {
+      const v = patch[col];
+      if (v === undefined) continue;
+      sets.push(`${col} = ?`); vals.push(ruleCell(col, v));
+    }
     if (!sets.length) return false;
     return this.db.prepare(`UPDATE ${this.t('rules')} SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id).changes > 0;
   }
