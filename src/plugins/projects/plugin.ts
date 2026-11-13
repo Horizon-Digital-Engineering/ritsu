@@ -205,7 +205,7 @@ export const projectsPlugin: Plugin = {
     id: 'projects',
     name: 'Projects',
     version: '1.0.0',
-    icon: 'M4 3h4v18H4zM10 3h4v12h-4zM16 3h4v8h-4z',
+    icon: 'M3 3h18v18H3zM7 7h3v9H7zM14 7h3v5h-3z',
     description: 'Multi-project manager with per-project and aggregated task backlogs.',
     nav: [
       { id: 'projects', label: 'Projects', tabs: [
