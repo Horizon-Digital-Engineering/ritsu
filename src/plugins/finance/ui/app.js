@@ -4,6 +4,11 @@
 const { api, esc, toast, registerTab, registerAction, registerChange } = window.ritsu;
 const F = '/admin/api/plugins/finance';
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 // ---- shared state + helpers -------------------------------------------------
 let cats = [], catById = new Map(), accounts = [], acctById = new Map();
 async function loadRefs() {
@@ -207,7 +212,7 @@ async function renderAccounts(pane) {
       const sel = pane.querySelector('#fg-accts');
       try {
         await api('POST', `${F}/goals`, { name: val(pane, 'fg-name'), kind: val(pane, 'fg-kind'), target_amount: num(pane, 'fg-target'), target_date: val(pane, 'fg-date') || null, account_ids: [...sel.selectedOptions].map(o => o.value) });
-        toast('goal added'); void renderAccounts(pane);
+        toast('goal added'); background(renderAccounts(pane));
       } catch (e2) { toast(e2.message, 'err'); }
     });
   } catch (e) { pane.innerHTML = err(e); }
@@ -242,7 +247,7 @@ registerAction('fin-acct-save', async (el) => {
   const q = (s) => row.querySelector(s);
   try {
     await api('PATCH', `${F}/accounts/${encodeURIComponent(el.dataset.id)}`, { name: q('#fae-name').value.trim(), type: q('#fae-type').value, institution: q('#fae-inst').value.trim(), hidden: q('#fae-hidden').checked, closed: q('#fae-closed').checked });
-    toast('saved'); void renderAccounts(el.closest('.pane'));
+    toast('saved'); background(renderAccounts(el.closest('.pane')));
   } catch (e) { toast(e.message, 'err'); }
 });
 registerAction('fin-acct-save-balance', async (el) => {
@@ -250,15 +255,15 @@ registerAction('fin-acct-save-balance', async (el) => {
   const a = acctById.get(el.dataset.id);
   let balance = Number(row.querySelector('#fae-bal').value);
   if (a.type === 'credit' || a.type === 'loan') balance = -Math.abs(balance);
-  try { await api('PUT', `${F}/accounts/${encodeURIComponent(el.dataset.id)}/balance`, { balance, as_of: row.querySelector('#fae-date').value || today() }); toast('balance updated'); void renderAccounts(el.closest('.pane')); }
+  try { await api('PUT', `${F}/accounts/${encodeURIComponent(el.dataset.id)}/balance`, { balance, as_of: row.querySelector('#fae-date').value || today() }); toast('balance updated'); background(renderAccounts(el.closest('.pane'))); }
   catch (e) { toast(e.message, 'err'); }
 });
 registerAction('fin-acct-del', async (el) => {
   if (!confirm('Delete this account and every transaction in it? This cannot be undone.')) return;
-  try { await api('DELETE', `${F}/accounts/${encodeURIComponent(el.dataset.id)}`); toast('deleted'); void renderAccounts(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); }
+  try { await api('DELETE', `${F}/accounts/${encodeURIComponent(el.dataset.id)}`); toast('deleted'); background(renderAccounts(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); }
 });
-registerAction('fin-goal-del', async (el) => { try { await api('DELETE', `${F}/goals/${el.dataset.id}`); void renderAccounts(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fin-nw-range', (el) => { nwRange = el.dataset.range; void renderAccounts(el.closest('.pane')); });
+registerAction('fin-goal-del', async (el) => { try { await api('DELETE', `${F}/goals/${el.dataset.id}`); background(renderAccounts(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fin-nw-range', (el) => { nwRange = el.dataset.range; background(renderAccounts(el.closest('.pane'))); });
 
 // ============================================================================
 // Transactions
@@ -300,8 +305,8 @@ async function renderTransactions(pane) {
         <div id="ftx-table"></div>
         <div id="ftx-pager" class="fin-pager"></div>
       </div>`;
-    on(pane, '#ftx-q', 'keydown', (e) => { if (e.key === 'Enter') { tx.filters.q = e.target.value.trim(); tx.offset = 0; void loadTxns(); } });
-    on(pane, '#ftx-q', 'search', (e) => { tx.filters.q = e.target.value.trim(); tx.offset = 0; void loadTxns(); });
+    on(pane, '#ftx-q', 'keydown', (e) => { if (e.key === 'Enter') { tx.filters.q = e.target.value.trim(); tx.offset = 0; background(loadTxns()); } });
+    on(pane, '#ftx-q', 'search', (e) => { tx.filters.q = e.target.value.trim(); tx.offset = 0; background(loadTxns()); });
     await loadTxns();
   } catch (e) { pane.innerHTML = err(e); }
 }
@@ -378,12 +383,12 @@ registerAction('ftx-save', async (el) => {
   try {
     await api('PATCH', `${F}/transactions/${encodeURIComponent(id)}`, patch);
     await api('PUT', `${F}/transactions/${encodeURIComponent(id)}/splits`, { splits });
-    toast('saved'); tx.open = null; void loadTxns();
+    toast('saved'); tx.open = null; background(loadTxns());
   } catch (e) { toast(e.message, 'err'); }
 });
 registerAction('ftx-del', async (el) => {
   if (!confirm('Delete this transaction?')) return;
-  try { await api('DELETE', `${F}/transactions/${encodeURIComponent(el.dataset.id)}`); tx.open = null; void loadTxns(); } catch (e) { toast(e.message, 'err'); }
+  try { await api('DELETE', `${F}/transactions/${encodeURIComponent(el.dataset.id)}`); tx.open = null; background(loadTxns()); } catch (e) { toast(e.message, 'err'); }
 });
 registerAction('ftx-rule-from', (el) => {
   const t = tx.rows.find(x => x.id === el.dataset.id); if (!t) return;
@@ -397,19 +402,19 @@ registerChange('ftx-cat', async (el) => {
 registerChange('ftx-filter', () => {
   const p = tx.pane;
   tx.filters.account_id = val(p, 'ftx-acct'); tx.filters.category_id = val(p, 'ftx-cat'); tx.filters.from = val(p, 'ftx-from'); tx.filters.to = val(p, 'ftx-to');
-  tx.offset = 0; void loadTxns();
+  tx.offset = 0; background(loadTxns());
 });
-registerAction('ftx-toggle', (el) => { tx.filters[el.dataset.key] = !tx.filters[el.dataset.key]; tx.offset = 0; void renderTransactions(tx.pane); });
+registerAction('ftx-toggle', (el) => { tx.filters[el.dataset.key] = !tx.filters[el.dataset.key]; tx.offset = 0; background(renderTransactions(tx.pane)); });
 registerAction('ftx-range', (el) => {
   const m = thisMonth();
   const r = el.dataset.range === 'this month' ? monthRange(m) : el.dataset.range === 'last month' ? monthRange(shiftMonth(m, -1))
     : el.dataset.range === '3 months' ? { from: monthRange(shiftMonth(m, -2)).from, to: today() } : { from: `${m.slice(0, 4)}-01-01`, to: today() };
-  tx.filters.from = r.from; tx.filters.to = r.to; tx.offset = 0; void renderTransactions(tx.pane);
+  tx.filters.from = r.from; tx.filters.to = r.to; tx.offset = 0; background(renderTransactions(tx.pane));
 });
-registerAction('ftx-page', (el) => { tx.offset = Math.max(0, tx.offset + Number(el.dataset.dir) * PAGE); void loadTxns(); });
+registerAction('ftx-page', (el) => { tx.offset = Math.max(0, tx.offset + Number(el.dataset.dir) * PAGE); background(loadTxns()); });
 registerChange('ftx-sel', (el) => { if (el.checked) tx.selected.add(el.dataset.id); else tx.selected.delete(el.dataset.id); el.closest('tr').classList.toggle('sel', el.checked); renderBulk(); });
 registerChange('ftx-sel-all', (el) => { tx.selected = new Set(el.checked ? tx.rows.map(r => r.id) : []); renderTxTable(); });
-async function bulk(body) { try { const r = await api('POST', `${F}/transactions/bulk`, { ids: [...tx.selected], ...body }); toast(`${r.updated} updated`); void loadTxns(); } catch (e) { toast(e.message, 'err'); } }
+async function bulk(body) { try { const r = await api('POST', `${F}/transactions/bulk`, { ids: [...tx.selected], ...body }); toast(`${r.updated} updated`); background(loadTxns()); } catch (e) { toast(e.message, 'err'); } }
 registerAction('ftx-bulk-cat', () => bulk({ category_id: document.getElementById('ftx-bulk-cat').value || null, reviewed: true }));
 registerAction('ftx-bulk-reviewed', () => bulk({ reviewed: true }));
 registerAction('ftx-bulk-exclude', () => bulk({ excluded: true }));
@@ -431,7 +436,7 @@ registerAction('ftx-add', () => {
     e.preventDefault();
     try {
       await api('POST', `${F}/transactions`, { account_id: val(box, 'fta-acct'), date: val(box, 'fta-date'), payee: val(box, 'fta-payee'), amount: Number(val(box, 'fta-amount')), category_id: val(box, 'fta-cat') || null, notes: val(box, 'fta-notes') });
-      toast('added'); box.classList.add('hidden'); void loadTxns();
+      toast('added'); box.classList.add('hidden'); background(loadTxns());
     } catch (e2) { toast(e2.message, 'err'); }
   });
 });
@@ -500,14 +505,14 @@ async function renderBudgets(pane) {
       </div>`;
   } catch (e) { pane.innerHTML = err(e); }
 }
-registerAction('fbd-month', (el) => { budgetMonth = shiftMonth(budgetMonth, Number(el.dataset.dir)); void renderBudgets(el.closest('.pane')); });
+registerAction('fbd-month', (el) => { budgetMonth = shiftMonth(budgetMonth, Number(el.dataset.dir)); background(renderBudgets(el.closest('.pane'))); });
 registerChange('fbd-scope', (el) => { budgetScope = el.value; });
 registerChange('fbd-set', async (el) => {
   const month = budgetScope === '*' ? '*' : budgetMonth;
   try {
     if (el.value.trim() === '') await api('DELETE', `${F}/budgets/${encodeURIComponent(el.dataset.cat)}/${encodeURIComponent(month)}`).catch(() => null);
     else await api('PUT', `${F}/budgets`, { category_id: el.dataset.cat, month, amount: Number(el.value) });
-    void renderBudgets(el.closest('.pane'));
+    background(renderBudgets(el.closest('.pane')));
   } catch (e) { toast(e.message, 'err'); }
 });
 
@@ -549,7 +554,7 @@ async function renderRecurring(pane) {
       e.preventDefault();
       try {
         await api('POST', `${F}/recurring`, { display_name: val(pane, 'frc-name'), amount: -Math.abs(Number(val(pane, 'frc-amt'))), cadence: val(pane, 'frc-cad'), next_date: val(pane, 'frc-date'), category_id: val(pane, 'frc-catsel') || null, account_id: val(pane, 'frc-acct') || null });
-        toast('added'); void renderRecurring(pane);
+        toast('added'); background(renderRecurring(pane));
       } catch (e2) { toast(e2.message, 'err'); }
     });
   } catch (e) { pane.innerHTML = err(e); }
@@ -559,9 +564,9 @@ registerChange('frc-cat', (el) => patchRecurring(el, { category_id: el.value || 
 registerChange('frc-amount', (el) => patchRecurring(el, { amount: -Math.abs(Number(el.value)) }));
 registerChange('frc-cadence', (el) => patchRecurring(el, { cadence: el.value }));
 registerChange('frc-next', (el) => patchRecurring(el, { next_date: el.value }));
-registerAction('frc-status', async (el) => { await patchRecurring(el, { status: el.dataset.status }); void renderRecurring(el.closest('.pane')); });
-registerAction('frc-del', async (el) => { try { await api('DELETE', `${F}/recurring/${el.dataset.id}`); void renderRecurring(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('frc-detect', async (el) => { try { const r = await api('POST', `${F}/recurring/detect`); toast(`${r.detected} pattern${r.detected === 1 ? '' : 's'} found`); void renderRecurring(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
+registerAction('frc-status', async (el) => { await patchRecurring(el, { status: el.dataset.status }); background(renderRecurring(el.closest('.pane'))); });
+registerAction('frc-del', async (el) => { try { await api('DELETE', `${F}/recurring/${el.dataset.id}`); background(renderRecurring(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('frc-detect', async (el) => { try { const r = await api('POST', `${F}/recurring/detect`); toast(`${r.detected} pattern${r.detected === 1 ? '' : 's'} found`); background(renderRecurring(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
 
 // ============================================================================
 // Reports
@@ -613,11 +618,11 @@ async function renderReports(pane) {
     pane.innerHTML = `<div class="panel"><div class="fin-chips">${views.map(v => `<button class="fin-chip${rep.view === v ? ' active' : ''}" data-action="frp-view" data-view="${v}">${v}</button>`).join('')}${rep.view === 'cash flow' || rep.view === 'trends' ? `<span class="sp"></span>${[6, 12, 24].map(n => `<button class="fin-chip${rep.months === n ? ' active' : ''}" data-action="frp-months" data-n="${n}">${n}mo</button>`).join('')}` : ''}</div>${body}</div>`;
   } catch (e) { pane.innerHTML = err(e); }
 }
-registerAction('frp-view', (el) => { rep.view = el.dataset.view; void renderReports(el.closest('.pane')); });
-registerAction('frp-range', (el) => { rep.range = el.dataset.range; void renderReports(el.closest('.pane')); });
-registerAction('frp-by', (el) => { rep.by = el.dataset.by; void renderReports(el.closest('.pane')); });
-registerAction('frp-months', (el) => { rep.months = Number(el.dataset.n); void renderReports(el.closest('.pane')); });
-registerChange('frp-dates', (el) => { const p = el.closest('.pane'); rep.from = val(p, 'frp-from'); rep.to = val(p, 'frp-to'); if (rep.from && rep.to) void renderReports(p); });
+registerAction('frp-view', (el) => { rep.view = el.dataset.view; background(renderReports(el.closest('.pane'))); });
+registerAction('frp-range', (el) => { rep.range = el.dataset.range; background(renderReports(el.closest('.pane'))); });
+registerAction('frp-by', (el) => { rep.by = el.dataset.by; background(renderReports(el.closest('.pane'))); });
+registerAction('frp-months', (el) => { rep.months = Number(el.dataset.n); background(renderReports(el.closest('.pane'))); });
+registerChange('frp-dates', (el) => { const p = el.closest('.pane'); rep.from = val(p, 'frp-from'); rep.to = val(p, 'frp-to'); if (rep.from && rep.to) background(renderReports(p)); });
 
 // ============================================================================
 // Categories & Rules
@@ -673,23 +678,23 @@ async function renderRules(pane) {
           set_tags: val(pane, 'frl-tags').split(',').map(s => s.trim()).filter(Boolean), set_excluded: excl === '' ? null : excl === '1', priority: num(pane, 'frl-pri') ?? 100,
           apply_to_existing: pane.querySelector('#frl-existing').checked,
         });
-        toast(`rule added${r.applied ? `, ${r.applied} transactions updated` : ''}`); void renderRules(pane);
+        toast(`rule added${r.applied ? `, ${r.applied} transactions updated` : ''}`); background(renderRules(pane));
       } catch (e2) { toast(e2.message, 'err'); }
     });
     on(pane, '#fct-form', 'submit', async (e) => {
       e.preventDefault();
       const name = val(pane, 'fct-new-name');
-      try { await api('POST', `${F}/categories`, { id: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40), name, group_name: val(pane, 'fct-new-group'), kind: val(pane, 'fct-new-kind') }); toast('category added'); void renderRules(pane); }
+      try { await api('POST', `${F}/categories`, { id: name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40), name, group_name: val(pane, 'fct-new-group'), kind: val(pane, 'fct-new-kind') }); toast('category added'); background(renderRules(pane)); }
       catch (e2) { toast(e2.message, 'err'); }
     });
   } catch (e) { pane.innerHTML = err(e); }
 }
-registerAction('frl-toggle', async (el) => { try { await api('PATCH', `${F}/rules/${el.dataset.id}`, { enabled: el.dataset.enabled !== '1' }); void renderRules(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('frl-del', async (el) => { try { await api('DELETE', `${F}/rules/${el.dataset.id}`); void renderRules(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
+registerAction('frl-toggle', async (el) => { try { await api('PATCH', `${F}/rules/${el.dataset.id}`, { enabled: el.dataset.enabled !== '1' }); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('frl-del', async (el) => { try { await api('DELETE', `${F}/rules/${el.dataset.id}`); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
 registerAction('frl-apply', async () => { try { const r = await api('POST', `${F}/rules/apply`); toast(`${r.applied} transactions updated`); } catch (e) { toast(e.message, 'err'); } });
 registerChange('fct-name', async (el) => { try { await api('PATCH', `${F}/categories/${encodeURIComponent(el.dataset.id)}`, { name: el.value.trim() }); toast('renamed'); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fct-archive', async (el) => { try { await api('PATCH', `${F}/categories/${encodeURIComponent(el.dataset.id)}`, { archived: el.dataset.archived !== '1' }); void renderRules(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fct-del', async (el) => { if (!confirm('Delete this category? Its transactions move to Uncategorized.')) return; try { await api('DELETE', `${F}/categories/${encodeURIComponent(el.dataset.id)}`); void renderRules(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fct-archive', async (el) => { try { await api('PATCH', `${F}/categories/${encodeURIComponent(el.dataset.id)}`, { archived: el.dataset.archived !== '1' }); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fct-del', async (el) => { if (!confirm('Delete this category? Its transactions move to Uncategorized.')) return; try { await api('DELETE', `${F}/categories/${encodeURIComponent(el.dataset.id)}`); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
 registerChange('fcm-set', async (el) => { try { await api('PUT', `${F}/category-map`, { provider_category: el.dataset.key, category_id: el.value }); toast('mapping saved'); } catch (e) { toast(e.message, 'err'); } });
 
 // ============================================================================
@@ -732,17 +737,17 @@ async function renderConnections(pane) {
     on(pane, '#fsf-form', 'submit', async (e) => {
       e.preventDefault();
       const btn = pane.querySelector('#fsf-form button'); btn.disabled = true; btn.textContent = 'connecting…';
-      try { const r = await api('POST', `${F}/connections/simplefin`, { setup_token: val(pane, 'fsf-token'), label: val(pane, 'fsf-label') || undefined }); toast(`connected: ${r.result.accounts} accounts, ${r.result.added} transactions`); void renderConnections(pane); }
+      try { const r = await api('POST', `${F}/connections/simplefin`, { setup_token: val(pane, 'fsf-token'), label: val(pane, 'fsf-label') || undefined }); toast(`connected: ${r.result.accounts} accounts, ${r.result.added} transactions`); background(renderConnections(pane)); }
       catch (e2) { toast(e2.message, 'err'); btn.disabled = false; btn.textContent = 'Connect'; }
     });
     on(pane, '#fpl-config', 'submit', async (e) => {
       e.preventDefault();
-      try { await api('POST', `${F}/connections/plaid/config`, { client_id: val(pane, 'fpl-cid'), secret: val(pane, 'fpl-secret'), env: val(pane, 'fpl-env') }); toast('Plaid credentials saved'); void renderConnections(pane); }
+      try { await api('POST', `${F}/connections/plaid/config`, { client_id: val(pane, 'fpl-cid'), secret: val(pane, 'fpl-secret'), env: val(pane, 'fpl-env') }); toast('Plaid credentials saved'); background(renderConnections(pane)); }
       catch (e2) { toast(e2.message, 'err'); }
     });
     on(pane, '#fpl-exchange', 'submit', async (e) => {
       e.preventDefault();
-      try { await api('POST', `${F}/connections/plaid/exchange`, { public_token: val(pane, 'fpl-pt') }); toast('linked'); void renderConnections(pane); } catch (e2) { toast(e2.message, 'err'); }
+      try { await api('POST', `${F}/connections/plaid/exchange`, { public_token: val(pane, 'fpl-pt') }); toast('linked'); background(renderConnections(pane)); } catch (e2) { toast(e2.message, 'err'); }
     });
     on(pane, '#fim-form', 'submit', async (e) => {
       e.preventDefault();
@@ -795,16 +800,16 @@ registerAction('fim-commit', async (el) => {
       const r = await api('POST', `${F}/import/commit`, { account_id: importFile.account_id, filename: importFile.name, content: p, flip_sign: importFile.flip_sign });
       added += r.added; dup += r.duplicates;
     }
-    toast(`imported ${added} transactions (${dup} duplicates skipped)`); importFile = null; void renderConnections(pane);
+    toast(`imported ${added} transactions (${dup} duplicates skipped)`); importFile = null; background(renderConnections(pane));
   } catch (e) { toast(e.message, 'err'); el.disabled = false; el.textContent = 'Import'; }
 });
-registerAction('fim-undo', async (el) => { if (!confirm(`Remove the ${el.dataset.n} transactions this import added?`)) return; try { await api('DELETE', `${F}/imports/${el.dataset.id}`); void renderConnections(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fcn-sync-all', async (el) => { el.disabled = true; try { const r = await api('POST', `${F}/sync`); const errs = Object.values(r.results).filter(v => typeof v === 'string'); toast(errs.length ? `sync finished with ${errs.length} error(s)` : 'synced'); void renderConnections(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); el.disabled = false; } });
-registerAction('fcn-sync', async (el) => { try { const r = await api('POST', `${F}/connections/${encodeURIComponent(el.dataset.id)}/sync`); toast(`synced: ${r.result.added} new`); void renderConnections(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); void renderConnections(el.closest('.pane')); } });
-registerAction('fcn-del', async (el) => { if (!confirm('Remove this connection and delete its accounts and transactions from the ledger?')) return; try { await api('DELETE', `${F}/connections/${encodeURIComponent(el.dataset.id)}`); toast('removed'); void renderConnections(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fpl-sandbox', async (el) => { try { await api('POST', `${F}/connections/plaid/sandbox`, {}); toast('sandbox bank linked + synced'); void renderConnections(el.closest('.pane')); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fim-undo', async (el) => { if (!confirm(`Remove the ${el.dataset.n} transactions this import added?`)) return; try { await api('DELETE', `${F}/imports/${el.dataset.id}`); background(renderConnections(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fcn-sync-all', async (el) => { el.disabled = true; try { const r = await api('POST', `${F}/sync`); const errs = Object.values(r.results).filter(v => typeof v === 'string'); toast(errs.length ? `sync finished with ${errs.length} error(s)` : 'synced'); background(renderConnections(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); el.disabled = false; } });
+registerAction('fcn-sync', async (el) => { try { const r = await api('POST', `${F}/connections/${encodeURIComponent(el.dataset.id)}/sync`); toast(`synced: ${r.result.added} new`); background(renderConnections(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); background(renderConnections(el.closest('.pane'))); } });
+registerAction('fcn-del', async (el) => { if (!confirm('Remove this connection and delete its accounts and transactions from the ledger?')) return; try { await api('DELETE', `${F}/connections/${encodeURIComponent(el.dataset.id)}`); toast('removed'); background(renderConnections(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fpl-sandbox', async (el) => { try { await api('POST', `${F}/connections/plaid/sandbox`, {}); toast('sandbox bank linked + synced'); background(renderConnections(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
 registerAction('fpl-start', async () => { try { const r = await api('POST', `${F}/connections/plaid/link/start`, {}); if (r.hosted_link_url) window.open(r.hosted_link_url, '_blank', 'noopener'); else toast('Plaid did not return a hosted link URL', 'err'); } catch (e) { toast(e.message, 'err'); } });
-registerAction('fpl-complete', async (el) => { try { const r = await api('POST', `${F}/connections/plaid/link/complete`, {}); if (r.linked) { toast('bank linked + synced'); void renderConnections(el.closest('.pane')); } else toast('not finished yet — complete the Plaid tab, then retry', 'err'); } catch (e) { toast(e.message, 'err'); } });
+registerAction('fpl-complete', async (el) => { try { const r = await api('POST', `${F}/connections/plaid/link/complete`, {}); if (r.linked) { toast('bank linked + synced'); background(renderConnections(el.closest('.pane'))); } else toast('not finished yet — complete the Plaid tab, then retry', 'err'); } catch (e) { toast(e.message, 'err'); } });
 
 // ---- tabs -------------------------------------------------------------------
 registerTab('finance-dashboard', renderDashboard);

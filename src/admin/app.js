@@ -6,6 +6,11 @@
 // (data-action="..."), so no inline onclick=/onsubmit= attributes
 // survive in the HTML or in JS-built innerHTML strings.
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 // ---- helpers ---------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -60,7 +65,7 @@ function copyClick(btn) {
     btn.textContent = 'copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
-  });
+  }).catch(() => toast('copy failed', 'err'));
 }
 
 const ADMIN_TOKEN_KEY = 'ritsu.adminToken';
@@ -283,7 +288,7 @@ const TAB_LOADERS = {
   'extensions': loadExtensionsTab,
   'mcp': loadMcpTools,
   'tokens': refreshTokens,
-  'api-keys': () => { refreshApiKeys(); loadClaudeToken(); },
+  'api-keys': () => { background(refreshApiKeys()); background(loadClaudeToken()); },
   'oauth-clients': loadOAuthClientsTab,
   'channels': loadChannelsTab,
   'jobs': loadJobsTab,
@@ -607,7 +612,7 @@ function loadAgentForm(a) {
   $('f-provider-options').value = a.provider_options && Object.keys(a.provider_options).length
     ? JSON.stringify(a.provider_options)
     : '';
-  refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); });
+  background(refreshApiKeyDropdown().then(() => { renderApiKeyDropdown(a.api_key_ref ?? null); }));
   renderToolCheckboxes(a.tools_allowlist || []);
   approvalToolsRendered = null;
   renderApprovalToolsCheckboxes(a.approval_tools || []);
@@ -631,7 +636,7 @@ function loadAgentForm(a) {
   $('test-pane').classList.remove('hidden');
   $('test-reply').classList.add('hidden');
   $('test-meta').textContent = '';
-  recomputeFormWarnings();
+  background(recomputeFormWarnings());
 }
 function clearForm() {
   editingAgentId = null;
@@ -642,7 +647,7 @@ function clearForm() {
   renderProviderDropdown('direct', 'claude');
   $('f-provider-options').value = '';
   renderApiKeyDropdown(null);
-  refreshApiKeyDropdown();
+  background(refreshApiKeyDropdown());
   renderToolCheckboxes([]);
   renderApprovalToolsCheckboxes([]);
   renderPluginCheckboxes([]);
@@ -655,7 +660,7 @@ function clearForm() {
   $('test-pane').classList.remove('hidden'); // available for drafts too
   $('test-reply').classList.add('hidden');
   $('test-meta').textContent = '';
-  recomputeFormWarnings();
+  background(recomputeFormWarnings());
 }
 async function submitAgent(method) {
   const runtime = $('f-runtime').value;
@@ -693,14 +698,14 @@ async function submitAgent(method) {
     const url = method === 'POST' ? '/admin/agents' : `/admin/agents/${body.id}`;
     const saved = await api(method, url, body);
     toast(`${method} ok`);
-    refreshAgents(); refreshInfo();
+    background(refreshAgents()); background(refreshInfo());
     // Re-load the form from the server response so the Revert button reflects
     // the new previous_system_prompt state.
     if (saved?.id) loadAgentForm(saved);
   } catch (e) { toast(e.message, 'err'); }
 }
 async function toggleAgent(id, enabled) {
-  try { await api('PATCH', `/admin/agents/${id}`, { enabled }); refreshAgents(); refreshInfo(); }
+  try { await api('PATCH', `/admin/agents/${id}`, { enabled }); background(refreshAgents()); background(refreshInfo()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function reloadAgent(id) {
@@ -709,7 +714,7 @@ async function reloadAgent(id) {
 }
 async function deleteAgent(id) {
   if (!confirm(`Delete agent "${id}"?\nMemories will be retained.`)) return;
-  try { await api('DELETE', `/admin/agents/${id}`); refreshAgents(); refreshInfo(); }
+  try { await api('DELETE', `/admin/agents/${id}`); background(refreshAgents()); background(refreshInfo()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function revertAgent() {
@@ -719,7 +724,7 @@ async function revertAgent() {
     const reverted = await api('POST', `/admin/agents/${editingAgentId}/revert`);
     toast('reverted');
     loadAgentForm(reverted);
-    refreshAgents();
+    background(refreshAgents());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -734,7 +739,7 @@ function applyToolPreset(name) {
   const list = TOOL_PRESETS[name];
   if (!list) return;
   renderToolCheckboxes(list);
-  recomputeFormWarnings();
+  background(recomputeFormWarnings());
   toast(`preset: ${name}`);
 }
 
@@ -861,7 +866,7 @@ async function loadWorkspacesTab() {
     pick.innerHTML = `<label>Agent: <select id="ws-pick-select"><option value="">— pick —</option>${opts}</select></label>`;
     $('ws-pick-select').onchange = (e) => {
       wsAgentId = e.target.value || null;
-      if (wsAgentId) showWsSection();
+      if (wsAgentId) background(showWsSection());
       else $('ws-section').classList.add('hidden');
     };
     // Wire root/subpath live-preview listeners exactly once
@@ -874,7 +879,7 @@ async function loadWorkspacesTab() {
     // Refresh writable roots every load — picks up host-side `ritsu path add`
     // without needing a hard page reload.
     await loadWritableRoots();
-    if (wsAgentId) showWsSection();
+    if (wsAgentId) background(showWsSection());
   } catch (e) { toast(e.message, 'err'); }
 }
 async function showWsSection() {
@@ -939,7 +944,7 @@ async function addWorkspace() {
     await api('POST', `/admin/agents/${wsAgentId}/workspaces`, { root, subpath, permissions: perms });
     $('ws-subpath').value = '';
     updateResolvedPath();
-    showWsSection();
+    background(showWsSection());
     // If the same agent is being edited on the Agents tab, drop its
     // cached workspaces so the warning banner re-evaluates next render.
     invalidateWorkspaceCache(wsAgentId);
@@ -951,7 +956,7 @@ async function deleteWorkspace(id) {
   if (!confirm('Remove this workspace? The agent will lose access to it on the next reload.')) return;
   try {
     await api('DELETE', `/admin/agents/${wsAgentId}/workspaces/${id}`);
-    showWsSection();
+    background(showWsSection());
     invalidateWorkspaceCache(wsAgentId);
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -989,7 +994,7 @@ let panelSseAbort = null;
 const panelInFlight = new Set();
 
 function startTilesPolling() {
-  refreshTiles();
+  background(refreshTiles());
   stopTilesPolling();
   tilesPollHandle = setInterval(refreshTiles, 10_000);
 }
@@ -1146,7 +1151,7 @@ let panelApprovalAbort = null;
 function ensurePanelApprovalSse() {
   if (panelApprovalAbort) return;
   panelApprovalAbort = new AbortController();
-  sseFetch('/admin/api/approvals/stream', handlePanelApprovalEvent, panelApprovalAbort.signal);
+  background(sseFetch('/admin/api/approvals/stream', handlePanelApprovalEvent, panelApprovalAbort.signal));
 }
 function closePanelApprovalSse() {
   if (!panelApprovalAbort) return;
@@ -1157,7 +1162,7 @@ function handlePanelApprovalEvent(ev) {
   const a = ev?.approval;
   if (!a || a.conversation_id !== panelConvoId) return;
   if (ev.kind === 'requested') {
-    appendInlineApprovals();
+    background(appendInlineApprovals());
   } else if (ev.kind === 'decided') {
     // Flip the inline card to a stamp in place; it clears on the next full
     // transcript reload when the agent's follow-up message arrives.
@@ -1489,7 +1494,7 @@ function closeAgentPanel() {
 function ensurePanelSse() {
   if (panelSseAbort) return;
   panelSseAbort = new AbortController();
-  sseFetch('/admin/api/conversations/stream', handlePanelSseEvent, panelSseAbort.signal);
+  background(sseFetch('/admin/api/conversations/stream', handlePanelSseEvent, panelSseAbort.signal));
 }
 
 // Resume handler: iOS Safari (and to a lesser extent desktop browsers
@@ -1505,7 +1510,7 @@ document.addEventListener('visibilitychange', () => {
   if (!panelAgentId) return;
   closePanelSse();
   ensurePanelSse();
-  loadPanelTranscript();
+  background(loadPanelTranscript());
 });
 
 function closePanelSse() {
@@ -1525,7 +1530,7 @@ function handlePanelSseEvent(ev) {
     // Authoritative re-render from server state. Wipes any optimistic
     // bubbles + applies any out-of-band turns (telegram bot, MCP
     // caller, agent-to-agent, second browser tab).
-    loadPanelTranscript();
+    background(loadPanelTranscript());
   } else if (ev.kind === 'ask-start') {
     panelInFlight.add(ev.conversation_id);
     ensurePendingBubble();
@@ -1637,7 +1642,7 @@ async function loadConversationsTab() {
       });
       // Drop any open detail when switching — the open one may not be in the new set.
       $('conv-detail').classList.add('hidden');
-      refreshConversationList();
+      background(refreshConversationList());
     };
   });
 }
@@ -1741,11 +1746,11 @@ async function loadMemoriesTab() {
       `<option value="${esc(a.id)}" ${a.id===cur?'selected':''}>${glyphShape(a.id)}  ${esc(a.id)}</option>`,
     ).join('');
     $('mem-agent-pick').onchange = (e) => {
-      if (e.target.value) { memAgentId = e.target.value; loadMemories(memAgentId); $('mem-seed-form').classList.remove('hidden'); }
+      if (e.target.value) { memAgentId = e.target.value; background(loadMemories(memAgentId)); $('mem-seed-form').classList.remove('hidden'); }
       else { memAgentId = null; $('mem-list').innerHTML = 'pick an agent above…'; $('mem-seed-form').classList.add('hidden'); }
       $('mem-lineage').classList.add('hidden');
     };
-    if (cur) { memAgentId = cur; loadMemories(cur); $('mem-seed-form').classList.remove('hidden'); }
+    if (cur) { memAgentId = cur; background(loadMemories(cur)); $('mem-seed-form').classList.remove('hidden'); }
   } catch (e) { toast(e.message, 'err'); }
 }
 /** id of the agent currently selected on the Memories tab. */
@@ -1782,7 +1787,7 @@ async function seedMemory() {
   try {
     await api('POST', '/admin/api/memories', { agent_id: memAgentId, content });
     $('mem-seed-content').value = '';
-    loadMemories(memAgentId);
+    background(loadMemories(memAgentId));
     toast('memory saved');
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1795,7 +1800,7 @@ async function editMemory(id, currentContent) {
   if (trimmed === currentContent.trim()) return;  // nothing to do
   try {
     await api('PATCH', `/admin/api/memories/${id}`, { content: trimmed });
-    if (memAgentId) loadMemories(memAgentId);
+    if (memAgentId) background(loadMemories(memAgentId));
     toast('memory updated (old version preserved in lineage)');
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1804,7 +1809,7 @@ async function deleteMemory(id) {
   if (!confirm(`Delete memory ${id}? It will be tombstoned (visible in lineage, hidden from active list).`)) return;
   try {
     await api('DELETE', `/admin/api/memories/${id}`);
-    if (memAgentId) loadMemories(memAgentId);
+    if (memAgentId) background(loadMemories(memAgentId));
     toast('memory deleted');
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1923,7 +1928,7 @@ function loadChannelForm(c) {
   $('ch-enabled').checked = !!c.enabled;
   editingBoundChatId = typeof c.config?.chat_id === 'number' ? c.config.chat_id : null;
   $('ch-recent-wrap').classList.remove('hidden');
-  refreshChannelRecentChats(c.id);
+  background(refreshChannelRecentChats(c.id));
 }
 function clearChannelForm() {
   $('ch-id').value = '';
@@ -2003,16 +2008,16 @@ async function submitChannel() {
       toast('created — now DM the bot and click Bind on the chat that appears');
     }
     clearChannelForm();
-    refreshChannels();
+    background(refreshChannels());
   } catch (e) { toast(e.message, 'err'); }
 }
 async function toggleChannel(id, enabled) {
-  try { await api('PATCH', `/admin/api/channels/${id}`, { enabled }); refreshChannels(); }
+  try { await api('PATCH', `/admin/api/channels/${id}`, { enabled }); background(refreshChannels()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function deleteChannel(id, name) {
   if (!confirm(`Delete channel "${name}"? The bot will stop receiving messages immediately.`)) return;
-  try { await api('DELETE', `/admin/api/channels/${id}`); refreshChannels(); }
+  try { await api('DELETE', `/admin/api/channels/${id}`); background(refreshChannels()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2039,7 +2044,7 @@ async function saveClaudeToken() {
     await api('POST', '/admin/api/claude-token', { token });
     $('cs-token').value = '';   // never keep the secret in the DOM
     toast('saved — agents reloaded');
-    loadClaudeToken();
+    background(loadClaudeToken());
   } catch (e) { toast(e.message, 'err'); }
 }
 async function clearClaudeToken() {
@@ -2047,7 +2052,7 @@ async function clearClaudeToken() {
   try {
     await api('DELETE', '/admin/api/claude-token');
     toast('cleared — agents reloaded');
-    loadClaudeToken();
+    background(loadClaudeToken());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2096,7 +2101,7 @@ async function mintApiKey() {
     $('ak-minted-overlay').classList.add('open');
     $('ak-name').value = '';
     $('ak-plaintext').value = '';
-    refreshApiKeys();
+    background(refreshApiKeys());
   } catch (e) { toast(e.message, 'err'); }
 }
 function closeMintedKeyModal() {
@@ -2105,12 +2110,12 @@ function closeMintedKeyModal() {
 }
 async function revokeApiKey(id) {
   if (!confirm('Revoke this API key? Agents using it will fail until they switch keys.')) return;
-  try { await api('POST', `/admin/api/api-keys/${id}/revoke`); refreshApiKeys(); }
+  try { await api('POST', `/admin/api/api-keys/${id}/revoke`); background(refreshApiKeys()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function deleteApiKey(id) {
   if (!confirm('Delete this revoked API key permanently?')) return;
-  try { await api('DELETE', `/admin/api/api-keys/${id}`); refreshApiKeys(); }
+  try { await api('DELETE', `/admin/api/api-keys/${id}`); background(refreshApiKeys()); }
   catch (e) { toast(e.message, 'err'); }
 }
 // Wire the API-key one-time-show modal's Copy button. The button is static
@@ -2193,7 +2198,7 @@ async function mintToken() {
     // Cleared when the browser tab closes. Survives reloads.
     rememberToken(minted.id, minted.name, minted.token);
     showMintedTokenModal(minted);
-    refreshTokens(); refreshInfo();
+    background(refreshTokens()); background(refreshInfo());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2240,12 +2245,12 @@ function showMintedTokenModal(minted) {
 function closeMintModal() { $('modal-root').innerHTML = ''; }
 async function revokeToken(id) {
   if (!confirm('Revoke this token? Future MCP calls using it will be rejected.')) return;
-  try { await api('POST', `/admin/api/tokens/${id}/revoke`); refreshTokens(); refreshInfo(); }
+  try { await api('POST', `/admin/api/tokens/${id}/revoke`); background(refreshTokens()); background(refreshInfo()); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function deleteToken(id) {
   if (!confirm('Delete this revoked token? Frees the name for re-use.')) return;
-  try { await api('DELETE', `/admin/api/tokens/${id}`); refreshTokens(); refreshInfo(); }
+  try { await api('DELETE', `/admin/api/tokens/${id}`); background(refreshTokens()); background(refreshInfo()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2278,7 +2283,7 @@ async function loadLogLevels() {
   const levels = ['debug', 'info', 'warn', 'error'];
   $('log-level').innerHTML = levels.map(l => `<option value="${l}" ${l===level?'selected':''}>${l}</option>`).join('');
   $('log-level').onchange = async (e) => {
-    try { await api('POST', '/admin/api/log-level', { level: e.target.value }); toast(`log level: ${e.target.value}`); refreshInfo(); }
+    try { await api('POST', '/admin/api/log-level', { level: e.target.value }); toast(`log level: ${e.target.value}`); background(refreshInfo()); }
     catch (err) { toast(err.message, 'err'); }
   };
 }
@@ -2399,10 +2404,10 @@ async function loadToolsTab() {
     ).join('');
     $('tools-agent-pick').onchange = (e) => {
       toolsAgentId = e.target.value || null;
-      if (toolsAgentId) renderToolsFor(toolsAgentId);
+      if (toolsAgentId) background(renderToolsFor(toolsAgentId));
       else $('tools-view').innerHTML = '<em class="txt-muted">pick an agent above…</em>';
     };
-    if (cur) { toolsAgentId = cur; renderToolsFor(cur); }
+    if (cur) { toolsAgentId = cur; background(renderToolsFor(cur)); }
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2566,7 +2571,7 @@ async function revokeOAuthClient(clientId, clientName) {
   try {
     await api('POST', `/admin/api/oauth/clients/${encodeURIComponent(clientId)}/revoke`);
     toast('client revoked');
-    loadOAuthClientsTab();
+    background(loadOAuthClientsTab());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2626,11 +2631,11 @@ let approvalsSseAbort = null;
 function ensureApprovalsSse() {
   if (approvalsSseAbort) return;
   approvalsSseAbort = new AbortController();
-  sseFetch('/admin/api/approvals/stream', handleApprovalsSseEvent, approvalsSseAbort.signal);
+  background(sseFetch('/admin/api/approvals/stream', handleApprovalsSseEvent, approvalsSseAbort.signal));
 }
 
 function handleApprovalsSseEvent(ev) {
-  refreshApprovalBadge();
+  background(refreshApprovalBadge());
   // The chat panel handles its own inline copy via the same stream
   // (handlePanelApprovalEvent) when it's open; the queue itself lives on
   // the operations board (/admin/ops).
@@ -2816,7 +2821,7 @@ function approvalStampHtml(a) {
 function approveApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
   if (!id) return;
-  decideApproval(id, 'approved', '', cardEl);
+  background(decideApproval(id, 'approved', '', cardEl));
 }
 function rejectApprovalClick(cardEl) {
   const id = Number(cardEl?.dataset.approvalId);
@@ -2830,7 +2835,7 @@ function rejectApprovalClick(cardEl) {
     return;
   }
   const reason = cardEl.querySelector('.approval-reason')?.value.trim() || '';
-  decideApproval(id, 'rejected', reason, cardEl);
+  background(decideApproval(id, 'rejected', reason, cardEl));
 }
 
 async function decideApproval(id, decision, reason, cardEl) {
@@ -2847,7 +2852,7 @@ async function decideApproval(id, decision, reason, cardEl) {
   }
   // SSE drives the authoritative refresh (badge, list, inline flip). Nudge
   // the badge immediately for snappiness in case SSE is mid-reconnect.
-  refreshApprovalBadge();
+  background(refreshApprovalBadge());
 }
 
 function toggleApprovalDetail(cardEl) {
@@ -2927,7 +2932,7 @@ async function saveConnectorExt(ns) {
     }
     const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'}`;
     toast(wrote ? savedMsg : 'nothing to save');
-    loadExtensionsTab();
+    background(loadExtensionsTab());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -2979,7 +2984,7 @@ const ACTIONS = {
   'edit-memory':            (el) => {
     const id = Number(el.dataset.id);
     const m = memCache.find(x => x.id === id);
-    if (m) editMemory(id, m.content);
+    if (m) background(editMemory(id, m.content));
   },
   'delete-memory':          (el) => deleteMemory(Number(el.dataset.id)),
 
@@ -3027,7 +3032,7 @@ const ACTIONS = {
 
   'copy-mint-token':        () => {
     const text = $('token-plaintext')?.textContent || '';
-    navigator.clipboard.writeText(text).then(() => toast('copied'));
+    navigator.clipboard.writeText(text).then(() => toast('copied')).catch(() => toast('copy failed', 'err'));
   },
   'close-mint-modal':       () => closeMintModal(),
   // Backdrop closes ONLY when the click lands on the backdrop itself —
@@ -3118,7 +3123,7 @@ async function togglePlugin(id, currentlyEnabled) {
   try {
     await api('PATCH', `/admin/api/plugins/${encodeURIComponent(id)}`, { enabled: !currentlyEnabled });
     toast(`Plugin ${currentlyEnabled ? 'disabled' : 'enabled'} — reload to apply it to the nav.`);
-    loadPluginsManager();
+    background(loadPluginsManager());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3160,7 +3165,7 @@ async function saveSettings() {
     // the operator think a saved value took effect immediately.
     $('settings-note').textContent = 'saved — search applies now; retention and rate limits on next restart';
     toast('settings saved');
-    loadSettingsTab();
+    background(loadSettingsTab());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3200,7 +3205,7 @@ async function saveMemoryConfig() {
     $('mem-token').value = '';  // never keep the secret in the DOM
     const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply`;
     toast(wrote ? savedMsg : 'nothing to save');
-    loadMemoryTab();
+    background(loadMemoryTab());
   } catch (e) { toast(e.message, 'err'); }
 }
 async function probeFlashback() {
@@ -3261,13 +3266,13 @@ async function loadBackupsTab() {
 }
 
 async function backupNow() {
-  try { const b = await api('POST', '/admin/api/backup'); toast(`backed up (${(b.size / 1024).toFixed(0)} KB)`, 'ok'); loadBackupsTab(); }
+  try { const b = await api('POST', '/admin/api/backup'); toast(`backed up (${(b.size / 1024).toFixed(0)} KB)`, 'ok'); background(loadBackupsTab()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
 async function deleteBackupFile(name) {
   if (!confirm(`Delete backup ${name}?`)) return;
-  try { await api('DELETE', `/admin/api/backups/${encodeURIComponent(name)}`); loadBackupsTab(); }
+  try { await api('DELETE', `/admin/api/backups/${encodeURIComponent(name)}`); background(loadBackupsTab()); }
   catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3350,7 +3355,7 @@ async function uninstallPlugin(id, name, tableCount) {
   try {
     await api('DELETE', `/admin/api/plugins/${encodeURIComponent(id)}`);
     toast(`Uninstalled ${name}.`);
-    loadPluginsManager();
+    background(loadPluginsManager());
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3363,7 +3368,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('change', (e) => {
-  if (e.target.id === 'merge-file') void mergeFilePicked(e.target);
+  if (e.target.id === 'merge-file') background(mergeFilePicked(e.target));
 });
 
 // ---- bootstrap --------------------------------------------------------
@@ -3405,16 +3410,16 @@ $('agent-form')?.addEventListener('submit', (e) => e.preventDefault());
 // real handler lives in the per-tab section above; this just wires the
 // preventDefault + dispatch in one place (and is also why script-src can
 // drop unsafe-inline — these used to be inline onsubmit= attributes).
-$('ws-form')?.addEventListener('submit', (e) => { e.preventDefault(); addWorkspace(); });
-$('mem-seed-form')?.addEventListener('submit', (e) => { e.preventDefault(); seedMemory(); });
-$('ch-form')?.addEventListener('submit', (e) => { e.preventDefault(); submitChannel(); });
-$('ak-form')?.addEventListener('submit', (e) => { e.preventDefault(); mintApiKey(); });
-$('token-mint-form')?.addEventListener('submit', (e) => { e.preventDefault(); mintToken(); });
+$('ws-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(addWorkspace()); });
+$('mem-seed-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(seedMemory()); });
+$('ch-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(submitChannel()); });
+$('ak-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(mintApiKey()); });
+$('token-mint-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(mintToken()); });
 
 // Slide-in chat panel.
-$('ap-ask-form')?.addEventListener('submit', (e) => { e.preventDefault(); sendPanelAsk(); });
+$('ap-ask-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(sendPanelAsk()); });
 $('ap-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPanelAsk(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); background(sendPanelAsk()); }
 });
 // Textarea autosize → form height changes → re-pad the transcript.
 $('ap-input')?.addEventListener('input', syncTranscriptPadding);
@@ -3424,10 +3429,10 @@ $('ap-input')?.addEventListener('paste', (e) => {
   const items = Array.from(e.clipboardData?.items || []);
   const files = items.filter(it => it.kind === 'file' && it.type.startsWith('image/'))
     .map(it => it.getAsFile()).filter(Boolean);
-  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+  if (files.length) { e.preventDefault(); background(addAttachmentFiles(files)); }
 });
 $('ap-file')?.addEventListener('change', (e) => {
-  addAttachmentFiles(e.target.files);
+  background(addAttachmentFiles(e.target.files));
   e.target.value = ''; // allow re-picking the same file
 });
 const apPanelEl = $('agent-panel');
@@ -3444,7 +3449,7 @@ apPanelEl?.addEventListener('dragleave', (e) => {
 apPanelEl?.addEventListener('drop', (e) => {
   apPanelEl.classList.remove('ap-drag');
   const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
-  if (files.length) { e.preventDefault(); addAttachmentFiles(files); }
+  if (files.length) { e.preventDefault(); background(addAttachmentFiles(files)); }
 });
 
 // Live filters on the Logs tab.

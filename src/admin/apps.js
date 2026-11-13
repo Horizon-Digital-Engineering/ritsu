@@ -7,6 +7,11 @@
 // listeners at the bottom (data-action clicks, data-change inputs) — no
 // inline handlers, no style="…" attributes.
 
+// Fire-and-forget for handlers that start async work and move on: a rejection
+// becomes a visible toast instead of an unhandled promise in the console.
+function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
+
+
 // ---- helpers ---------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -181,7 +186,7 @@ async function boot() {
     main.appendChild(sec);
   }
   switchTab(tabFromHash());
-  void renderAgentAction(plugin);
+  background(renderAgentAction(plugin));
 
   if (plugin.assets?.css) {
     const link = document.createElement('link');
@@ -200,7 +205,7 @@ async function boot() {
 // ---- delegated handlers ----------------------------------------------------
 const ACTIONS = {
   'switch-tab': (el) => switchTab(el.dataset.tab),
-  'load-agent': () => { if (plugin) void loadAgent(plugin); },
+  'load-agent': () => { if (plugin) background(loadAgent(plugin)); },
 };
 
 document.addEventListener('click', (e) => {
