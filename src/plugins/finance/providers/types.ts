@@ -53,6 +53,8 @@ export interface FetchResult {
   holdings: ProviderHolding[];
   /** Opaque resume point for incremental providers; null for window-based ones. */
   cursor: string | null;
+  /** Non-fatal notes from the provider (a capped window, one bank needing attention). */
+  warnings?: string[];
 }
 
 export interface Provider {

@@ -341,7 +341,7 @@ function txRow(t) {
     <td>${splits?.length ? `<span class="muted">split: ${splits.map(s => `${esc(catName(s.category_id))} ${money(s.amount)}`).join(', ')}</span>` : catSelect(t.category_id || '', `data-change="ftx-cat" data-id="${esc(t.id)}" aria-label="category"`)}${t.category_source === 'rule' ? ' <span class="badge src-rule" title="set by a rule">rule</span>' : ''}</td>
     <td class="muted">${esc(acctById.get(t.account_id)?.name || t.account_id)}</td>
     <td class="num ${t.amount > 0 ? 'pos' : 'neg'}">${money(t.amount, t.currency)}</td>
-    <td class="muted">${flags.map(esc).join(' ')}</td>
+    <td class="muted">${flags.map(x => esc(x)).join(' ')}</td>
   </tr>
   <tr class="hidden" id="ftx-editor-${cssId(t.id)}"><td colspan="7"></td></tr>`;
 }
@@ -636,7 +636,7 @@ async function renderRules(pane) {
     const groups = new Map();
     for (const c of cats) { const arr = groups.get(c.group_name) || []; arr.push(c); groups.set(c.group_name, arr); }
     const describe = (r) => `${r.field === 'any' ? 'payee or description' : r.field} ${r.op.replace('_', ' ')} “${esc(r.pattern)}”${r.amount_min != null || r.amount_max != null ? ` · amount ${r.amount_min ?? 0}–${r.amount_max ?? '∞'}` : ''}${r.account_id ? ` · ${esc(acctById.get(r.account_id)?.name || r.account_id)}` : ''}`;
-    const effects = (r) => [r.set_category_id ? `→ ${esc(catName(r.set_category_id))}` : '', r.set_payee ? `rename “${esc(r.set_payee)}”` : '', r.set_excluded != null ? (r.set_excluded ? 'exclude' : 'include') : '', r.set_tags?.length ? `#${r.set_tags.map(esc).join(' #')}` : ''].filter(Boolean).join(' · ');
+    const effects = (r) => [r.set_category_id ? `→ ${esc(catName(r.set_category_id))}` : '', r.set_payee ? `rename “${esc(r.set_payee)}”` : '', r.set_excluded != null ? (r.set_excluded ? 'exclude' : 'include') : '', r.set_tags?.length ? `#${r.set_tags.map(x => esc(x)).join(' #')}` : ''].filter(Boolean).join(' · ');
     pane.innerHTML = `
       <div class="fin-grid">
         ${panel('Rules', `<p class="fin-note">Rules run on every new transaction, in priority order (lower first). They never override a category you set by hand.</p>
@@ -707,7 +707,7 @@ async function renderConnections(pane) {
     await loadRefs();
     const c = await api('GET', `${F}/connections`);
     const connRow = (x) => `<tr><td>${esc(x.label || x.id)}<br><span class="muted">${esc(x.provider)} · ${accounts.filter(a => a.connection_id === x.id).length} accounts</span></td>
-      <td class="${x.status === 'error' ? 'err' : 'ok'}">${esc(x.status)}${x.error ? `<br><span class="muted">${esc(x.error)}</span>` : ''}</td>
+      <td class="${x.status === 'error' ? 'err' : 'ok'}">${esc(x.status)}${x.error ? `<br><span class="${x.status === 'error' ? 'muted' : 'warn'}">${esc(x.error)}</span>` : ''}</td>
       <td class="muted">${x.last_synced_at ? esc(new Date(x.last_synced_at * 1000).toLocaleString()) : 'never'}</td>
       <td class="row-actions"><button data-action="fcn-sync" data-id="${esc(x.id)}">sync</button><button class="danger" data-action="fcn-del" data-id="${esc(x.id)}">remove</button></td></tr>`;
     pane.innerHTML = `
@@ -782,7 +782,7 @@ async function previewImport(pane) {
       const r = await api('POST', `${F}/import/preview`, { account_id: importFile.account_id, filename: importFile.name, content: p, flip_sign: importFile.flip_sign });
       total += r.total; dup += r.duplicates; skipped += r.skipped; first = first || r;
     }
-    if (!first || !total) { box.innerHTML = `<p class="err">No transactions could be read${skipped ? ` (${skipped} rows skipped)` : ''}. ${first?.header ? `Columns seen: ${first.header.map(esc).join(', ')}. ` : ''}If it is a CSV with unusual headers, rename them to Date / Description / Amount and try again.</p>`; return; }
+    if (!first || !total) { box.innerHTML = `<p class="err">No transactions could be read${skipped ? ` (${skipped} rows skipped)` : ''}. ${first?.header ? `Columns seen: ${first.header.map(x => esc(x)).join(', ')}. ` : ''}If it is a CSV with unusual headers, rename them to Date / Description / Amount and try again.</p>`; return; }
     box.innerHTML = `<p class="fin-note">${esc(importFile.name)} → <strong>${esc(acctById.get(importFile.account_id)?.name || '')}</strong>: ${total} rows, <strong>${total - dup}</strong> new, ${dup} already in the ledger${skipped ? `, ${skipped} unreadable rows skipped` : ''}.${first.account_hint?.balance != null ? ` Statement balance: ${money(first.account_hint.balance)}.` : ''}</p>
       ${first.columns ? `<p class="fin-note">Detected columns: ${Object.entries(first.columns).filter(([, v]) => v >= 0).map(([k, v]) => `${k}=${esc(first.header?.[v] ?? v)}`).join(', ')}</p>` : ''}
       <div class="table-wrap fin-preview"><table class="fin"><thead><tr><th>date</th><th>payee</th><th>description</th><th class="num">amount</th><th>category hint</th></tr></thead><tbody>${first.rows.map(r => `<tr><td>${esc(r.date)}</td><td>${esc(r.payee)}</td><td class="muted">${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'pos' : ''}">${money(r.amount)}</td><td class="muted">${esc(r.category_hint)}</td></tr>`).join('')}</tbody></table></div>
