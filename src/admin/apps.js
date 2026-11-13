@@ -83,17 +83,18 @@ async function api(method, path, body) {
 // named handlers for its data-action / data-change elements. A renderer runs
 // when its tab becomes active, or at once if it registers while already
 // active (the plugin script loads after the first tab is shown).
-const pluginTabs = {};
-const pluginActions = {};
-const pluginChanges = {};
+// Maps, not objects: a tab or action name from the URL can never reach a prototype member.
+const pluginTabs = new Map();
+const pluginActions = new Map();
+const pluginChanges = new Map();
 let tabs = [];
 let activeTab = null;
 
 window.ritsu = {
   api, esc, toast,
-  registerTab(tabId, fn) { pluginTabs[tabId] = fn; if (activeTab === tabId) fn($(`pane-${tabId}`)); },
-  registerAction(name, fn) { pluginActions[name] = fn; },
-  registerChange(name, fn) { pluginChanges[name] = fn; },
+  registerTab(tabId, fn) { pluginTabs.set(tabId, fn); if (activeTab === tabId) fn($(`pane-${tabId}`)); },
+  registerAction(name, fn) { pluginActions.set(name, fn); },
+  registerChange(name, fn) { pluginChanges.set(name, fn); },
 };
 
 function renderTabs() {
@@ -108,7 +109,8 @@ function switchTab(id) {
   document.querySelectorAll('#app-main .pane').forEach(p => p.classList.toggle('active', p.id === `pane-${id}`));
   renderTabs();
   if (location.hash !== `#${id}`) history.replaceState(null, '', `#${id}`);
-  if (pluginTabs[id]) pluginTabs[id]($(`pane-${id}`));
+  const render = pluginTabs.get(id);
+  if (render) render($(`pane-${id}`));
 }
 
 function tabFromHash() {
@@ -200,14 +202,14 @@ const ACTIONS = {
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
-  const handler = ACTIONS[el.dataset.action] || pluginActions[el.dataset.action];
+  const handler = ACTIONS[el.dataset.action] || pluginActions.get(el.dataset.action);
   if (handler) handler(el, e);
 });
 
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-change]');
   if (!el) return;
-  const handler = pluginChanges[el.dataset.change];
+  const handler = pluginChanges.get(el.dataset.change);
   if (handler) handler(el, e);
 });
 

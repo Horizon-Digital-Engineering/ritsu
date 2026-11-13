@@ -80,7 +80,7 @@ const toGoal = (r: Row): Goal => ({ ...(r as unknown as Goal), account_ids: JSON
 /** Stable identity for de-duplicating imports against synced rows. */
 export function fingerprint(accountId: string, date: string, amount: number, description: string): string {
   const desc = description.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 40);
-  return createHash('sha1').update(`${accountId}|${date}|${amount.toFixed(2)}|${desc}`).digest('hex').slice(0, 24);
+  return createHash('sha256').update(`${accountId}|${date}|${amount.toFixed(2)}|${desc}`).digest('hex').slice(0, 24);
 }
 
 export class FinanceStore {
@@ -226,7 +226,7 @@ export class FinanceStore {
     return existing ? 'updated' : 'added';
   }
   insertManualTransaction(t: { account_id: string; date: string; payee: string; amount: number; category_id?: string | null; category_source?: string; notes?: string }): Transaction {
-    const id = `manual:${createHash('sha1').update(`${t.account_id}|${t.date}|${t.amount}|${t.payee}|${Date.now()}|${Math.random()}`).digest('hex').slice(0, 20)}`;
+    const id = `manual:${createHash('sha256').update(`${t.account_id}|${t.date}|${t.amount}|${t.payee}|${Date.now()}|${Math.random()}`).digest('hex').slice(0, 20)}`;
     this.db.prepare(
       `INSERT INTO ${this.t('transactions')} (id, account_id, date, description, payee, amount, category_id, category_source, notes, source, reviewed, fingerprint)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 1, ?)`,

@@ -15,7 +15,9 @@ const tag = (block: string, name: string): string => {
   while (end < block.length && block[end] !== '<' && block[end] !== '\r' && block[end] !== '\n') end++;
   return decode(block.slice(start, end).trim());
 };
-const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+// One pass, so "&amp;lt;" decodes to "&lt;" and never to "<".
+const decode = (s: string) => s.replace(/&(amp|lt|gt|quot|apos);/g, (_, k: string) => ENTITIES[k]);
 
 const ofxDate = (s: string): string | null => {
   const m = /^(\d{4})(\d{2})(\d{2})/.exec(s.trim());

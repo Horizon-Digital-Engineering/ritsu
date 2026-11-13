@@ -71,7 +71,7 @@ function looksLikeHeader(cells: string[]): boolean {
 }
 
 const rowId = (accountId: string, r: ImportRow) =>
-  r.ext_id ? `ofx:${accountId}:${r.ext_id}` : `csv:${createHash('sha1').update(`${accountId}|${r.date}|${r.amount.toFixed(2)}|${r.description}|${r.payee}`).digest('hex').slice(0, 24)}`;
+  r.ext_id ? `ofx:${accountId}:${r.ext_id}` : `csv:${createHash('sha256').update(`${accountId}|${r.date}|${r.amount.toFixed(2)}|${r.description}|${r.payee}`).digest('hex').slice(0, 24)}`;
 
 export function previewImport(store: FinanceStore, accountId: string, text: string, filename: string, opts: ImportOptions = {}): ImportPreview {
   const p = parseImport(text, filename, opts);

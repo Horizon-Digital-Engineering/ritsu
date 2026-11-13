@@ -43,7 +43,7 @@ describe('Plaid client + provider', () => {
     const c = new PlaidClient({ creds, fetchImpl: fetch });
     const r = await c.exchangePublicToken('pt');
     assert.equal(r.item_id, 'it');
-    assert.ok(calls[0].url.startsWith('https://sandbox.plaid.com'));
+    assert.equal(new URL(calls[0].url).host, 'sandbox.plaid.com');
     assert.deepEqual(calls[0].body, { client_id: 'cid', secret: 'sec', public_token: 'pt' });
     const bad = fakeFetch({ '/accounts/balance/get': new Response(JSON.stringify({ error_code: 'ITEM_LOGIN_REQUIRED', error_message: 'relink' }), { status: 400 }) });
     await assert.rejects(() => new PlaidClient({ creds, fetchImpl: bad.fetch }).getBalances('x'), (e: unknown) => e instanceof PlaidError && e.code === 'ITEM_LOGIN_REQUIRED');
