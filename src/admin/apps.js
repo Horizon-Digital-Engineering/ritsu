@@ -103,19 +103,23 @@ function renderTabs() {
   ).join('');
 }
 
-function switchTab(id) {
-  if (!tabs.some(t => t.id === id)) return;
+function switchTab(requested) {
+  // Resolve to the manifest's own tab entry: whatever the URL or a button
+  // said, the id used from here on comes from the server, not the caller.
+  const tab = tabs.find(t => t.id === requested);
+  if (!tab) return;
+  const id = tab.id;
   activeTab = id;
   document.querySelectorAll('#app-main .pane').forEach(p => p.classList.toggle('active', p.id === `pane-${id}`));
   renderTabs();
   if (location.hash !== `#${id}`) history.replaceState(null, '', `#${id}`);
   const render = pluginTabs.get(id);
-  if (render) render($(`pane-${id}`));
+  if (typeof render === 'function') render($(`pane-${id}`));
 }
 
 function tabFromHash() {
-  const id = decodeURIComponent(location.hash.replace(/^#/, ''));
-  return tabs.some(t => t.id === id) ? id : (tabs[0]?.id ?? null);
+  const wanted = decodeURIComponent(location.hash.replace(/^#/, ''));
+  return (tabs.find(t => t.id === wanted) ?? tabs[0])?.id ?? null;
 }
 
 // ---- agent button ----------------------------------------------------------
