@@ -41,7 +41,7 @@
     "@types/express": "^5.0.6",
     "@types/mailparser": "^3.9.0",
     "@types/node": "^26.6.6",
-    "@types/nodemailer": "^8.0.1",
+    "@types/nodemailer": "^8.0.2",
     "@typescript-eslint/eslint-plugin": "^8.72.2",
     "@typescript-eslint/parser": "^8.72.2",
     "c8": "^12.0.0",
