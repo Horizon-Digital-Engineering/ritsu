@@ -17,9 +17,6 @@ permissions:
 
 jobs:
   analyze:
-    # A dependabot bump changes no source; build, typecheck, test and the
-    # dependency audit are the checks that answer whether it is safe.
-    if: github.actor != 'dependabot[bot]'
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
@@ -36,11 +33,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # A dependabot bump changes no source. The skip sits on the steps, not
+        # the job: a skipped matrix job never reports the expanded check name
+        # the ruleset requires, and the PR waits on it forever.
+        if: github.actor != 'dependabot[bot]'
 
       # CodeQL needs the workflow file referenced from here to be
       # SHA-pinned (Scorecard's Pinned-Dependencies check) — these are
       # the same pins build.yml and security.yml use elsewhere.
       - name: Initialize CodeQL
+        if: github.actor != 'dependabot[bot]'
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
         with:
           languages: ${{ matrix.language }}
@@ -51,9 +53,11 @@ jobs:
           queries: security-extended
 
       - name: Autobuild
+        if: github.actor != 'dependabot[bot]'
         uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
 
       - name: Perform CodeQL analysis
+        if: github.actor != 'dependabot[bot]'
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
         with:
           category: '/language:${{ matrix.language }}'
