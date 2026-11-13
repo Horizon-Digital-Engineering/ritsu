@@ -707,7 +707,7 @@ async function renderConnections(pane) {
     await loadRefs();
     const c = await api('GET', `${F}/connections`);
     const connRow = (x) => `<tr><td>${esc(x.label || x.id)}<br><span class="muted">${esc(x.provider)} · ${accounts.filter(a => a.connection_id === x.id).length} accounts</span></td>
-      <td class="${x.status === 'error' ? 'err' : 'ok'}">${esc(x.status)}${x.error ? `<br><span class="muted">${esc(x.error)}</span>` : ''}</td>
+      <td class="${x.status === 'error' ? 'err' : 'ok'}">${esc(x.status)}${x.error ? `<br><span class="${x.status === 'error' ? 'muted' : 'warn'}">${esc(x.error)}</span>` : ''}</td>
       <td class="muted">${x.last_synced_at ? esc(new Date(x.last_synced_at * 1000).toLocaleString()) : 'never'}</td>
       <td class="row-actions"><button data-action="fcn-sync" data-id="${esc(x.id)}">sync</button><button class="danger" data-action="fcn-del" data-id="${esc(x.id)}">remove</button></td></tr>`;
     pane.innerHTML = `

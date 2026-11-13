@@ -63,7 +63,7 @@ export async function syncConnection(store: FinanceStore, provider: Provider, co
       const t = store.getTransaction(id);
       if (t) enrichNew(store, rules, t);
     }
-    store.setConnectionStatus(conn.id, 'active', null);
+    store.setConnectionStatus(conn.id, 'active', r.warnings?.length ? r.warnings.join('; ') : null);
   });
   refreshRecurring(store);
   return result;

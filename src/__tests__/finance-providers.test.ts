@@ -98,10 +98,10 @@ describe('SimpleFIN client + provider', () => {
     await assert.rejects(() => claimSetupToken(Buffer.from('http://insecure').toString('base64'), fetch), /https/);
   });
 
-  it('fetches accounts with basic auth over a window and the sync guesses types + categorizes by keyword', async () => {
+  it('fetches accounts with basic auth in 90-day windows, keeps the bridge notes as warnings, and the sync guesses types + categorizes by keyword', async () => {
     const { store } = fresh();
     const { fetch, calls } = fakeFetch({
-      '/simplefin/accounts': { errors: [], accounts: [
+      '/simplefin/accounts': { errors: ['Requested date range exceeds limit of 90 days and was capped.'], accounts: [
         { org: { name: 'Example CU', domain: 'cu.example' }, id: 'ACT-1', name: 'Everyday Checking', currency: 'USD', balance: '2500.10', 'available-balance': '2400.00', 'balance-date': unix(0),
           transactions: [
             { id: 'TX1', posted: unix(3), amount: '-54.20', description: 'TRADER JOES #55', payee: 'Trader Joe\'s' },
@@ -117,9 +117,18 @@ describe('SimpleFIN client + provider', () => {
     store.upsertConnection({ id: 'sf1', provider: 'simplefin', label: '' });
     const r = await syncConnection(store, client.provider(), 'sf1');
     assert.deepEqual(r, { accounts: 3, added: 3, modified: 0, removed: 0, holdings: 1 });
+    // first sync: four windows of at most 90 days, newest first; repeated rows collapse
+    assert.equal(calls.length, 4);
+    for (const c of calls) {
+      const q = new URL(c.url).searchParams;
+      assert.ok((Number(q.get('end-date')) - Number(q.get('start-date'))) / 86_400 <= 91);
+    }
     const u = new URL(calls[0].url);
     assert.ok(u.searchParams.get('start-date'));
     assert.equal(u.searchParams.get('pending'), '1');
+    // the capped-range note is kept on the connection, not treated as a failure
+    assert.equal(store.getConnection('sf1')!.status, 'active');
+    assert.match(store.getConnection('sf1')!.error ?? '', /capped/);
     assert.equal(calls[0].headers.Authorization, `Basic ${Buffer.from('u@x:p').toString('base64')}`);
     const accts = store.listAccounts();
     assert.equal(accts.find(a => a.id === 'simplefin:ACT-2')!.type, 'credit');
@@ -129,10 +138,18 @@ describe('SimpleFIN client + provider', () => {
     assert.equal(store.getTransaction('simplefin:TX2')!.category_id, 'paycheck');
     assert.equal(store.getTransaction('simplefin:TX3')!.pending, true);
     assert.equal(store.listHoldings()[0].symbol, 'VTI');
-    // second sync overlaps the previous window instead of refetching 400 days
+    // second sync is one short overlapping window instead of the four-window walk
     await syncConnection(store, client.provider(), 'sf1');
-    const start2 = Number(new URL(calls[1].url).searchParams.get('start-date'));
+    assert.equal(calls.length, 5);
+    const start2 = Number(new URL(calls[4].url).searchParams.get('start-date'));
     assert.ok(start2 > unix(20));
+  });
+
+  it('a bridge error with no accounts at all fails the sync loudly', async () => {
+    const { store } = fresh();
+    const { fetch } = fakeFetch({ '/simplefin/accounts': { errors: ['Connection to Example CU requires attention.'], accounts: [] } });
+    store.upsertConnection({ id: 'sf2', provider: 'simplefin', label: '' });
+    await assert.rejects(() => syncConnection(store, new SimpleFinClient('https://u:p@bridge.example/simplefin', fetch).provider(), 'sf2'), /requires attention/);
   });
 
   it('guessAccountType reads names and falls back on sign', () => {
