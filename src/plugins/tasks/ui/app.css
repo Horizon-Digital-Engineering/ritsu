@@ -1,0 +1,48 @@
+/* Tasks app. Shares the admin tokens/components from /admin/app.css; only
+   tasks-specific layout lives here. No style= attributes anywhere (CSP). */
+.tk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
+.tk-new { display: flex; gap: 8px; flex: 1 1 20rem; }
+.tk-new #tk-topic { flex: 1 1 10rem; }
+.tk-pick-label { color: var(--muted); font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+.tk-hint { margin: 0 0 12px; font-size: 0.85rem; }
+.tk-session-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 12px; }
+.tk-session-title { margin: 0; font-size: 1.1rem; }
+.tk-count { color: var(--muted); font-size: 0.85rem; }
+
+.tk-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 10px; border: 1px solid var(--line); border-left: 3px solid var(--line);
+  border-radius: 4px; margin-bottom: 5px; background: var(--panel);
+}
+.tk-row.done { border-left-color: var(--ok); }
+.tk-row.done .tk-title { color: var(--muted); text-decoration: line-through; }
+.tk-row.dropped { border-left-color: var(--line); opacity: 0.6; }
+.tk-row.tk-child { margin-left: 28px; }
+/* The admin sheet widens every input; a checkbox must stay its own size. */
+.tk-row input[type="checkbox"] { width: auto; flex: 0 0 auto; margin: 3px 0 0; }
+.tk-main { flex: 1 1 auto; min-width: 0; }
+.tk-title-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.tk-title { overflow-wrap: anywhere; }
+.tk-high { color: var(--warn); font-weight: 700; }
+.tk-tag { border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; font-size: 0.72rem; color: var(--muted); }
+.tk-due { font-size: 0.75rem; color: var(--accent); }
+.tk-due.over { color: var(--err); }
+.tk-blocker { font-size: 0.78rem; color: var(--warn); }
+.tk-dropped { font-size: 0.78rem; color: var(--muted); }
+.tk-notes { color: var(--muted); font-size: 0.82rem; margin-top: 2px; white-space: pre-wrap; }
+.tk-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.tk-mini { padding: 1px 8px; font-size: 0.75rem; line-height: 1.4; }
+.tk-mini-link { font-size: 0.8rem; }
+.tk-closed { margin-top: 10px; }
+.tk-closed > summary { color: var(--muted); font-size: 0.85rem; cursor: pointer; margin-bottom: 6px; }
+
+.tk-add, .tk-search { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.tk-add #tk-add-title { flex: 2 1 14rem; }
+.tk-add #tk-add-tags { flex: 1 1 10rem; }
+.tk-search #tk-q { flex: 1 1 14rem; }
+.tk-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.tk-group { margin-bottom: 16px; }
+.tk-group-head { margin: 0 0 6px; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+
+.tk-table td, .tk-table th { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.tk-table td.num, .tk-table th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }

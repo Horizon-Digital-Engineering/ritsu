@@ -219,9 +219,9 @@ describe('projects plugin — agent tools (MCP surface)', () => {
     host.register(projectsPlugin);
     const by = Object.fromEntries(host.toolsFor('projects').map(t => [t.name, t]));
     new ProjectStore(new ScopedDb(db, 'projects')).upsert({ id: 'alpha', name: 'Alpha' });
-    const created = await by.create_task.handler({ project_id: 'alpha', title: 'ship' }, { agentId: 'a1' });
+    const created = await by.create_task.handler({ project_id: 'alpha', title: 'ship' }, { agentId: 'a1', conversationId: null });
     assert.match(created.content[0].text, /created task/);
-    const listed = await by.list_tasks.handler({ project: 'alpha' }, { agentId: 'a1' });
+    const listed = await by.list_tasks.handler({ project: 'alpha' }, { agentId: 'a1', conversationId: null });
     assert.match(listed.content[0].text, /ship/);
   });
 

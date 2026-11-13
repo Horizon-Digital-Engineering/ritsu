@@ -33,7 +33,7 @@ function jsonSchema(shape: PluginToolDef['input']): Record<string, unknown> {
   return js;
 }
 
-export function buildPluginTools(sets: PluginToolSet[], agentId: string): RaTool[] {
+export function buildPluginTools(sets: PluginToolSet[], agentId: string, conversationId: number | null = null): RaTool[] {
   const out: RaTool[] = [];
   for (const { id, tools } of sets) {
     for (const def of tools) {
@@ -41,7 +41,7 @@ export function buildPluginTools(sets: PluginToolSet[], agentId: string): RaTool
         name: `mcp__${id}__${def.name}`,
         description: def.description,
         parameters: jsonSchema(def.input),
-        handler: async (args) => resultText(id, def, await Promise.resolve(def.handler(args, { agentId }))),
+        handler: async (args) => resultText(id, def, await Promise.resolve(def.handler(args, { agentId, conversationId }))),
       });
     }
   }

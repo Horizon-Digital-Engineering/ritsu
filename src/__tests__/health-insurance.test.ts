@@ -56,14 +56,14 @@ describe('health plugin — insurance tools', () => {
     host.register(healthPlugin);
     const tools = Object.fromEntries(host.toolsFor('health').map(t => [t.name, t]));
 
-    const plan = await tools.set_insurance_plan.handler({ plan_year: 2026, carrier: 'BlueCross', plan_name: 'PPO 3000', deductible_individual: 3000 }, { agentId: 'x' });
+    const plan = await tools.set_insurance_plan.handler({ plan_year: 2026, carrier: 'BlueCross', plan_name: 'PPO 3000', deductible_individual: 3000 }, { agentId: 'x', conversationId: null });
     const planId = Number(/id=(\d+)/.exec(plan.content[0].text)![1]);
-    await tools.add_benefit.handler({ plan_id: planId, category: 'Specialist', cost_type: 'copay', amount: 50 }, { agentId: 'x' });
-    await tools.add_benefits_document.handler({ title: 'SBC', text: 'Acupuncture is covered up to 12 visits per year.' }, { agentId: 'x' });
+    await tools.add_benefit.handler({ plan_id: planId, category: 'Specialist', cost_type: 'copay', amount: 50 }, { agentId: 'x', conversationId: null });
+    await tools.add_benefits_document.handler({ title: 'SBC', text: 'Acupuncture is covered up to 12 visits per year.' }, { agentId: 'x', conversationId: null });
 
-    const spec = await tools.coverage_for.handler({ service: 'Specialist' }, { agentId: 'x' });
+    const spec = await tools.coverage_for.handler({ service: 'Specialist' }, { agentId: 'x', conversationId: null });
     assert.match(spec.content[0].text, /\$50 copay/);
-    const acu = await tools.coverage_for.handler({ service: 'acupuncture' }, { agentId: 'x' });
+    const acu = await tools.coverage_for.handler({ service: 'acupuncture' }, { agentId: 'x', conversationId: null });
     assert.match(acu.content[0].text, /12 visits/);   // quoted from the dumped doc
 
     // read tools fenced, writes not gated

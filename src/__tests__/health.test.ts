@@ -87,9 +87,9 @@ describe('health plugin registration + tools', () => {
     const host = new PluginHost(db, new SecretStore(db));
     host.register(healthPlugin);
     const tools = Object.fromEntries(host.toolsFor('health').map(t => [t.name, t]));
-    await tools.log_weight.handler({ value: 185, date: '2026-01-01' }, { agentId: 'x' });
-    await tools.log_weight.handler({ value: 179, date: '2026-06-01' }, { agentId: 'x' });
-    const out = await tools.trend.handler({ label: 'Weight' }, { agentId: 'x' });
+    await tools.log_weight.handler({ value: 185, date: '2026-01-01' }, { agentId: 'x', conversationId: null });
+    await tools.log_weight.handler({ value: 179, date: '2026-06-01' }, { agentId: 'x', conversationId: null });
+    const out = await tools.trend.handler({ label: 'Weight' }, { agentId: 'x', conversationId: null });
     assert.match(out.content[0].text, /185.*179/s);
   });
 
@@ -101,7 +101,7 @@ describe('health plugin registration + tools', () => {
     return Object.fromEntries(host.toolsFor('health').map(t => [t.name, t]));
   }
   const call = (t: ToolMap, name: string, args: Record<string, unknown>): Promise<string> =>
-    Promise.resolve(t[name].handler(args, { agentId: 'x' })).then(r => r.content[0].text);
+    Promise.resolve(t[name].handler(args, { agentId: 'x', conversationId: null })).then(r => r.content[0].text);
 
   it('observation + medication + labs + correlate tool handlers render their confirmations', async () => {
     const t = tools();

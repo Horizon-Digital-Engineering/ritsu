@@ -6,7 +6,7 @@ export function pluginMcpProvider(id: string, tools: PluginToolDef[]): McpProvid
   return {
     namespace: id,
     build: (ctx) => ({
-      server: buildPluginToolServer(id, tools, ctx.agentId, ctx.gate),
+      server: buildPluginToolServer(id, tools, ctx.agentId, ctx.gate, ctx.conversationId),
       toolNames: pluginToolFullNames(id, tools),
       gatedTools: tools.filter(t => t.needsApproval).map(t => `mcp__${id}__${t.name}`),
     }),
