@@ -518,7 +518,7 @@ function wrap(d: DatabaseSync): Db {
  * remove or rename columns from this codepath — write a script for that.
  */
 export function openDatabase(dbPath: string): Db {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
   const db = wrap(new DatabaseSync(dbPath));
   db.exec(SCHEMA);
   migrate(db);
