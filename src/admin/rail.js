@@ -56,12 +56,12 @@ function background(promise) { promise.catch(e => console.error(e)); }
     let after = workspace || rail.querySelector('.rail-logo');
     for (const p of apps) {
       const btn = appButton(p, p.id === currentId);
-      after.insertAdjacentElement('afterend', btn);
+      after.after(btn);
       after = btn;
     }
     const sep = document.createElement('span');
     sep.className = 'rail-sep';
-    after.insertAdjacentElement('afterend', sep);
+    after.after(sep);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);

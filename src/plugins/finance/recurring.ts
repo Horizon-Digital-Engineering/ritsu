@@ -20,7 +20,7 @@ export function payeeKey(s: string): string {
   return s.toLowerCase()
     .replace(/https?:\/\/\S+/g, ' ')
     .replace(/\.(com|net|org|io|co|us)\b/g, ' ')
-    .replace(/\S*\d\S*/g, ' ')
+    .split(/\s+/).filter(tok => !/\d/.test(tok)).join(' ')
     .replace(/[^a-z& ]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -44,8 +44,8 @@ function steadyAmounts(amounts: number[]): boolean {
   return amounts.every(a => Math.abs(a - avg) <= Math.max(2, Math.abs(avg) * 0.2));
 }
 
-/** `txns` should span at least ~13 months for yearly items to show. */
-export function detectRecurring(txns: Transaction[], today: string): DetectedRecurring[] {
+/** Outflows per account+payee; pending rows and transfers never count. */
+function groupByPayee(txns: Transaction[]): Map<string, Transaction[]> {
   const groups = new Map<string, Transaction[]>();
   for (const t of txns) {
     if (t.amount >= 0 || t.pending || t.transfer_group) continue;
@@ -54,33 +54,60 @@ export function detectRecurring(txns: Transaction[], today: string): DetectedRec
     const k = `${t.account_id}|${key}`;
     const arr = groups.get(k); if (arr) arr.push(t); else groups.set(k, [t]);
   }
+  return groups;
+}
+
+/** Date-ordered occurrences; same-day duplicates (a retry, a split charge) are one. */
+function occurrences(list: Transaction[]): Transaction[] {
+  const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
+  return sorted.filter((t, i) => i === 0 || t.date !== sorted[i - 1].date);
+}
+
+function cadenceOf(dedup: Transaction[]): Cadence | null {
+  const gaps: number[] = [];
+  for (let i = 1; i < dedup.length; i++) gaps.push((Date.parse(dedup[i].date) - Date.parse(dedup[i - 1].date)) / 86_400_000);
+  const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  const cadence = classify(avgGap);
+  if (!cadence) return null;
+  // Two data points only prove a yearly/quarterly pattern; shorter cadences need three.
+  if ((cadence === 'weekly' || cadence === 'biweekly') && dedup.length < 3) return null;
+  const steady = gaps.every(g => Math.abs(g - avgGap) <= Math.max(3, avgGap * 0.25));
+  return steady ? cadence : null;
+}
+
+function isStale(lastDate: string, cadence: Cadence, today: string): boolean {
+  return (Date.parse(today) - Date.parse(lastDate)) / 86_400_000 > CADENCE_DAYS[cadence] * 2 + 7;
+}
+
+function nextDue(lastDate: string, cadence: Cadence, today: string): string {
+  let next = addDays(lastDate, CADENCE_DAYS[cadence]);
+  while (next < today) next = addDays(next, CADENCE_DAYS[cadence]);
+  return next;
+}
+
+function proposal(key: string, list: Transaction[], today: string): DetectedRecurring | null {
+  if (list.length < 2) return null;
+  const dedup = occurrences(list);
+  if (dedup.length < 2) return null;
+  const cadence = cadenceOf(dedup);
+  if (!cadence) return null;
+  const amounts = dedup.map(t => t.amount);
+  if (!steadyAmounts(amounts)) return null;
+  const last = dedup.at(-1)!;
+  if (isStale(last.date, cadence, today)) return null;
+  return {
+    payee_key: key.split('|')[1], display_name: last.payee || last.description, category_id: last.category_id,
+    account_id: last.account_id, amount: amounts.reduce((a, b) => a + b, 0) / amounts.length, cadence,
+    last_date: last.date, next_date: nextDue(last.date, cadence, today), occurrences: dedup.length,
+  };
+}
+
+/** `txns` should span at least ~13 months for yearly items to show. */
+export function detectRecurring(txns: Transaction[], today: string): DetectedRecurring[] {
   const out: DetectedRecurring[] = [];
-  for (const [k, list] of groups) {
-    if (list.length < 2) continue;
-    const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
-    // Same-day duplicates (a retry, a split charge) are one occurrence.
-    const dedup = sorted.filter((t, i) => i === 0 || t.date !== sorted[i - 1].date);
-    if (dedup.length < 2) continue;
-    const gaps: number[] = [];
-    for (let i = 1; i < dedup.length; i++) gaps.push((Date.parse(dedup[i].date) - Date.parse(dedup[i - 1].date)) / 86_400_000);
-    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-    const cadence = classify(avgGap);
-    if (!cadence) continue;
-    // Two data points only prove a yearly/quarterly pattern; shorter cadences need three.
-    if ((cadence === 'weekly' || cadence === 'biweekly') && dedup.length < 3) continue;
-    if (!gaps.every(g => Math.abs(g - avgGap) <= Math.max(3, avgGap * 0.25))) continue;
-    const amounts = dedup.map(t => t.amount);
-    if (!steadyAmounts(amounts)) continue;
-    const last = dedup.at(-1)!;
-    const stale = (Date.parse(today) - Date.parse(last.date)) / 86_400_000 > CADENCE_DAYS[cadence] * 2 + 7;
-    if (stale) continue;
-    let next = addDays(last.date, CADENCE_DAYS[cadence]);
-    while (next < today) next = addDays(next, CADENCE_DAYS[cadence]);
-    out.push({
-      payee_key: k.split('|')[1], display_name: last.payee || last.description, category_id: last.category_id,
-      account_id: last.account_id, amount: amounts.reduce((a, b) => a + b, 0) / amounts.length, cadence,
-      last_date: last.date, next_date: next, occurrences: dedup.length,
-    });
+  for (const [k, list] of groupByPayee(txns)) {
+    const p = proposal(k, list, today);
+    if (p) out.push(p);
   }
   return out.sort((a, b) => a.amount - b.amount);
 }

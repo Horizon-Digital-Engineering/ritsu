@@ -260,7 +260,7 @@ async function cmdRotate(ctx: CommandContext): Promise<number> {
 
 /** Create the first key. Separate from rotate, which re-encrypts existing rows
  *  under a replacement — there is nothing to re-encrypt before one exists. */
-async function cmdInit(_ctx: CommandContext): Promise<number> {
+function cmdInit(_ctx: CommandContext): number {
   const status = masterKeyStatus();
   if (status.ok) {
     console.error(`a master key is already active (${status.source}) — use 'rotate' to replace it`);

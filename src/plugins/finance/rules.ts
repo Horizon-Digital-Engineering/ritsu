@@ -8,8 +8,16 @@ import type { Rule, Transaction } from './store.js';
 
 export interface RuleEffect { category_id?: string | null; payee?: string; excluded?: boolean; tags?: string[] }
 
+function haystack(field: string, t: Transaction): string[] {
+  switch (field) {
+    case 'payee': return [t.payee];
+    case 'description': return [t.description];
+    default: return [t.payee, t.description];
+  }
+}
+
 function textMatches(rule: Rule, t: Transaction): boolean {
-  const hay = rule.field === 'payee' ? [t.payee] : rule.field === 'description' ? [t.description] : [t.payee, t.description];
+  const hay = haystack(rule.field, t);
   const needle = rule.pattern.toLowerCase();
   return hay.some(h => {
     const s = h.toLowerCase();

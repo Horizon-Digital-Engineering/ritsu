@@ -184,6 +184,7 @@ async function sseReadBody(body, onEvent, signal) {
 }
 
 async function sseFetch(path, onEvent, signal) {
+  // Reconnect loop: one live stream at a time, next attempt only after the last drops.
   while (!signal.aborted) {
     try {
       const r = await fetch(path, {
@@ -1340,13 +1341,12 @@ async function processImageFile(file) {
 
 async function addAttachmentFiles(files) {
   const list = Array.from(files || []).filter(f => f?.type?.startsWith('image/'));
-  for (const f of list) {
-    if (panelAttachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
-    try {
-      panelAttachments.push(await processImageFile(f));
-    } catch (e) {
-      toast(e.message || 'could not attach image', 'err');
-    }
+  const room = Math.max(0, ATTACH_MAX - panelAttachments.length);
+  if (list.length > room) toast(`max ${ATTACH_MAX} images per message`, 'err');
+  const results = await Promise.allSettled(list.slice(0, room).map(processImageFile));
+  for (const r of results) {
+    if (r.status === 'fulfilled') panelAttachments.push(r.value);
+    else toast(r.reason?.message || 'could not attach image', 'err');
   }
   renderAttachTray();
 }
@@ -2268,12 +2268,12 @@ async function openLogStream() {
     renderLogs();
   } catch (e) { toast(e.message, 'err'); }
   logStreamAbort = new AbortController();
-  sseFetch('/admin/api/events/stream', (ev) => {
+  background(sseFetch('/admin/api/events/stream', (ev) => {
     if (logPaused) return;
     logBuffer.push(ev);
     if (logBuffer.length > LOG_MAX) logBuffer.shift();
     renderLogs();
-  }, logStreamAbort.signal);
+  }, logStreamAbort.signal));
 }
 function closeLogStream() {
   if (logStreamAbort) { logStreamAbort.abort(); logStreamAbort = null; }
@@ -2922,6 +2922,7 @@ async function saveConnectorExt(ns) {
   if (!conn) return;
   let wrote = 0;
   try {
+    // Sequential so a failure leaves an honest `wrote` count and a clean prefix saved.
     for (const f of conn.fields) {
       const el = $(`${conn.prefix}-${f}`);
       const value = (el?.value || '').trim();
@@ -3196,6 +3197,7 @@ async function saveMemoryConfig() {
   ];
   let wrote = 0;
   try {
+    // Sequential so a failure leaves an honest `wrote` count and a clean prefix saved.
     for (const [name, raw] of fields) {
       const value = (raw || '').trim();
       if (!value) continue;

@@ -19,8 +19,13 @@ import { categorizeByKeyword } from './categories.js';
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 const today = () => new Date().toISOString().slice(0, 10);
-const money = (n: number | null | undefined, ccy = 'USD') => n == null ? '—' : `${n < 0 ? '-' : ''}${ccy === 'USD' ? '$' : `${ccy} `}${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const whole = (n: number, ccy = 'USD') => `${n < 0 ? '-' : ''}${ccy === 'USD' ? '$' : `${ccy} `}${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
+const sign = (n: number) => n < 0 ? '-' : '';
+const unit = (ccy: string) => ccy === 'USD' ? '$' : `${ccy} `;
+const money = (n: number | null | undefined, ccy = 'USD') => {
+  if (n == null) return '—';
+  return `${sign(n)}${unit(ccy)}${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+const whole = (n: number, ccy = 'USD') => `${sign(n)}${unit(ccy)}${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
 
 // ---- providers from the plugin's secrets -----------------------------------
 function plaidFrom(secrets: PluginSecrets): PlaidClient | null {
@@ -50,6 +55,7 @@ function providerFor(store: FinanceStore, secrets: PluginSecrets, connId: string
 
 async function syncAll(store: FinanceStore, secrets: PluginSecrets, logger: PluginLogger): Promise<Record<string, SyncResult | string>> {
   const out: Record<string, SyncResult | string> = {};
+  // One connection at a time: each sync is its own store transaction and the providers rate-limit.
   for (const c of store.listConnections()) {
     try {
       out[c.id] = await syncConnection(store, providerFor(store, secrets, c.id), c.id);
@@ -119,6 +125,43 @@ function overview(store: FinanceStore) {
 }
 
 // ---- agent tools (read-only over the ledger; fenced) -----------------------
+function accountLine(a: ReturnType<FinanceStore['listAccounts']>[number]): string {
+  const mask = a.mask ? ` ••${a.mask}` : '';
+  const subtype = a.subtype ? `/${a.subtype}` : '';
+  const inst = a.institution ? `@ ${a.institution} ` : '';
+  const flags = `${a.hidden ? ' (hidden)' : ''}${a.closed ? ' (closed)' : ''}`;
+  return `${a.name}${mask} [${a.type}${subtype}] ${inst}— ${money(a.balance, a.currency)} as of ${a.balance_as_of || '?'}${flags}`;
+}
+
+function cashFlowLine(r: ReturnType<typeof cashFlow>[number]): string {
+  const saved = r.savings_rate == null ? '' : ` (${Math.round(r.savings_rate * 100)}% saved)`;
+  return `  ${r.month}: income ${whole(r.income)}, expenses ${whole(r.expenses)}, net ${whole(r.net)}${saved}`;
+}
+
+function txnLine(r: ReturnType<FinanceStore['listTransactions']>['rows'][number], names: Map<string, string>): string {
+  const notes = r.notes ? ` — ${r.notes}` : '';
+  const tags = r.tags.length ? ` #${r.tags.join(' #')}` : '';
+  return `${r.date} ${r.payee}: ${money(r.amount, r.currency)} [${names.get(r.category_id ?? '') ?? 'uncategorized'}]${notes}${tags}`;
+}
+
+function budgetLine(l: ReturnType<typeof budgetReport>['lines'][number]): string {
+  const status = l.over ? `OVER by ${money(-l.remaining)}` : `${money(l.remaining)} left`;
+  return `  ${l.name}: ${money(l.actual)} / ${money(l.budget)} — ${status}`;
+}
+
+function goalLine(p: ReturnType<typeof goalProgress>): string {
+  const g = p.goal;
+  let pace = '';
+  if (p.on_track != null) pace = p.on_track ? ', on track' : ', behind';
+  const target = g.target_date ? `, target ${g.target_date}, needs ${money(p.monthly_needed)}/mo${pace}` : '';
+  return `${g.name} (${g.kind}): ${money(p.current)} of ${money(g.target_amount)} — ${Math.round(p.progress * 100)}%${target}`;
+}
+
+function holdingLine(h: ReturnType<FinanceStore['listHoldings']>[number], accts: Map<string, string>): string {
+  const basis = h.cost_basis == null ? '' : ` (basis ${money(h.cost_basis, h.currency)})`;
+  return `${accts.get(h.account_id) ?? h.account_id}: ${h.symbol || h.description} ×${h.quantity ?? '?'} = ${money(h.market_value, h.currency)}${basis} as of ${h.as_of}`;
+}
+
 function defineTools(ctx: PluginToolContext): void {
   const store = new FinanceStore(ctx.db);
   const stamp = () => { const a = asOf(store); return a ? `(data as of ${a.slice(0, 16).replace('T', ' ')} UTC)` : '(no data synced yet)'; };
@@ -137,7 +180,8 @@ function defineTools(ctx: PluginToolContext): void {
       const series = netWorthSeries(store.balanceHistory(from, t), store.balancesBefore(from), accounts, from, t);
       const delta = series.length >= 2 ? nw.net - series[0].net : null;
       const lines = nw.byType.map(x => `  ${x.type}: ${money(x.total, nw.currency)} (${x.accounts} acct)`).join('\n');
-      return text(`Net worth: ${money(nw.net, nw.currency)} ${stamp()}\n  assets: ${money(nw.assets, nw.currency)}\n  liabilities: ${money(nw.liabilities, nw.currency)}${delta != null ? `\n  30-day change: ${money(delta, nw.currency)}` : ''}\nBy type:\n${lines}`);
+      const change = delta == null ? '' : `\n  30-day change: ${money(delta, nw.currency)}`;
+      return text(`Net worth: ${money(nw.net, nw.currency)} ${stamp()}\n  assets: ${money(nw.assets, nw.currency)}\n  liabilities: ${money(nw.liabilities, nw.currency)}${change}\nBy type:\n${lines}`);
     },
   });
 
@@ -149,7 +193,7 @@ function defineTools(ctx: PluginToolContext): void {
     handler: () => {
       const accts = store.listAccounts();
       if (!accts.length) return text('(no accounts yet)');
-      return text(accts.map(a => `${a.name}${a.mask ? ` ••${a.mask}` : ''} [${a.type}${a.subtype ? `/${a.subtype}` : ''}] ${a.institution ? `@ ${a.institution} ` : ''}— ${money(a.balance, a.currency)} as of ${a.balance_as_of || '?'}${a.hidden ? ' (hidden)' : ''}${a.closed ? ' (closed)' : ''}`).join('\n'));
+      return text(accts.map(accountLine).join('\n'));
     },
   });
 
@@ -164,7 +208,7 @@ function defineTools(ctx: PluginToolContext): void {
       const { lines } = linesFor(store, monthRange(months[0]).from, monthRange(months.at(-1)!).to);
       const rows = cashFlow(lines, store.listCategories(true), months);
       if (!rows.some(r => r.income || r.expenses)) return text(`(no transactions in the last ${n} months)`);
-      return text(`Cash flow ${stamp()}\n` + rows.map(r => `  ${r.month}: income ${whole(r.income)}, expenses ${whole(r.expenses)}, net ${whole(r.net)}${r.savings_rate != null ? ` (${Math.round(r.savings_rate * 100)}% saved)` : ''}`).join('\n'));
+      return text(`Cash flow ${stamp()}\n` + rows.map(cashFlowLine).join('\n'));
     },
   });
 
@@ -183,7 +227,7 @@ function defineTools(ctx: PluginToolContext): void {
       const to = typeof args.to === 'string' ? args.to : t;
       const { lines } = linesFor(store, from, to);
       const cats = store.listCategories(true);
-      const by = args.by === 'payee' ? 'payee' : args.by === 'group' ? 'group' : 'category';
+      const by = args.by === 'payee' || args.by === 'group' ? args.by : 'category';
       const rows = by === 'payee' ? spendByPayee(lines, cats, 20).map(r => ({ name: r.payee, total: r.total, count: r.count }))
         : spendByCategory(lines, cats, by === 'group').map(r => ({ name: r.name, total: r.total, count: r.count }));
       if (!rows.length) return text(`(no spending between ${from} and ${to})`);
@@ -217,8 +261,8 @@ function defineTools(ctx: PluginToolContext): void {
         limit: typeof args.limit === 'number' ? args.limit : 50,
       });
       if (!rows.length) return text('(no matching transactions)');
-      return text(`${total} match${total === 1 ? '' : 'es'}${rows.length < total ? `, showing ${rows.length}` : ''} ${stamp()}\n` +
-        rows.map(r => `${r.date} ${r.payee}: ${money(r.amount, r.currency)} [${names.get(r.category_id ?? '') ?? 'uncategorized'}]${r.notes ? ` — ${r.notes}` : ''}${r.tags.length ? ` #${r.tags.join(' #')}` : ''}`).join('\n'));
+      const showing = rows.length < total ? `, showing ${rows.length}` : '';
+      return text(`${total} match${total === 1 ? '' : 'es'}${showing} ${stamp()}\n` + rows.map(r => txnLine(r, names)).join('\n'));
     },
   });
 
@@ -251,7 +295,7 @@ function defineTools(ctx: PluginToolContext): void {
       if (!r.lines.length) return text(`(no budgets set) Actual spend in ${month}: ${money(r.totals.actual_expenses)}`);
       const T = r.totals;
       return text(`Budget ${month} ${stamp()}\n  expenses: ${money(T.actual_expenses)} of ${money(T.budgeted_expenses)} budgeted (${money(T.unbudgeted_expenses)} in unbudgeted categories)\n  income: ${money(T.actual_income)} of ${money(T.budgeted_income)} expected\n` +
-        r.lines.map(l => `  ${l.name}: ${money(l.actual)} / ${money(l.budget)} — ${l.over ? `OVER by ${money(-l.remaining)}` : `${money(l.remaining)} left`}`).join('\n'));
+        r.lines.map(budgetLine).join('\n'));
     },
   });
 
@@ -269,7 +313,9 @@ function defineTools(ctx: PluginToolContext): void {
       const months = lastMonths(monthKey(today()), n);
       const { lines } = linesFor(store, monthRange(months[0]).from, monthRange(months.at(-1)!).to);
       const rows = categoryTrend(lines, store.listCategories(true), months, typeof args.category_id === 'string' ? args.category_id : undefined, typeof args.group === 'string' ? args.group : undefined);
-      const label = typeof args.category_id === 'string' ? (catName().get(args.category_id) ?? args.category_id) : typeof args.group === 'string' ? args.group : 'all spending';
+      let label = 'all spending';
+      if (typeof args.category_id === 'string') label = catName().get(args.category_id) ?? args.category_id;
+      else if (typeof args.group === 'string') label = args.group;
       const avg = rows.reduce((s, r) => s + r.total, 0) / rows.length;
       return text(`${label}, last ${n} months (avg ${money(avg)}/mo) ${stamp()}\n` + rows.map(r => `  ${r.month}: ${money(r.total)}`).join('\n'));
     },
@@ -285,10 +331,7 @@ function defineTools(ctx: PluginToolContext): void {
       if (!goals.length) return text('(no goals set)');
       const accounts = store.listAccounts();
       const t = today();
-      return text(goals.map(g => {
-        const p = goalProgress(g, accounts, t);
-        return `${g.name} (${g.kind}): ${money(p.current)} of ${money(g.target_amount)} — ${Math.round(p.progress * 100)}%${g.target_date ? `, target ${g.target_date}, needs ${money(p.monthly_needed)}/mo${p.on_track == null ? '' : p.on_track ? ', on track' : ', behind'}` : ''}`;
-      }).join('\n'));
+      return text(goals.map(g => goalLine(goalProgress(g, accounts, t))).join('\n'));
     },
   });
 
@@ -301,7 +344,7 @@ function defineTools(ctx: PluginToolContext): void {
       const rows = store.listHoldings();
       if (!rows.length) return text('(no holdings data)');
       const accts = new Map(store.listAccounts().map(a => [a.id, a.name]));
-      return text(rows.map(h => `${accts.get(h.account_id) ?? h.account_id}: ${h.symbol || h.description} ×${h.quantity ?? '?'} = ${money(h.market_value, h.currency)}${h.cost_basis != null ? ` (basis ${money(h.cost_basis, h.currency)})` : ''} as of ${h.as_of}`).join('\n'));
+      return text(rows.map(h => holdingLine(h, accts)).join('\n'));
     },
   });
 }
@@ -329,7 +372,9 @@ function register(ctx: PluginContext): void {
     run: async () => {
       const r = await syncAll(store, secrets, logger);
       const errors = Object.entries(r).filter(([, v]) => typeof v === 'string');
-      return errors.length ? `Finance sync errors:\n${errors.map(([k, v]) => `- ${store.getConnection(k)?.label || k}: ${v as string}`).join('\n')}` : '';
+      if (!errors.length) return '';
+      const list = errors.map(([k, v]) => `- ${store.getConnection(k)?.label || k}: ${v as string}`).join('\n');
+      return `Finance sync errors:\n${list}`;
     },
   });
 
@@ -371,7 +416,9 @@ function register(ctx: PluginContext): void {
     const b = parse(req, res, S.ManualTxnSchema); if (!b) return;
     if (!store.getAccount(b.account_id)) { res.status(404).json({ error: 'unknown account' }); return; }
     const guess = b.category_id ? null : categorizeByKeyword(b.payee);
-    const t = store.insertManualTransaction({ ...b, category_id: b.category_id ?? guess, category_source: b.category_id ? 'user' : guess ? 'provider' : 'none' });
+    let category_source = 'none';
+    if (b.category_id) category_source = 'user'; else if (guess) category_source = 'provider';
+    const t = store.insertManualTransaction({ ...b, category_id: b.category_id ?? guess, category_source });
     if (!b.category_id) enrichNew(store, store.listRules(), t);
     res.status(201).json({ transaction: store.getTransaction(t.id) });
   });
@@ -402,7 +449,7 @@ function register(ctx: PluginContext): void {
     const names = new Map(store.listCategories(true).map(c => [c.id, c.name]));
     const accts = new Map(store.listAccounts().map(a => [a.id, a.name]));
     const rows = store.ledger(from, to, { includeExcluded: true });
-    const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const esc = (s: string) => `"${s.replaceAll('"', '""')}"`;
     const body = ['date,account,payee,description,amount,currency,category,notes,excluded,tags',
       ...rows.map(r => [r.date, esc(accts.get(r.account_id) ?? r.account_id), esc(r.payee), esc(r.description), r.amount.toFixed(2), r.currency,
         esc(names.get(r.category_id ?? '') ?? ''), esc(r.notes), r.excluded ? '1' : '0', esc(r.tags.join(' '))].join(','))].join('\n');

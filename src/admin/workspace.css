@@ -68,7 +68,6 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 
 /* ---- utilities ------------------------------------------------------ */
-.hidden { display: none !important; }
 .flex1 { flex: 1; }
 .txt-muted { color: var(--muted); }
 .txt-err { color: var(--err); }
@@ -272,6 +271,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   background: transparent; padding: 6px 8px; font-size: 0.82rem;
 }
 .row-menu button:hover { background: var(--panel); }
+.row-menu button.hidden { display: none; }
 
 .side-foot { border-top: 1px solid var(--line); padding: 8px; }
 .files-nav { width: 100%; }
@@ -823,6 +823,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .main.with-artifact { grid-template-columns: minmax(0, 1fr); }
   .artifact-panel { position: fixed; inset: 0; z-index: 900; border-left: 0; }
   .palette { left: 14px; right: 14px; }
-  .hover-preview { display: none !important; }
+  .hover-preview { display: none; }
   .msg-tools { opacity: 1; }
 }
+
+/* Last on purpose: same specificity as the component display rules above, so order decides. */
+.hidden { display: none; }
