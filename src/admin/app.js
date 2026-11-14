@@ -3307,7 +3307,8 @@ async function rehearseBackup(name) {
       if (t.after === null) return `<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>dropped</td></tr>`;
       return `<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td></tr>`;
     };
-    const unchanged = same.length ? `<p class="txt-muted">${same.length} table(s) unchanged: ${esc(same.map(t => `${t.name} ${t.before}`).join(' · '))}</p>` : '';
+    const sameText = same.map(t => `${t.name} ${t.before}`).join(' · ');
+    const unchanged = same.length ? `<p class="txt-muted">${same.length} table(s) unchanged: ${esc(sameText)}</p>` : '';
     box.innerHTML = `<p><strong>Rehearsed ${esc(r.backup)}</strong> — schema ${r.schema_changed ? 'changes' : 'unchanged'}, ${(r.duration_ms / 1000).toFixed(1)} s · ok</p>`
       + (changed.length ? `<table><thead><tr><th>table</th><th>before</th><th>after</th></tr></thead><tbody>${changed.map(line).join('')}</tbody></table>` : '')
       + unchanged;

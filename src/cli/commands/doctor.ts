@@ -6,6 +6,7 @@
  * verification AND for `update-ritsu` to invoke automatically.
  */
 import { existsSync, statSync, readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { masterKeyStatus } from '../../util/secret-crypto.js';
 import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
@@ -58,7 +59,7 @@ function checkMasterKey(): Check {
     : { name: 'secret storage', status: 'warn', detail: st.detail ?? 'no master key — secrets cannot be stored' };
 }
 
-function checkSubscriptionToken(): Check {
+function checkSubscriptionToken(dbPath: string): Check {
   // The supported credential is the stored token, or one in the environment.
   // A ~/.claude session may exist and will work, but it is per-machine and
   // expires, so it is not what this reports on.
@@ -70,8 +71,19 @@ function checkSubscriptionToken(): Check {
     return { name: 'subscription token', status: 'warn',
       detail: 'cannot read — no master key, so no secret can be stored' };
   }
+  // Presence only, from a read-only connection: the row is ciphertext and
+  // opening the live database for real would run the migrations as root.
+  if (existsSync(dbPath)) {
+    try {
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const row = db.prepare("SELECT 1 AS x FROM plugin_secrets WHERE namespace = 'claude' AND name = 'oauth_token'").get();
+        if (row) return { name: 'subscription token', status: 'ok', detail: 'stored (API Keys)' };
+      } finally { db.close(); }
+    } catch { /* fall through to the hint */ }
+  }
   return { name: 'subscription token', status: 'warn',
-    detail: "check API Keys in the admin UI; generate one anywhere with 'claude setup-token'" };
+    detail: "none stored — generate one anywhere with 'claude setup-token' and save it under API Keys" };
 }
 
 function checkTailscale(): Check {
@@ -130,7 +142,7 @@ export const doctorCommand: Command = {
       checkAdminTokenFile(cfg.adminTokenFile),
       checkDbWritable(),
       checkMasterKey(),
-      checkSubscriptionToken(),
+      checkSubscriptionToken(cfg.dbPath),
       ...checkBackups(cfg.dbPath),
       checkSandboxPaths(),
       checkTailscale(),

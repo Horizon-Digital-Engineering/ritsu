@@ -98,17 +98,10 @@ else
 fi
 
 bold "==> Refresh /usr/local/bin/ritsu shim"
-# CLI ships in dist/cli.js. Re-install the shim every update so new
-# subcommands / bug fixes land without re-running configure.sh.
-if [[ -f "${INSTALL_DIR}/dist/cli.js" ]]; then
-  sudo install -o root -g root -m 755 /dev/stdin /usr/local/bin/ritsu <<SHIM
-#!/usr/bin/env bash
-exec /usr/bin/node ${INSTALL_DIR}/dist/cli.js "\$@"
-SHIM
-  note "refreshed /usr/local/bin/ritsu"
-else
-  note "dist/cli.js missing — skipping (build failed?)"
-fi
+# Both shims are real files in scripts/, copied with install: a heredoc piped
+# into sudo install has no stdin to read and aborts the update before the restart.
+sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/ritsu" /usr/local/bin/ritsu
+note "refreshed /usr/local/bin/ritsu"
 
 bold "==> Refresh /usr/local/bin/update-ritsu"
 sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/update-ritsu" /usr/local/bin/update-ritsu
