@@ -236,13 +236,27 @@ export function integrityError(path: string): string | null {
 /** What the schema and count readers need from either kind of connection. */
 interface Reader { prepare(sql: string): { get(...params: never[]): unknown; all(...params: never[]): unknown[] } }
 
-/** The schema as text: every table and index definition, sorted. Two
- *  databases with the same fingerprint have the same shape. */
-export function schemaFingerprint(db: Reader): string {
+/** Every table, index, view and trigger definition, keyed `type name`. */
+export function schemaObjects(db: Reader): Map<string, string> {
   const rows = db.prepare(
     "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
   ).all() as Array<{ type: string; name: string; sql: string }>;
-  return rows.map(r => `${r.type} ${r.name}: ${r.sql.replaceAll(/\s+/g, ' ')}`).join('\n');
+  return new Map(rows.map(r => [`${r.type} ${r.name}`, r.sql.replaceAll(/\s+/g, ' ')]));
+}
+
+/** The schema as text. Two databases with the same fingerprint have the same shape. */
+export function schemaFingerprint(db: Reader): string {
+  return [...schemaObjects(db)].map(([k, sql]) => `${k}: ${sql}`).join('\n');
+}
+
+export interface SchemaDiff { added: string[]; removed: string[]; altered: string[] }
+
+/** What `after` has that `before` did not, and the reverse. */
+export function schemaDiff(before: Map<string, string>, after: Map<string, string>): SchemaDiff {
+  const added = [...after.keys()].filter(k => !before.has(k));
+  const removed = [...before.keys()].filter(k => !after.has(k));
+  const altered = [...after.keys()].filter(k => before.has(k) && before.get(k) !== after.get(k));
+  return { added, removed, altered };
 }
 
 export function tableCounts(db: Reader): Record<string, number> {
@@ -368,16 +382,23 @@ export async function preUpgrade(opts: PreUpgradeOptions): Promise<BackupInfo | 
   try {
     const live = new DatabaseSync(dbPath, { readOnly: true });
     try { snapshotTo(live, snapshot); } finally { live.close(); }
-    const before = readSchema(snapshot);
+    const beforeObjects = readSchema(snapshot);
+    const before = fingerprintOf(beforeObjects);
     copyFileSync(snapshot, copy);
     let target: string;
+    let diff: SchemaDiff;
     try {
       const db = migrateCopy(copy, plugins);
-      try { target = schemaFingerprint(db); } finally { db.close(); }
+      try {
+        const afterObjects = schemaObjects(db);
+        target = fingerprintOf(afterObjects);
+        diff = schemaDiff(beforeObjects, afterObjects);
+      } finally { db.close(); }
     } catch (e) {
       throw new StartupRefused(`this build's migrations fail on a copy of the database: ${(e as Error).message}. The live database was not touched.`);
     }
     if (before === target) return null;
+    logger.info('backup.pre-upgrade.schema', { ...diff });
     const record = readPreUpgradeRecord(dataDir);
     if (record?.host === host && record.target === target
         && parseName(record.backup)?.kind === 'pre-upgrade' && existsSync(join(dir, record.backup))) {
@@ -400,10 +421,12 @@ export async function preUpgrade(opts: PreUpgradeOptions): Promise<BackupInfo | 
   }
 }
 
-function readSchema(path: string): string {
+function readSchema(path: string): Map<string, string> {
   const db = new DatabaseSync(path, { readOnly: true });
-  try { return schemaFingerprint(db); } finally { db.close(); }
+  try { return schemaObjects(db); } finally { db.close(); }
 }
+
+const fingerprintOf = (objects: Map<string, string>): string => [...objects].map(([k, sql]) => `${k}: ${sql}`).join('\n');
 
 // ---- rehearsal ----------------------------------------------------------------------
 
@@ -421,6 +444,7 @@ export interface TableCount { name: string; before: number | null; after: number
 export interface RehearsalReport {
   backup: string;
   schema_changed: boolean;
+  schema: SchemaDiff;
   duration_ms: number;
   tables: TableCount[];
   kept_at?: string;
@@ -445,26 +469,28 @@ export async function rehearse(
     const bad = integrityError(copy);
     if (bad) throw new RehearsalError('integrity check', bad);
     let before: Record<string, number>;
-    let fpBefore: string;
+    let beforeObjects: Map<string, string>;
     const plain = new DatabaseSync(copy, { readOnly: true });
     try {
       if (!isRitsuDatabase(plain)) throw new RehearsalError('schema check', 'not a ritsu database');
       before = tableCounts(plain);
-      fpBefore = schemaFingerprint(plain);
+      beforeObjects = schemaObjects(plain);
     } finally { plain.close(); }
     let after: Record<string, number>;
-    let fpAfter: string;
+    let afterObjects: Map<string, string>;
     try {
       const db = migrateCopy(copy, plugins);
-      try { after = tableCounts(db); fpAfter = schemaFingerprint(db); } finally { db.close(); }
+      try { after = tableCounts(db); afterObjects = schemaObjects(db); } finally { db.close(); }
     } catch (e) {
       throw new RehearsalError('migration', (e as Error).message);
     }
     const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort((a, b) => a.localeCompare(b));
+    const schema = schemaDiff(beforeObjects, afterObjects);
     ok = true;
     return {
       backup: basename(backupFile),
-      schema_changed: fpBefore !== fpAfter,
+      schema_changed: schema.added.length + schema.removed.length + schema.altered.length > 0,
+      schema,
       duration_ms: Date.now() - started,
       tables: names.map(name => ({ name, before: before[name] ?? null, after: after[name] ?? null })),
       ...(keep ? { kept_at: copy } : {}),

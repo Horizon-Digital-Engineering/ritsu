@@ -110,6 +110,9 @@ function renderRehearsal(r: RehearsalReport): string {
   const lines = [
     `Rehearsed ${r.backup} (schema ${r.schema_changed ? 'changes' : 'unchanged'}, ${(r.duration_ms / 1000).toFixed(1)} s)`,
   ];
+  for (const k of r.schema.added) lines.push(`  + ${k}`);
+  for (const k of r.schema.removed) lines.push(`  - ${k}`);
+  for (const k of r.schema.altered) lines.push(`  ~ ${k}`);
   for (const t of r.tables) {
     if (t.before === null) lines.push(`  + ${t.name} (new, ${t.after} rows)`);
     else if (t.after === null) lines.push(`  - ${t.name} (dropped, had ${t.before} rows)`);
