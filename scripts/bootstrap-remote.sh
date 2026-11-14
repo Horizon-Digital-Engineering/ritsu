@@ -133,8 +133,8 @@ echo
 echo "--- admin /healthz (127.0.0.1:${ADMIN_PORT:-7334}) ---"
 curl -s "http://127.0.0.1:${ADMIN_PORT:-7334}/healthz" || true
 echo
-echo "--- MCP /healthz (${MCP_HOST:-127.0.0.1}:${PORT:-7333}) ---"
-curl -s "http://${MCP_HOST:-127.0.0.1}:${PORT:-7333}/healthz" || true
+echo "--- MCP /mcp (${MCP_HOST:-127.0.0.1}:${PORT:-7333}; 401 or 405 = up) ---"
+curl -s -o /dev/null -w '%{http_code}\n' "http://${MCP_HOST:-127.0.0.1}:${PORT:-7333}/mcp" || true
 echo
 EOF
 

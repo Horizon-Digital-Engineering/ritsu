@@ -155,14 +155,10 @@ async function renderDashboard(pane) {
   try {
     await loadRefs();
     const o = await api('GET', `${F}/overview`);
-    const attention = [];
-    if (o.uncategorized_count) attention.push(`<button class="fin-chip warn" data-action="fin-go" data-tab="finance-transactions" data-filter="uncategorized">${esc(o.uncategorized_count)} uncategorized</button>`);
-    if (o.unreviewed_count) attention.push(`<button class="fin-chip" data-action="fin-go" data-tab="finance-transactions" data-filter="unreviewed">${esc(o.unreviewed_count)} to review</button>`);
-    const chips = attention.length ? `<div class="fin-chips">${attention.join('')}</div>` : '';
     const goals = o.goals.length ? o.goals.map(goalRow).join('') : '<p class="muted">No goals yet. Add one under Accounts.</p>';
     pane.innerHTML = `
       ${asOfLine(o.as_of)}
-      ${chips}
+      <div class="fin-chips"></div>
       <div class="fin-grid">
         ${netWorthPanel(o.net_worth, o.net_worth_change_30d, o.net_worth_series)}
         ${cashFlowPanel(o)}
@@ -172,6 +168,20 @@ async function renderDashboard(pane) {
         ${panel('Goals', goals)}
         ${panel('Recent transactions', txnMiniTable(o.recent), 'fin-wide')}
       </div>`;
+    // Counts come from the server; built as nodes so the text is never markup.
+    const chips = pane.querySelector('.fin-chips');
+    const chip = (n, filter, label, cls) => {
+      const b = document.createElement('button');
+      b.className = cls;
+      b.dataset.action = 'fin-go';
+      b.dataset.tab = 'finance-transactions';
+      b.dataset.filter = filter;
+      b.textContent = `${n} ${label}`;
+      chips.append(b);
+    };
+    if (o.uncategorized_count) chip(o.uncategorized_count, 'uncategorized', 'uncategorized', 'fin-chip warn');
+    if (o.unreviewed_count) chip(o.unreviewed_count, 'unreviewed', 'to review', 'fin-chip');
+    if (!chips.childElementCount) chips.remove();
   } catch (e) { showErr(pane, e); }
 }
 function netWorthPanel(nw, delta, series) {

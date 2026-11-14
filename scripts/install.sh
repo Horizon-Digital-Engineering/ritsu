@@ -174,11 +174,13 @@ else
   warn "no backup password yet — backups are off until:  sudo ritsu backup set-password"
 fi
 
-bold "==> Update command"
-# A real file, not a heredoc through sudo: the heredoc form failed under some
+bold "==> Commands"
+# Real files, not heredocs through sudo: the heredoc form failed under some
 # shells and left a built-but-unrestarted service.
+sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/ritsu" /usr/local/bin/ritsu
 sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/update-ritsu" /usr/local/bin/update-ritsu
-note "/usr/local/bin/update-ritsu — pulls, rebuilds, restarts (update-ritsu --branch feat/x to try a branch)"
+note "/usr/local/bin/ritsu — operator CLI (ritsu help)"
+note "/usr/local/bin/update-ritsu — pulls, rebuilds, backs up, rehearses, restarts (--branch feat/x to try a branch)"
 
 bold "==> Start"
 sudo systemctl enable "${SERVICE_NAME}" >/dev/null
@@ -193,8 +195,10 @@ env_val() { sudo grep -E "^$1=" "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' 
 port="$(env_val PORT)"
 admin_port="$(env_val ADMIN_PORT)"
 mcp_host="$(env_val MCP_HOST)"
-note "MCP healthz:    $(curl -s "http://${mcp_host:-127.0.0.1}:${port:-7333}/healthz" || echo failed)"
+# Health lives on the admin port. The MCP port serves only the protocol and
+# OAuth endpoints; a 401 or 405 from /mcp means it is up and refusing, as it should.
 note "admin healthz:  $(curl -s "http://127.0.0.1:${admin_port:-7334}/healthz" || echo failed)"
+note "MCP port:       HTTP $(curl -s -o /dev/null -w '%{http_code}' "http://${mcp_host:-127.0.0.1}:${port:-7333}/mcp" || echo 000) from /mcp (401 or 405 = up)"
 
 bold "==> Done"
 note "logs:    sudo journalctl -u ${SERVICE_NAME} -f"

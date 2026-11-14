@@ -132,29 +132,18 @@ note "ok"
 # regenerates the drop-in, daemon-reloads and restarts.
 
 bold "==> Install /usr/local/bin/ritsu (operator CLI)"
-# Symlink the built CLI into PATH. Re-pointed each configure run so update-ritsu
-# pushes a new dist/cli.js and the symlink picks it up automatically.
+# Real files in scripts/, copied with install; update.sh refreshes them on
+# every update so new subcommands land without re-running configure.
 if [[ -f /opt/ritsu/dist/cli.js ]]; then
-  install -o root -g root -m 755 /dev/stdin /usr/local/bin/ritsu <<'SHIM'
-#!/usr/bin/env bash
-# Operator CLI. Wraps node so the dist/cli.js shebang isn't required to
-# resolve the right node binary on hosts with multiple versions installed.
-exec /usr/bin/node /opt/ritsu/dist/cli.js "$@"
-SHIM
+  install -o root -g root -m 755 /opt/ritsu/scripts/ritsu /usr/local/bin/ritsu
   note "ok — run 'ritsu help' to see subcommands"
 else
   warn "dist/cli.js not found — run 'npm run build' before re-running configure"
 fi
 
-bold "==> Install /usr/local/bin/update-ritsu (legacy alias)"
-install -o root -g root -m 755 /dev/stdin /usr/local/bin/update-ritsu <<'SHIM'
-#!/usr/bin/env bash
-# Legacy shortcut. New: `sudo update-ritsu` still works, OR use:
-#   ritsu service restart       to bounce without rebuilding
-#   sudo update-ritsu           to pull + rebuild + restart
-exec sudo bash /opt/ritsu/scripts/update.sh "$@"
-SHIM
-note "ok"
+bold "==> Install /usr/local/bin/update-ritsu"
+install -o root -g root -m 755 /opt/ritsu/scripts/update-ritsu /usr/local/bin/update-ritsu
+note "ok — update-ritsu pulls, rebuilds, backs up, rehearses and restarts"
 
 bold "==> Restart"
 systemctl restart "${SERVICE_NAME}"

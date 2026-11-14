@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Installed at /usr/local/bin/ritsu. Operator CLI: wraps node so dist/cli.js
+# need not resolve the right node binary on hosts with several installed.
+exec /usr/bin/node "${RITSU_INSTALL_DIR:-/opt/ritsu}/dist/cli.js" "$@"

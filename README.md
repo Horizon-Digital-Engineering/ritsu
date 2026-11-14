@@ -78,8 +78,8 @@ and you're in. From there you can mint per-client MCP tokens in the
 **Tokens** tab.
 
 ```bash
-# health
-curl -s http://localhost:7333/healthz
+# health (admin port)
+curl -s http://localhost:7334/healthz
 
 # call an agent (use the rt_ token you minted, not the admin bootstrap one)
 curl -s -X POST http://localhost:7333/mcp \

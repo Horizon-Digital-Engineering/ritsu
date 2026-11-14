@@ -57,6 +57,13 @@ versioning per [semver](https://semver.org/).
 
 ### Fixed
 
+- `update-ritsu` no longer stops before the restart: the `ritsu` command is
+  installed from a file in `scripts/`, as `update-ritsu` already was, instead
+  of through a heredoc that had nothing to read under sudo. The installer
+  puts both commands in place, and its smoke test probes the port that
+  actually serves health.
+- `ritsu doctor` sees a subscription token stored under API Keys instead of
+  warning that it cannot tell.
 - The Settings page loads and saves. It had no server route and its Save
   button was not wired, so every knob on it (search backend, backups kept,
   approval TTL, OAuth rate limits) fell back to the built-in default no matter
