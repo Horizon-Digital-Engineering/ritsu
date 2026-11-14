@@ -11,6 +11,7 @@ import { spawnSync } from '../../util/safe-spawn.js';
 import type { Command, CommandContext } from '../registry.js';
 import { SERVICE_NAME } from '../systemd.js';
 import { loadConfig } from '../../config.js';
+import { backupDirFromEnv, dataDirOf, listBackups, loadPassword, resolveBackupDir } from '../../backup.js';
 
 type Status = 'ok' | 'warn' | 'fail';
 interface Check { name: string; status: Status; detail: string }
@@ -92,6 +93,22 @@ function checkSandboxPaths(): Check {
   return { name: 'sandbox paths', status: 'warn', detail: `missing: ${missing.join(', ')}` };
 }
 
+function checkBackups(dbPath: string): Check[] {
+  const dataDir = dataDirOf(dbPath);
+  const { dir, source } = resolveBackupDir(dbPath, backupDirFromEnv());
+  // Whether one is set, never the value.
+  const hasBackupPassword = loadPassword(dataDir) !== null;
+  const protection: Check = hasBackupPassword
+    ? { name: 'backup password', status: 'ok', detail: `${dataDir}/backup-password` }
+    : { name: 'backup password', status: 'warn', detail: 'not set — backups are off until `ritsu backup set-password`' };
+  const newest = listBackups(dir).find(b => b.kind === 'daily');
+  const age = newest ? `newest daily ${Math.round((Date.now() / 1000 - newest.created_at) / 3600)} h old` : 'no daily backup yet';
+  const folder = existsSync(dir)
+    ? { name: 'backup folder', status: 'ok' as Status, detail: `${dir} (${source}); ${age}` }
+    : { name: 'backup folder', status: 'warn' as Status, detail: `${dir} (${source}) does not exist yet` };
+  return [protection, folder];
+}
+
 function commandExists(cmd: string): boolean {
   // Use `which` rather than the shell builtin `command -v` so we don't need
   // `{ shell: true }` (which would propagate the calling shell's settings).
@@ -113,7 +130,8 @@ export const doctorCommand: Command = {
       checkAdminTokenFile(cfg.adminTokenFile),
       checkDbWritable(),
       checkMasterKey(),
-    checkSubscriptionToken(),
+      checkSubscriptionToken(),
+      ...checkBackups(cfg.dbPath),
       checkSandboxPaths(),
       checkTailscale(),
     ];

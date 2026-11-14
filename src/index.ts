@@ -22,7 +22,7 @@ import { SettingsStore } from './settings-store.js';
 import { masterKeyStatus } from './util/secret-crypto.js';
 import { CLAUDE_NS } from './model/claude-direct-dispatcher.js';
 import { FlashbackProposalClient, ProposalAdapter } from './memory/proposal-adapter.js';
-import { BackupManager, snapshotPreMigration } from './backup.js';
+import { BackupManager, backupDirFromEnv, checkNotStranded, cleanScratch, dataDirOf, hostName, preUpgrade, resolveBackupDir } from './backup.js';
 import { ProjectStore } from './project-store.js';
 import { SkillStore } from './skill-store.js';
 import { PromptStore } from './prompt-store.js';
@@ -45,11 +45,17 @@ async function main(): Promise<void> {
   // Runs BEFORE openDatabase so a bad config doesn't even touch the DB.
   assertAdminTokenFileWritable(cfg);
 
-  // Snapshot BEFORE the migrations, so the newest backup is always a copy of
-  // the database as it was before this boot touched it. Best-effort.
-  const backupDirOverride = process.env.RITSU_BACKUP_DIR?.trim() || undefined;
-  try { snapshotPreMigration(cfg.dbPath, backupDirOverride); }
-  catch (err) { logger.warn('backup.pre-migration-failed', { err: (err as Error).message }); }
+  // Before the live database is opened: a restore that stopped halfway must
+  // not be papered over with an empty file, and this build's migrations run
+  // on a copy first. When they change the schema, the pre-migration snapshot
+  // goes to the backup folder encrypted, and the boot stops here without one.
+  checkNotStranded(cfg.dbPath);
+  cleanScratch(dataDirOf(cfg.dbPath));
+  const plugins = await discoverPlugins();
+  const backupDir = resolveBackupDir(cfg.dbPath, backupDirFromEnv()).dir;
+  const backupHost = hostName();
+  const preUpgradeCopy = await preUpgrade({ dbPath: cfg.dbPath, dir: backupDir, host: backupHost, plugins });
+  if (preUpgradeCopy) logger.info('backup.pre-upgrade', { name: preUpgradeCopy.name, size: preUpgradeCopy.size });
 
   const db = openDatabase(cfg.dbPath);
   const memory = new SqliteMemoryStore(db);
@@ -65,7 +71,7 @@ async function main(): Promise<void> {
   const skills = new SkillStore(db);
   const promptLib = new PromptStore(db);
   const pluginHost = new PluginHost(db, secrets);
-  for (const plugin of await discoverPlugins()) pluginHost.register(plugin);
+  for (const plugin of plugins) pluginHost.register(plugin);
   // Close out any approvals left pending by a prior process — their agent
   // turns died with that process and can never resume.
   approvals.reconcileOnBoot();
@@ -84,20 +90,24 @@ async function main(): Promise<void> {
   approvalSweep.unref();
   const commsDenials = new CommsDenialStore(db);
 
-  // Data safety: a consistent DB snapshot on boot (pre-deploy safety) + daily,
-  // keeping the newest N. Best-effort — a backup failure never blocks startup.
-  const backup = new BackupManager(db, cfg.dbPath, backupDirOverride);
+  // Data safety: an encrypted snapshot whenever this host's newest one is older
+  // than the interval, checked every ten minutes so a restart never shifts the
+  // schedule. Nothing is written without a backup password. Best-effort — a
+  // backup failure never blocks startup.
+  const backup = new BackupManager(db, cfg.dbPath, backupDirFromEnv(), { host: backupHost, plugins });
   const BACKUP_KEEP = settings.getNumber('backups.keep', 14);
-  const runBackup = (): void => {
-    try { backup.createBackup(); backup.prune(BACKUP_KEEP); }
-    catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
-  };
+  const BACKUP_INTERVAL_HOURS = settings.getNumber('backups.interval_hours', 24);
   // Trim scheduler history before the snapshot, not after: the backup copies
   // whatever is on disk and keeps fourteen of them, so unbounded run rows are
   // stored fifteen times over.
   let pruneRuns: (() => void) | undefined;
-  const dailyMaintenance = (): void => { pruneRuns?.(); runBackup(); };
-  const backupSweep = setInterval(dailyMaintenance, 24 * 3_600_000);
+  const backupIfDue = async (): Promise<void> => {
+    if (!backup.due(BACKUP_INTERVAL_HOURS)) return;
+    pruneRuns?.();
+    try { await backup.createBackup('daily'); backup.prune(BACKUP_KEEP); }
+    catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
+  };
+  const backupSweep = setInterval(() => { void backupIfDue(); }, 600_000);
   backupSweep.unref();
 
   // Secrets are unusable without a key, and the failure would otherwise first
@@ -181,12 +191,10 @@ async function main(): Promise<void> {
   scheduler.start();
   pruneRuns = () => scheduler.prune();
   // Trim scheduler history now rather than a day later — a service redeployed
-  // daily would otherwise never prune at all. The boot snapshot is already
-  // taken (pre-migration, above), so this only prunes; taking a second one
-  // here would halve backup retention on every restart.
+  // daily would otherwise never prune at all. Then the first backup check: a
+  // box that was down past its interval gets its snapshot now, not in ten minutes.
   pruneRuns();
-  try { backup.prune(BACKUP_KEEP); }
-  catch (err) { logger.warn('backup.error', { err: (err as Error).message }); }
+  void backupIfDue();
 
   const mcpApp = createMcpServer({
     host,
@@ -279,10 +287,10 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (err) {
-  // Config errors get the message printed plainly so the operator can
-  // read it without parsing a structured log line. Everything else takes
-  // the normal structured-log path with full stack.
-  if ((err as Error)?.name === 'ConfigError') {
+  // Config errors and a refused start get the message printed plainly so the
+  // operator can read it without parsing a structured log line. Everything
+  // else takes the normal structured-log path with full stack.
+  if ((err as Error)?.name === 'ConfigError' || (err as Error)?.name === 'StartupRefused') {
     process.stderr.write(`${(err as Error).message}\n`);
     process.exit(78); // EX_CONFIG
   }

@@ -4,12 +4,12 @@
  */
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDatabase } from '../db.js';
-import { BackupManager, integrityError } from '../backup.js';
+import { BackupManager, integrityError, savePassword, _setScryptWorkFactorForTests } from '../backup.js';
 import { SecretStore } from '../auth/secret-store.js';
 import { ApprovalStore } from '../approval-store.js';
 import { _resetKeyCacheForTests } from '../util/secret-crypto.js';
@@ -26,47 +26,46 @@ describe('backup retention', () => {
   let mgr: BackupManager;
 
   beforeEach(() => {
+    _setScryptWorkFactorForTests(10);
     tmp = mkdtempSync(join(tmpdir(), 'ritsu-prune-'));
     const dbFile = join(tmp, 'ritsu.db');
-    mgr = new BackupManager(openDatabase(dbFile), dbFile, join(tmp, 'backups'));
+    savePassword(tmp, 'a password long enough to pass');
+    mgr = new BackupManager(openDatabase(dbFile), dbFile, join(tmp, 'backups'), { host: 'h' });
   });
 
-  it('keep=0 does not delete every snapshot', () => {
-    mgr.createBackup();
-    mgr.createBackup();
+  it('keep=0 does not delete every snapshot', async () => {
+    await mgr.createBackup();
+    await mgr.createBackup();
     assert.equal(mgr.prune(0), 1);
     assert.equal(mgr.listBackups().length, 1, 'a stored 0 must not wipe the backups');
   });
 
-  it('a negative keep is clamped the same way', () => {
-    mgr.createBackup();
+  it('a negative keep is clamped the same way', async () => {
+    await mgr.createBackup();
     assert.equal(mgr.prune(-1), 0);
     assert.equal(mgr.listBackups().length, 1);
   });
 
-  it('orders on sub-second mtime so same-second snapshots prune deterministically', () => {
-    const a = mgr.createBackup();
-    const b = mgr.createBackup();
-    // Force both into the same wall-clock second, b microscopically newer.
-    const base = Math.floor(Date.now() / 1000);
-    utimesSync(mgr.pathFor(a.name)!, base, base + 0.100);
-    utimesSync(mgr.pathFor(b.name)!, base, base + 0.900);
+  it('two snapshots in one second get distinct names and the newer one survives a prune', async () => {
+    const a = await mgr.createBackup();
+    const b = await mgr.createBackup();
+    assert.notEqual(a.name, b.name);
+    assert.ok(b.created_at > a.created_at, 'the second takes the next free second');
     assert.deepEqual(mgr.listBackups().map(x => x.name), [b.name, a.name]);
     mgr.prune(1);
     assert.deepEqual(mgr.listBackups().map(x => x.name), [b.name], 'the NEWER one survives');
   });
 
-  it('filesystem-only operations work with no database open at all', () => {
-    mgr.createBackup();
-    const fsOnly = new BackupManager(null, join(tmp, 'ritsu.db'), join(tmp, 'backups'));
+  it('filesystem-only operations work with no database open at all', async () => {
+    await mgr.createBackup();
+    const fsOnly = new BackupManager(null, join(tmp, 'ritsu.db'), join(tmp, 'backups'), { host: 'h' });
     assert.equal(fsOnly.listBackups().length, 1);
     assert.equal(fsOnly.prune(1), 0);
-    assert.throws(() => fsOnly.createBackup(), /needs an open database/);
+    await assert.rejects(fsOnly.createBackup(), /needs an open database/);
   });
 
   it('integrityError rejects a truncated file and accepts a real one', () => {
-    const info = mgr.createBackup();
-    assert.equal(integrityError(mgr.pathFor(info.name)!), null);
+    assert.equal(integrityError(join(tmp, 'ritsu.db')), null);
     const junk = join(tmp, 'junk.db');
     writeFileSync(junk, 'not a database');
     assert.notEqual(integrityError(junk), null);

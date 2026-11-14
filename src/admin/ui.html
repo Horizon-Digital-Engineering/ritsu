@@ -797,6 +797,9 @@
           <label for="set-backups-keep">backups kept</label>
           <input id="set-backups-keep" data-setting="backups.keep" />
 
+          <label for="set-backups-interval">backup every (hours)</label>
+          <input id="set-backups-interval" data-setting="backups.interval_hours" />
+
           <label for="set-approval-ttl">approval TTL (seconds)</label>
           <input id="set-approval-ttl" data-setting="approvals.ttl_seconds" />
 
@@ -818,13 +821,19 @@
     <section id="pane-backups" class="pane">
       <div class="panel">
         <h2>Backups</h2>
-        <p>The whole system is one SQLite database. A snapshot is taken automatically on every restart and daily; you can also snapshot on demand, download a copy off the box, or export your data as portable JSON. <strong>Your data is never hostage.</strong> One thing is not in here: the master key that decrypts stored secrets. It lives outside the database on purpose, so a snapshot cannot carry both. Back it up separately — restoring this database onto a host without that key leaves every stored credential unreadable.</p>
+        <p>The whole system is one SQLite database. A snapshot is encrypted with the backup password and written daily to the backup folder; a boot whose migrations change the schema writes a pre-upgrade copy first. You can also snapshot on demand, download a copy off the box, rehearse an upgrade on any backup, or export your data as portable JSON. <strong>Your data is never hostage.</strong> Two things are not in a backup, on purpose: the backup password, and the master key that decrypts stored secrets. Keep both somewhere safe.</p>
+        <div id="backups-status" class="txt-muted mb-3"></div>
+        <form class="row mb-3" id="backup-password-form">
+          <input id="backup-password" type="password" autocomplete="new-password" placeholder="backup password (15+ characters)" aria-label="Backup password" />
+          <button type="button" data-action="backup-set-password">Set password</button>
+        </form>
         <div class="row mb-3">
-          <button data-action="backup-now" class="primary">Back up now</button>
+          <button data-action="backup-now" class="primary" id="backup-now">Back up now</button>
           <button data-action="backup-export">Export data (JSON)</button>
         </div>
         <div id="backups-list">loading…</div>
-        <p class="txt-muted mt-3">Restore is a break-glass operation on the box: <code>sudo ritsu service restart</code> after <code>sudo ritsu backup restore &lt;file&gt;</code> (stop the service first).</p>
+        <div id="backups-rehearsal" class="mt-3"></div>
+        <p class="txt-muted mt-3">Restore runs on the box with the service stopped: <code>sudo systemctl stop ritsu.service</code>, <code>sudo ritsu backup restore latest</code>, then start it again. The database it replaces is kept in <code>data/pre-restore-&lt;time&gt;/</code>.</p>
       </div>
       <div class="panel">
         <h2>Import an export</h2>

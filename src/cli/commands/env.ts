@@ -33,7 +33,7 @@ function serialize(entries: EntryLine[]): string {
   return entries.map(e => e.raw).join('\n');
 }
 
-async function cmdGet(ctx: CommandContext): Promise<number> {
+function cmdGet(ctx: CommandContext): number {
   if (!existsSync(ENV_FILE)) { console.error(`missing: ${ENV_FILE}`); return 1; }
   const entries = parse(readFileSync(ENV_FILE, 'utf8'));
   const key = ctx.positional[0];
@@ -48,7 +48,7 @@ async function cmdGet(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
-async function cmdSet(ctx: CommandContext): Promise<number> {
+function cmdSet(ctx: CommandContext): number {
   const arg = ctx.positional[0];
   if (!arg?.includes('=')) { console.error('usage: ritsu env set KEY=VALUE'); return 2; }
   const eq = arg.indexOf('=');
@@ -71,7 +71,7 @@ async function cmdSet(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
-async function cmdUnset(ctx: CommandContext): Promise<number> {
+function cmdUnset(ctx: CommandContext): number {
   const key = ctx.positional[0];
   if (!key) { console.error('usage: ritsu env unset KEY'); return 2; }
   if (!existsSync(ENV_FILE)) return 0;
@@ -84,12 +84,24 @@ async function cmdUnset(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
-async function cmdEdit(ctx: CommandContext): Promise<number> {
+function cmdEdit(ctx: CommandContext): number {
   const editor = process.env.EDITOR || process.env.VISUAL || 'nano';
   const r = spawnSync(editor, [ENV_FILE], { stdio: 'inherit' });
   if (r.status !== 0) { console.error('editor exited non-zero'); return r.status ?? 1; }
   if (ctx.flags['no-restart'] !== true) restartService();
   return 0;
+}
+
+function dispatch(ctx: CommandContext): number {
+  switch (ctx.subcommand) {
+    case 'get':   case null: return cmdGet(ctx);
+    case 'set':   return cmdSet(ctx);
+    case 'unset': return cmdUnset(ctx);
+    case 'edit':  return cmdEdit(ctx);
+    default:
+      console.error(`unknown subcommand: ${ctx.subcommand}`);
+      return 2;
+  }
 }
 
 export const envCommand: Command = {
@@ -107,15 +119,5 @@ export const envCommand: Command = {
     'Common keys: PORT, MCP_HOST, ADMIN_HOST, MCP_REQUIRE_AUTH,',
     'RITSU_PUBLIC_URL, RITSU_ALLOWED_HOSTS, LOG_LEVEL.',
   ].join('\n'),
-  run: async (ctx: CommandContext) => {
-    switch (ctx.subcommand) {
-      case 'get':   case null: return cmdGet(ctx);
-      case 'set':   return cmdSet(ctx);
-      case 'unset': return cmdUnset(ctx);
-      case 'edit':  return cmdEdit(ctx);
-      default:
-        console.error(`unknown subcommand: ${ctx.subcommand}`);
-        return 2;
-    }
-  },
+  run: ctx => Promise.resolve(dispatch(ctx)),
 };

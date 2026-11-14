@@ -23,9 +23,13 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
+export function ensureSettingsSchema(db: Db): void {
+  db.exec(SCHEMA);
+}
+
 export class SettingsStore {
   constructor(private readonly db: Db) {
-    this.db.exec(SCHEMA);
+    ensureSettingsSchema(this.db);
   }
 
   get(key: string): string | null {

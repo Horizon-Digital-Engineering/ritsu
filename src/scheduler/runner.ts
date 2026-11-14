@@ -369,12 +369,11 @@ export class SchedulerRunner {
       logger.warn('scheduler.no-delivery-target', { job: job.id });
       return false;
     }
-    let anyOk = false;
-    for (const id of targets) {
-      try { await this.delivery.send(id, text); anyOk = true; }
-      catch (err) { logger.warn('scheduler.deliver-failed', { job: job.id, channel: id, err: (err as Error).message }); }
-    }
-    return anyOk;
+    const results = await Promise.allSettled(targets.map(id => this.delivery.send(id, text)));
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') logger.warn('scheduler.deliver-failed', { job: job.id, channel: targets[i], err: (r.reason as Error).message });
+    });
+    return results.some(r => r.status === 'fulfilled');
   }
 
   private async alertFailure(job: Job, error: string, at: number): Promise<void> {

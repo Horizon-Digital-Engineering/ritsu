@@ -6,6 +6,7 @@
  */
 import type { FetchResult, Provider, ProviderAccount, ProviderHolding, ProviderTransaction } from './types.js';
 import { guessAccountType } from './types.js';
+import { mapLimit } from '../../../util/concurrency.js';
 
 interface SfOrg { domain?: string; name?: string; url?: string; id?: string }
 interface SfTxn { id: string; posted: number; amount: string; description?: string; payee?: string; memo?: string; pending?: boolean; transacted_at?: number }
@@ -28,6 +29,7 @@ const num = (s: string | undefined | null): number | null => {
 const WINDOW_DAYS = 90;
 const INITIAL_WINDOWS = 4;
 const OVERLAP_DAYS = 14;
+const FETCH_CONCURRENCY = 3;
 const dayStr = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export class SimpleFinError extends Error {
@@ -78,12 +80,12 @@ export class SimpleFinClient {
     return {
       name: 'simplefin',
       fetch: async (conn) => {
+        const windows = planWindows(conn.last_synced_at, Date.now());
+        const responses = await mapLimit(windows, FETCH_CONCURRENCY, w => this.fetchAccounts(...w));
+        // Fold newest window first regardless of arrival order: the first sighting of an
+        // account wins, so balances and holdings come from the freshest response.
         const merged = new Merge();
-        // Sequential on purpose: newest window first so balances and holdings come
-        // from the freshest response, and the bridge rate-limits concurrent reads.
-        for (const [from, to] of planWindows(conn.last_synced_at, Date.now())) {
-          merged.add(await this.fetchAccounts(from, to));
-        }
+        for (const r of responses) merged.add(r);
         return merged.result();
       },
     };

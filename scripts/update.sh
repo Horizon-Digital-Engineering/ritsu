@@ -62,6 +62,27 @@ note "now at ${BRANCH} @ $(as_svc rev-parse --short HEAD)"
 bold "==> Install + build"
 sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
 
+bold "==> Backup + rehearse"
+# A fresh encrypted backup of the running database, then the NEW build's
+# migrations run on a copy of it. Either failing stops here, before anything
+# the service uses changes. The CLI opens the live file read-only.
+CLI="sudo /usr/bin/node ${INSTALL_DIR}/dist/cli.js"
+DB_PATH="$(sudo grep -E '^DB_PATH=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')"
+DB_PATH="${DB_PATH:-${INSTALL_DIR}/data/ritsu.db}"
+if sudo test -f "${DB_PATH}"; then
+  if ! ${CLI} backup; then
+    echo "backup failed — the running service is untouched." >&2
+    echo "If no backup password is set yet:  sudo ritsu backup set-password" >&2
+    exit 1
+  fi
+  if ! ${CLI} backup rehearse latest; then
+    echo "the new build's migrations failed on a copy of the backup — the running service is untouched." >&2
+    exit 1
+  fi
+else
+  note "no database yet — nothing to back up"
+fi
+
 bold "==> Refresh systemd unit (if changed)"
 # install.sh's first run copied systemd/ritsu.service to /etc/systemd/system/.
 # Re-sync here so changes to the unit (ReadWritePaths, env, etc.) take effect

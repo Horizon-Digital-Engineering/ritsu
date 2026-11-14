@@ -20,7 +20,8 @@ function itemLine(i: Item, today: string, indent = ''): string {
   if (i.blocker) bits.push(`blocked: ${i.blocker}`);
   if (i.status === 'dropped' && i.drop_reason) bits.push(`dropped: ${i.drop_reason}`);
   const meta = bits.length ? ` — ${bits.join(' · ')}` : '';
-  const notes = i.notes ? `\n${indent}    ${i.notes.replaceAll(/\s*\n+\s*/g, ' / ')}` : '';
+  const lines = i.notes.split('\n').map(l => l.trim()).filter(Boolean);
+  const notes = lines.length ? `\n${indent}    ${lines.join(' / ')}` : '';
   return `${indent}#${i.id} [${i.status}] ${i.title}${meta}${notes}`;
 }
 
@@ -37,6 +38,11 @@ function renderItems(items: Item[], today: string): string {
 
 function sessionLabel(s: Session | SessionSummary): string {
   return `${sessionTitle(s.date, s.topic)} (#${s.id})`;
+}
+
+function countsLine(c: { open: number; done: number; dropped: number }): string {
+  const dropped = c.dropped ? `, ${c.dropped} dropped` : '';
+  return `${c.open} open, ${c.done} done${dropped}`;
 }
 
 function defineTools(ctx: PluginToolContext): void {
@@ -61,7 +67,7 @@ function defineTools(ctx: PluginToolContext): void {
       const tags = store.tags().slice(0, 30).map(t => `${t.tag} ${t.count}`).join(', ');
       return text([
         `Today: ${longDateWithDay(today)}`,
-        `Session: ${sessionLabel(cur)} — ${c.open} open, ${c.done} done${c.dropped ? `, ${c.dropped} dropped` : ''}`,
+        `Session: ${sessionLabel(cur)} — ${countsLine(c)}`,
         renderItems(items, today),
         `Tags in use: ${tags || '(none yet)'}`,
       ].join('\n'));
@@ -71,6 +77,7 @@ function defineTools(ctx: PluginToolContext): void {
   ctx.tool({
     name: 'add',
     description: 'Add an item to this session. If an open backlog item is clearly the same thing it is linked instead of duplicated, and the reply says so. Tags: pick from the tags in use when one fits.',
+    untrustedOutput: true,
     input: {
       title: z.string().trim().min(1).max(200),
       notes: z.string().max(4000).optional().describe('context worth keeping: numbers, where things are, what was decided'),
@@ -131,6 +138,7 @@ function defineTools(ctx: PluginToolContext): void {
   ctx.tool({
     name: 'pull',
     description: 'Bring an existing open backlog item into this session.',
+    untrustedOutput: true,
     input: { item_id: z.number().int().positive() },
     handler: (args, call) => {
       const s = session(call);
@@ -176,13 +184,16 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (args, call) => {
       const s = session(call);
       const item = store.setStatus(Number(args.item_id), 'dropped', s?.id ?? null, typeof args.reason === 'string' ? args.reason : '');
-      return text(item ? `Dropped: #${item.id} ${item.title}${item.drop_reason ? ` (${item.drop_reason})` : ''}` : `No item #${String(args.item_id)}.`);
+      if (!item) return text(`No item #${String(args.item_id)}.`);
+      const why = item.drop_reason ? ` (${item.drop_reason})` : '';
+      return text(`Dropped: #${item.id} ${item.title}${why}`);
     },
   });
 
   ctx.tool({
     name: 'update',
     description: 'Change an item: title, notes, tags, due date, priority, blocker (what it is waiting on; empty string clears), or parent_id.',
+    untrustedOutput: true,
     input: {
       item_id: z.number().int().positive(),
       title: z.string().trim().min(1).max(200).optional(),
@@ -218,7 +229,7 @@ function defineTools(ctx: PluginToolContext): void {
     handler: (args) => {
       const rows = store.listSessions(typeof args.limit === 'number' ? args.limit : 10);
       if (!rows.length) return text('(no sessions yet)');
-      return text(rows.map(s => `${sessionLabel(s)} — ${s.open} open, ${s.done} done${s.dropped ? `, ${s.dropped} dropped` : ''}`).join('\n'));
+      return text(rows.map(s => `${sessionLabel(s)} — ${countsLine(s)}`).join('\n'));
     },
   });
 }

@@ -4,12 +4,12 @@ import { z } from 'zod';
 import type { Request, Response } from 'express';
 import type { Plugin, PluginContext, PluginToolContext, PluginSecrets, PluginLogger } from '../types.js';
 import { migrate } from './migrate.js';
+import { mapLimit } from '../../util/concurrency.js';
 import { FinanceStore } from './store.js';
 import { PlaidClient, type PlaidEnv } from './providers/plaid.js';
 import { SimpleFinClient, claimSetupToken } from './providers/simplefin.js';
 import type { Provider } from './providers/types.js';
 import { syncConnection, reapplyRules, refreshRecurring, enrichNew, type SyncResult } from './sync.js';
-import { previewImport, commitImport } from './import/index.js';
 import {
   netWorth, netWorthSeries, expandLines, cashFlow, spendByCategory, spendByPayee, incomeBySource, categoryTrend,
   budgetReport, upcomingRecurring, goalProgress, monthKey, monthRange, lastMonths, addDays,
@@ -53,10 +53,14 @@ function providerFor(store: FinanceStore, secrets: PluginSecrets, connId: string
   throw new Error(`unknown provider ${conn.provider}`);
 }
 
+const SYNC_CONCURRENCY = 3;
+
 async function syncAll(store: FinanceStore, secrets: PluginSecrets, logger: PluginLogger): Promise<Record<string, SyncResult | string>> {
   const out: Record<string, SyncResult | string> = {};
-  // One connection at a time: each sync is its own store transaction and the providers rate-limit.
-  for (const c of store.listConnections()) {
+  const conns = store.listConnections();
+  // A few at once: each sync fetches first and then writes in one synchronous
+  // transaction, so concurrent syncs never interleave inside the database.
+  await mapLimit(conns, SYNC_CONCURRENCY, async c => {
     try {
       out[c.id] = await syncConnection(store, providerFor(store, secrets, c.id), c.id);
       logger.info('synced', { connection: c.id, ...(out[c.id] as SyncResult) });
@@ -66,7 +70,7 @@ async function syncAll(store: FinanceStore, secrets: PluginSecrets, logger: Plug
       out[c.id] = `error: ${msg}`;
       logger.warn('sync-failed', { connection: c.id, err: msg });
     }
-  }
+  });
   return out;
 }
 
@@ -579,7 +583,6 @@ function register(ctx: PluginContext): void {
       connections: store.listConnections(),
       plaid: { configured: secrets.has('plaid_client_id') && secrets.has('plaid_secret'), env: secrets.get('plaid_env') || 'sandbox' },
       as_of: asOf(store),
-      imports: store.listImports(),
     });
   });
   ctx.route('post', '/connections/simplefin', async (req, res) => {
@@ -655,22 +658,6 @@ function register(ctx: PluginContext): void {
     logger.info('connection-removed', { connection: id });
     res.status(204).end();
   });
-
-  // ---- import ----
-  ctx.route('post', '/import/preview', (req, res) => {
-    const b = parse(req, res, S.ImportSchema); if (!b) return;
-    if (!store.getAccount(b.account_id)) { res.status(404).json({ error: 'unknown account' }); return; }
-    res.json(previewImport(store, b.account_id, b.content, b.filename, { flip_sign: b.flip_sign, has_header: b.has_header, columns: b.columns }));
-  });
-  ctx.route('post', '/import/commit', (req, res) => {
-    const b = parse(req, res, S.ImportSchema); if (!b) return;
-    if (!store.getAccount(b.account_id)) { res.status(404).json({ error: 'unknown account' }); return; }
-    const r = commitImport(store, b.account_id, b.content, b.filename, { flip_sign: b.flip_sign, has_header: b.has_header, columns: b.columns });
-    logger.info('imported', { account: b.account_id, ...r });
-    res.status(201).json(r);
-  });
-  ctx.route('delete', '/imports/:id', (req, res) => { res.json({ removed: store.deleteImport(Number(param(req, 'id'))) }); });
-
 }
 
 export const financePlugin: Plugin = {
@@ -678,7 +665,7 @@ export const financePlugin: Plugin = {
     id: 'finance',
     name: 'Finance',
     version: '0.2.0',
-    description: 'Your money in one place: accounts and net worth, a full transaction ledger with categories, rules and splits, budgets, recurring bills, cash flow and reports. Read-only bank aggregation plus file import; the data stays in your database.',
+    description: 'Your money in one place: accounts and net worth, a full transaction ledger with categories, rules and splits, budgets, recurring bills, cash flow and reports. Read-only bank aggregation; the data stays in your database.',
     icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
     nav: [
       { id: 'finance', label: 'Finance', tabs: [

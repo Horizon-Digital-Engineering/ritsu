@@ -14,9 +14,8 @@ versioning per [semver](https://semver.org/).
   rules that categorize new rows, monthly budgets with per-month overrides,
   recurring-charge detection with confirm/dismiss, cash flow, spending and
   trend reports, savings and payoff goals, and investment holdings where the
-  provider supplies them. Data comes in through SimpleFIN or Plaid, or by
-  importing any bank's CSV or OFX/QFX file with preview and de-duplication;
-  a daily job keeps connections synced. Ten read-only agent tools answer over
+  provider supplies them. Data comes in through SimpleFIN or Plaid, and a
+  daily job keeps connections synced. Ten read-only agent tools answer over
   the ledger and report how fresh the data is. Everything stays in the local
   database.
 - **Apps on the rail.** A plugin that ships a UI and an icon is an app: it gets
@@ -37,14 +36,31 @@ versioning per [semver](https://semver.org/).
   backlog, and history.
 - Plugin tools now learn which chat a turn belongs to (`conversationId` in the
   call context), so a plugin can keep per-conversation state.
+- **Encrypted backups with a rehearsal.** Snapshots are now encrypted with a
+  backup password in the age format, one series per host, written daily to
+  `RITSU_BACKUP_DIR` or `backups/` beside the database. A boot whose
+  migrations change the schema writes a pre-upgrade copy first and will not
+  start without one. `ritsu backup rehearse` decrypts a backup into scratch
+  and runs this build's migrations on it, reporting every table's row count
+  before and after; `update-ritsu` does this before touching the service.
+  `ritsu backup restore latest` swaps a backup in with the previous database
+  kept aside and put back if the swap fails. The Backups page sets the
+  password, lists every machine's backups and rehearses any of them.
 
 ### Changed
 
 - The Finance plugin's storage was rebuilt for the ledger (plugin version
   0.2.0). The earlier aggregation-cache tables are replaced on first boot.
+- Backups need a backup password; without one the daily job skips and the
+  Backups page says so. Plaintext `.db` snapshots from before are left where
+  they are and no longer listed.
 
 ### Fixed
 
+- The Settings page loads and saves. It had no server route and its Save
+  button was not wired, so every knob on it (search backend, backups kept,
+  approval TTL, OAuth rate limits) fell back to the built-in default no matter
+  what was typed.
 - The Operations board showed a job's next run in the wrong units.
 - The install directory is readable by the operator's own account, so
   `update-ritsu` and the `ritsu` CLI run without `sudo`; only `data/` (database,

@@ -242,8 +242,8 @@ export abstract class AgentBase {
   }
 
   /** Hook: decide what (if anything) to persist after a turn. */
-  protected async persistAfterTurn(_userMsg: string, _assistantMsg: string): Promise<number[]> {
-    return [];
+  protected persistAfterTurn(_userMsg: string, _assistantMsg: string): Promise<number[]> {
+    return Promise.resolve([]);
   }
 
   /**
@@ -390,8 +390,8 @@ export abstract class AgentBase {
   }
 
   /** Hook: choose the dispatcher for this turn. Override to escalate. */
-  protected async selectDispatcher(_userMsg: string): Promise<ModelDispatcher> {
-    return this.deps.dispatcher;
+  protected selectDispatcher(_userMsg: string): Promise<ModelDispatcher> {
+    return Promise.resolve(this.deps.dispatcher);
   }
 
   /**

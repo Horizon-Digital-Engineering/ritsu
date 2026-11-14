@@ -1605,38 +1605,44 @@ async function downloadFile(path) {
   } catch (e) { toast(`download failed: ${e.message}`, 'err'); }
 }
 
-/** POST one file into the workspace; a name collision confirms then overwrites. */
-async function uploadOneFile(name, path, data) {
+async function uploadOneFile(name, path, data, overwrite) {
   try {
-    await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: false });
+    await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite });
     return true;
   } catch (e) {
-    if (/file exists/i.test(e.message) && confirm(`${path} already exists. Overwrite it?`)) {
-      try {
-        await api('POST', `/admin/api/agents/${encodeURIComponent(agentId)}/files`, { path, data, overwrite: true });
-        return true;
-      } catch (error_) { toast(`${name}: ${error_.message}`, 'err'); }
-    } else if (!/file exists/i.test(e.message)) {
-      toast(`${name}: ${e.message}`, 'err');
-    }
+    toast(`${name}: ${e.message}`, 'err');
     return false;
   }
 }
 
+/** Size-check, read, confirm every overwrite in ONE dialog, then upload everything at once. */
 async function uploadFiles(fileList) {
   const list = Array.from(fileList || []);
   if (!list.length) return;
-  let wrote = 0;
-  // Sequential: uploadOneFile may confirm() an overwrite, and one dialog at a time is the point.
+  const jobs = [];
   for (const f of list) {
     if (f.size > MAX_UPLOAD_BYTES) { toast(`${f.name}: over the 25MB upload limit`, 'err'); continue; }
     const name = f.name.split(/[\\/]/).pop() || 'upload';
-    const path = `uploads/${name}`;
-    let data;
-    try { data = await blobToBase64(f); }
-    catch { toast(`${name}: could not read file`, 'err'); continue; }
-    if (await uploadOneFile(name, path, data)) wrote++;
+    jobs.push({ name, path: `uploads/${name}`, file: f });
   }
+  if (!jobs.length) return;
+  // The listing the UI already holds is the existence check; refresh it first if the files view never loaded.
+  if (!filesLoaded) await loadFiles();
+  const existing = new Set(files.map(f => f.rel));
+  const clashes = jobs.filter(j => existing.has(j.path));
+  let replace = false;
+  if (clashes.length) {
+    const n = clashes.length;
+    replace = confirm(`Replace ${n} existing file${n === 1 ? '' : 's'}?\n\n${clashes.map(j => j.name).join('\n')}`);
+  }
+  const todo = replace ? jobs : jobs.filter(j => !existing.has(j.path));
+  const results = await Promise.allSettled(todo.map(async j => {
+    let data;
+    try { data = await blobToBase64(j.file); }
+    catch { toast(`${j.name}: could not read file`, 'err'); return false; }
+    return uploadOneFile(j.name, j.path, data, existing.has(j.path));
+  }));
+  const wrote = results.filter(r => r.status === 'fulfilled' && r.value).length;
   if (wrote) toast(`uploaded ${wrote} file${wrote === 1 ? '' : 's'}`);
   await loadFiles();
   rerenderCurrentView();

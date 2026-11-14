@@ -97,16 +97,3 @@ export const GoalSchema = z.object({
   target_date: date.nullable().default(null), account_ids: z.array(idish).max(20).default([]),
 });
 export const GoalPatchSchema = GoalSchema.partial();
-
-// ---- import -----------------------------------------------------------------
-export const ImportSchema = z.object({
-  account_id: idish,
-  filename: text(200).default(''),
-  content: z.string().min(1).max(5_000_000),
-  flip_sign: z.boolean().optional(),
-  has_header: z.boolean().optional(),
-  columns: z.object({
-    date: z.number().int(), description: z.number().int(), amount: z.number().int(), debit: z.number().int(),
-    credit: z.number().int(), payee: z.number().int(), category: z.number().int(), memo: z.number().int(),
-  }).partial().optional(),
-});

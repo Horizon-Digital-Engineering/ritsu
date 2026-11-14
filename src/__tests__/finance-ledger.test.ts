@@ -4,7 +4,7 @@ import { openDatabase } from '../db.js';
 import { ScopedDb, PluginHost } from '../plugins/host.js';
 import { SecretStore } from '../auth/secret-store.js';
 import { financePlugin } from '../plugins/finance/plugin.js';
-import { FinanceStore, fingerprint } from '../plugins/finance/store.js';
+import { FinanceStore } from '../plugins/finance/store.js';
 import { netWorth, netWorthSeries, expandLines, cashFlow, spendByCategory, budgetReport, categoryTrend, upcomingRecurring, goalProgress, lastMonths, monthRange } from '../plugins/finance/report.js';
 import { applyRules } from '../plugins/finance/rules.js';
 import { detectRecurring, payeeKey } from '../plugins/finance/recurring.js';
@@ -118,11 +118,6 @@ describe('finance store', () => {
     assert.deepEqual(spend.map(s => [s.category_id, s.total]), [['groceries', 70], ['home_goods', 30]]);
   });
 
-  it('fingerprints are stable and insensitive to punctuation in the description', () => {
-    assert.equal(fingerprint('a', '2026-01-02', -12.5, 'CHIPOTLE #1234'), fingerprint('a', '2026-01-02', -12.5, 'chipotle 1234'));
-    assert.notEqual(fingerprint('a', '2026-01-02', -12.5, 'x'), fingerprint('a', '2026-01-03', -12.5, 'x'));
-  });
-
   it('transfer candidates pair opposite amounts across accounts within three days', () => {
     const { store } = fresh();
     seedAccounts(store);
@@ -218,7 +213,7 @@ describe('rules, keywords, recurring detection', () => {
   const txn = (over: Partial<Parameters<typeof applyRules>[1]>) => ({
     id: 'x', account_id: 'chk', date: today(), description: 'AMAZON MKTPL*1234', payee: 'Amazon', amount: -42, currency: 'USD', category_id: null,
     category_source: 'none', provider_category: '', pending: false, notes: '', reviewed: false, excluded: false, transfer_group: null,
-    source: 'sync', import_id: null, fingerprint: '', created_at: 0, updated_at: 0, tags: [], ...over,
+    source: 'sync', created_at: 0, updated_at: 0, tags: [], ...over,
   });
   const rule = (over: Partial<Parameters<typeof applyRules>[0][number]>) => ({
     id: 1, priority: 100, enabled: true, field: 'any', op: 'contains', pattern: 'amazon', amount_min: null, amount_max: null,

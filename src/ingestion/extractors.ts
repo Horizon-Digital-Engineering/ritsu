@@ -10,6 +10,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Extractor, ExtractInput, DocType } from './pipeline.js';
 import type { SecretStore } from '../auth/secret-store.js';
+import { imagePrompt } from '../model/claude-direct-dispatcher.js';
 
 /** Test / passthrough extractor — returns a fixed object (or a per-call fn). */
 type ExtractorFn = (i: ExtractInput, d: DocType) => unknown;
@@ -52,17 +53,6 @@ const EXTRACT_SYSTEM = [
   'valid JSON matching the requested shape — no prose, no code fences, no explanation.',
   'Use null for anything not present. Never invent values.',
 ].join(' ');
-
-async function* imageUserMessage(text: string, imageBase64: string, mediaType: string): AsyncGenerator<unknown> {
-  yield {
-    type: 'user',
-    parent_tool_use_id: null,
-    message: { role: 'user', content: [
-      { type: 'text', text },
-      { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-    ] },
-  };
-}
 
 /**
  * Extraction against ANY OpenAI-compatible vision endpoint — a local model
@@ -128,12 +118,11 @@ export class SdkVisionExtractor implements Extractor {
   async extract(input: ExtractInput, docType: DocType): Promise<unknown> {
     const ask = `${docType.instructions}\n\nReturn JSON only.`;
     const prompt = input.imageBase64
-      ? imageUserMessage(ask, input.imageBase64, input.mediaType ?? 'image/png')
+      ? imagePrompt(ask, [{ type: 'image', source: { type: 'base64', media_type: input.mediaType ?? 'image/png', data: input.imageBase64 } }])
       : `${ask}\n\n---\n${input.text ?? ''}`;
     let out = '';
     for await (const ev of query({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-      prompt: prompt as any,
+      prompt,
       options: {
         systemPrompt: EXTRACT_SYSTEM,
         model: this.model,

@@ -311,9 +311,9 @@ function buildMcpServer(deps: CreateMcpServerDeps): McpServer {
   mcp.registerTool(
     'list_agents',
     { description: 'List all enabled agents and their basic metadata.', inputSchema: {} },
-    audited<Record<string, never>>('list_agents', () => null, async () => {
+    audited<Record<string, never>>('list_agents', () => null, () => {
       const agents = deps.host.list();
-      return { structured: { agents }, text: JSON.stringify(agents, null, 2) };
+      return Promise.resolve({ structured: { agents }, text: JSON.stringify(agents, null, 2) });
     }),
   );
 

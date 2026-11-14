@@ -16,7 +16,9 @@ import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore } from '../conversation-store.js';
 import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
-import type { BackupManager } from '../backup.js';
+import { checkPassword, type BackupManager } from '../backup.js';
+import { SEARCH_NS } from '../tools/ritsu-agent/search-config.js';
+import { SEARCH_PROVIDERS, isSearchProvider } from '../tools/ritsu-agent/search.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
 import { FLASHBACK_NS, FLASHBACK_SECRET_KEYS, loadMemoryConfig } from '../memory/config.js';
 import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
@@ -227,6 +229,37 @@ const PERMISSION_VALUES: ReadonlyArray<Permission> = ['read', 'write', 'exec'];
 // lint at compile time but silently lies to TS about a runtime shape the
 // caller may not honor. Real validation here.
 
+const BackupPasswordBody = z.object({ password: z.string() });
+const SettingsBody = z.object({
+  settings: z.record(z.string(), z.string().max(2048)).default({}),
+  search_api_key: z.string().max(4096).optional(),
+});
+
+/** Every operator-tunable knob and its code default. A key not listed here is
+ *  not a setting; blank clears a stored value back to the default. */
+const SETTING_DEFAULTS: Record<string, string> = {
+  'search.provider': '',
+  'search.url': '',
+  'backups.keep': '14',
+  'backups.interval_hours': '24',
+  'approvals.ttl_seconds': '86400',
+  'oauth.max_per_ip_minute': '60',
+  'oauth.dcr_max_per_ip_hour': '5',
+};
+
+/** Why a value cannot be stored under a key, or null when it can. */
+function settingError(key: string, value: string): string | null {
+  if (key === 'search.provider') return value === '' || isSearchProvider(value) ? null : `provider must be one of ${SEARCH_PROVIDERS.join(', ')}`;
+  if (key === 'search.url') {
+    if (value === '') return null;
+    try { const u = new URL(value); return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'url must be http or https'; }
+    catch { return 'url is not a valid URL'; }
+  }
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? null : `${key} must be a positive number`;
+}
+const BackupNameBody = z.object({ name: z.string().min(1) });
+
 const LogLevelBody = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']),
 });
@@ -316,10 +349,12 @@ const ClaudeTokenBody = z.object({
   token: z.string().trim().min(20).max(2048),
 });
 
+/** One connector form = one request: every field lands in a single
+ *  transaction, so a bad entry leaves nothing half-saved. */
 const SecretSetBody = z.object({
   namespace: z.string().trim().min(1).max(64),
-  name:      z.string().trim().min(1).max(64),
-  value:     z.string().min(1).max(8192),
+  values:    z.record(z.string().trim().min(1).max(64), z.string().min(1).max(8192))
+    .refine(v => Object.keys(v).length > 0, 'values must not be empty'),
 });
 
 /** Test-pane body. Mirrors the agent-edit form's draft state — never
@@ -1184,8 +1219,7 @@ export function createAdminApp(deps: AdminDeps) {
     if (keyMissing(res)) return;
     const body = parseBody(req, res, SecretSetBody);
     if (!body) return;
-    secrets.set(body.namespace, body.name, body.value);
-    res.json({ ok: true, namespace: body.namespace, name: body.name });
+    res.json({ wrote: secrets.setMany(body.namespace, body.values) });
   });
 
   app.delete('/admin/api/secrets/:namespace/:name', (req: Request, res: Response) => {
@@ -2082,17 +2116,82 @@ export function createAdminApp(deps: AdminDeps) {
     }));
   });
 
+  // ---- operator settings -------------------------------------------------------
+  app.get('/admin/api/settings', (_req: Request, res: Response) => {
+    if (!deps.settings) { res.status(503).json({ error: 'settings store not wired' }); return; }
+    const stored = deps.settings.all();
+    const settings = Object.fromEntries(Object.keys(SETTING_DEFAULTS).filter(k => k in stored).map(k => [k, stored[k]]));
+    res.json({
+      settings,
+      defaults: SETTING_DEFAULTS,
+      search_providers: SEARCH_PROVIDERS,
+      search_key_set: !!secrets.get(SEARCH_NS, 'api_key')?.trim(),
+    });
+  });
+
+  // Blank clears a key. Search applies on the next agent build; retention and
+  // rate limits are read at boot. The API key goes to the secret store, never
+  // the settings table.
+  app.post('/admin/api/settings', (req: Request, res: Response) => {
+    if (!deps.settings) { res.status(503).json({ error: 'settings store not wired' }); return; }
+    const body = parseBody(req, res, SettingsBody);
+    if (!body) return;
+    const entries = Object.entries(body.settings).map(([k, v]) => [k, v.trim()] as const);
+    for (const [key, value] of entries) {
+      if (!(key in SETTING_DEFAULTS)) { res.status(400).json({ error: `unknown setting '${key}'` }); return; }
+      const bad = value === '' ? null : settingError(key, value);
+      if (bad) { res.status(400).json({ error: bad }); return; }
+    }
+    for (const [key, value] of entries) {
+      if (value === '') deps.settings.delete(key);
+      else deps.settings.set(key, value);
+    }
+    if (body.search_api_key?.trim()) secrets.set(SEARCH_NS, 'api_key', body.search_api_key.trim());
+    res.json({ ok: true });
+  });
+
   // ---- backups + export (data safety) ------------------------------------
   app.get('/admin/api/backups', (_req: Request, res: Response) => {
-    res.json({ backups: backup.listBackups(), dir: backup.dir() });
+    const backups = backup.listBackups();
+    res.json({
+      dir: backup.dir(),
+      dir_source: backup.dirSource,
+      host: backup.host,
+      keep: deps.settings?.getNumber('backups.keep', 14) ?? 14,
+      interval_hours: deps.settings?.getNumber('backups.interval_hours', 24) ?? 24,
+      password_set: backup.passwordSet(),
+      running: backup.status.running,
+      last_error: backup.status.last_error,
+      backups,
+    });
   });
 
-  app.post('/admin/api/backup', (_req: Request, res: Response) => {
-    try { res.status(201).json(backup.createBackup()); }
-    catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  app.put('/admin/api/backups/password', (req: Request, res: Response) => {
+    const body = parseBody(req, res, BackupPasswordBody);
+    if (!body) return;
+    const bad = checkPassword(body.password);
+    if (bad) { res.status(400).json({ error: bad }); return; }
+    backup.setPassword(body.password);
+    res.json({ ok: true });
   });
 
-  // Download a snapshot .db off the box.
+  app.post('/admin/api/backup', async (_req: Request, res: Response) => {
+    try { res.status(201).json(await backup.createBackup('daily')); }
+    catch (e) { res.status(409).json({ error: (e as Error).message }); }
+  });
+
+  // Decrypt a backup into scratch and run this build's migrations on the copy.
+  app.post('/admin/api/backups/rehearse', async (req: Request, res: Response) => {
+    const body = parseBody(req, res, BackupNameBody);
+    if (!body) return;
+    try { res.json(await backup.rehearse(body.name)); }
+    catch (e) {
+      const err = e as Error & { stage?: string };
+      res.status(400).json({ error: err.message, ...(err.stage ? { stage: err.stage } : {}) });
+    }
+  });
+
+  // Download an encrypted snapshot off the box.
   app.get('/admin/api/backups/:name', (req: Request, res: Response) => {
     const p = backup.pathFor(param(req.params.name));
     if (!p) { res.status(404).json({ error: 'not found' }); return; }
