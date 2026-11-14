@@ -84,6 +84,16 @@ describe('SecretStore', () => {
     assert.equal(store.get('email', 'user'), null);
   });
 
+  it('setMany writes every field, or none when one is bad', () => {
+    assert.equal(store.setMany('email', { imap_user: 'me', smtp_password: 'pw' }), 2);
+    assert.equal(store.get('email', 'imap_user'), 'me');
+    assert.equal(store.get('email', 'smtp_password'), 'pw');
+    // A blank name mid-batch throws inside the transaction → the good entries roll back too.
+    assert.throws(() => store.setMany('twitter', { api_key: 'k', '  ': 'x', api_secret: 's' }));
+    assert.equal(store.list('twitter').length, 0);
+    assert.equal(store.get('email', 'imap_user'), 'me');   // other namespaces untouched
+  });
+
   it('ciphertext at rest is not the plaintext', () => {
     store.set('email', 'smtp_password', 'plaintext-here');
     // Reach into the raw row (private db, bracket access in tests) — the

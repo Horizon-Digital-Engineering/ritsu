@@ -38,6 +38,7 @@ import type { RaTool } from '../../model/ritsu-agent/types.js';
 import { checkToolUse, canonicalizeUnderWorkspace } from '../permissions.js';
 import { logger } from '../../util/log.js';
 import { asString } from '../../util/cast.js';
+import { mapLimit } from '../../util/concurrency.js';
 
 const BASH_TIMEOUT_MS = 30_000;
 const BASH_TIMEOUT_CEIL_MS = 60_000; // hard upper bound on per-call override
@@ -269,10 +270,14 @@ function compileGrepPattern(patternStr: string, ignoreCase: boolean): { test(s: 
   }
 }
 
+/** Concurrent file reads per Grep call: enough to keep the disk queue busy on
+ *  a wide workspace without holding thousands of fds open. */
+const GREP_READ_CONCURRENCY = 16;
+
 /** Walk targetFiles, scan each line with `pattern`, collect at most
- *  GREP_RESULT_CAP `path:line:text` hits. Unreadable files are skipped
- *  silently — broken symlinks, perms mismatches, binary files that throw
- *  on UTF-8 decode all fall in this bucket and aren't worth surfacing. */
+ *  GREP_RESULT_CAP `path:line:text` hits in walk order. Unreadable files are
+ *  skipped silently — broken symlinks, perms mismatches, binary files that
+ *  throw on UTF-8 decode all fall in this bucket and aren't worth surfacing. */
 async function runGrep(opts: {
   cwd: string;
   rootPath: string;
@@ -282,19 +287,27 @@ async function runGrep(opts: {
   const files: string[] = [];
   await walkFiles(opts.rootPath, opts.cwd, files);
   const targetFiles = opts.include ? files.filter(f => globMatch(opts.include, f)) : files;
-  const hits: string[] = [];
-  for (const rel of targetFiles) {
-    if (hits.length >= GREP_RESULT_CAP) break;
+  // Hits are kept per file and flattened by walk index so output does not
+  // depend on which read finished first. Every started file is kept: once the
+  // cap is reached no new file starts, and the files already started hold at
+  // least GREP_RESULT_CAP hits between them, so the in-order truncation is
+  // exactly what a sequential scan would have returned.
+  let found = 0;
+  const hitsByFile = await mapLimit(targetFiles, GREP_READ_CONCURRENCY, async (file): Promise<string[]> => {
     let content: string;
-    try { content = await readFile(resolve(opts.cwd, rel), 'utf8'); }
-    catch { continue; }
-    scanLinesIntoHits(content, rel, opts.pattern, hits);
-  }
-  return hits;
+    try { content = await readFile(resolve(opts.cwd, file), 'utf8'); }
+    catch { return []; }
+    const hits: string[] = [];
+    scanLinesIntoHits(content, file, opts.pattern, hits);
+    found += hits.length;
+    return hits;
+  }, () => found >= GREP_RESULT_CAP);
+  return hitsByFile.flatMap(h => h ?? []).slice(0, GREP_RESULT_CAP);
 }
 
 /** Match every line in `content` against `pattern`, append `path:line:text`
- *  to `hits` for each match. Stops as soon as `hits` hits GREP_RESULT_CAP. */
+ *  to `hits` for each match. Stops once `hits` holds GREP_RESULT_CAP lines —
+ *  more from one file could never make the final output anyway. */
 function scanLinesIntoHits(content: string, rel: string, pattern: { test(s: string): boolean }, hits: string[]): void {
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {

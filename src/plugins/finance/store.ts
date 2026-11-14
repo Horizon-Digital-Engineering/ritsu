@@ -3,7 +3,7 @@
  * inflow positive, outflow negative; a liability account's balance is
  * negative. Provider credentials never live in these tables.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { PluginDb } from '../types.js';
 import { UNCATEGORIZED } from './categories.js';
 
@@ -25,8 +25,8 @@ export interface Account {
 export interface Transaction {
   id: string; account_id: string; date: string; description: string; payee: string; amount: number; currency: string;
   category_id: string | null; category_source: string; provider_category: string; pending: boolean; notes: string;
-  reviewed: boolean; excluded: boolean; transfer_group: string | null; source: string; import_id: number | null;
-  fingerprint: string; created_at: number; updated_at: number;
+  reviewed: boolean; excluded: boolean; transfer_group: string | null; source: string;
+  created_at: number; updated_at: number;
   tags: string[];
 }
 
@@ -50,10 +50,6 @@ export interface Goal {
 export interface Holding {
   id: string; account_id: string; symbol: string; description: string; quantity: number | null; price: number | null;
   market_value: number | null; cost_basis: number | null; currency: string; as_of: string; updated_at: number;
-}
-export interface ImportRecord {
-  id: number; filename: string; format: string; account_id: string; rows_total: number; rows_added: number;
-  rows_duplicate: number; created_at: number;
 }
 
 export interface TransactionFilter {
@@ -91,12 +87,6 @@ const ruleCell = (col: keyof RulePatch, v: RulePatch[keyof RulePatch]): unknown 
   }
 };
 const toGoal = (r: Row): Goal => ({ ...(r as unknown as Goal), account_ids: JSON.parse(typeof r.account_ids === 'string' ? r.account_ids : '[]') as string[] });
-
-/** Stable identity for de-duplicating imports against synced rows. */
-export function fingerprint(accountId: string, date: string, amount: number, description: string): string {
-  const desc = description.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 40);
-  return createHash('sha256').update(`${accountId}|${date}|${amount.toFixed(2)}|${desc}`).digest('hex').slice(0, 24);
-}
 
 export class FinanceStore {
   private inTx = false;
@@ -214,43 +204,38 @@ export class FinanceStore {
   }
 
   // ---- transactions ------------------------------------------------------
-  /** Sync/import upsert. Operator-owned fields (payee edits, category set by
+  /** Sync upsert. Operator-owned fields (payee edits, category set by
    *  the operator or a rule, notes, flags) survive a re-sync. */
   upsertTransaction(t: {
     id: string; account_id: string; date: string; description: string; payee?: string; amount: number; currency?: string;
     category_id?: string | null; category_source?: string; provider_category?: string; pending?: boolean;
-    source?: string; import_id?: number | null;
+    source?: string;
   }): 'added' | 'updated' {
-    const fp = fingerprint(t.account_id, t.date, t.amount, t.description);
     const existing = this.db.prepare(`SELECT id FROM ${this.t('transactions')} WHERE id = ?`).get(t.id) as { id: string } | undefined;
     this.db.prepare(
       `INSERT INTO ${this.t('transactions')}
-         (id, account_id, date, description, payee, amount, currency, category_id, category_source, provider_category, pending, source, import_id, fingerprint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, account_id, date, description, payee, amount, currency, category_id, category_source, provider_category, pending, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          account_id = excluded.account_id, date = excluded.date, description = excluded.description,
          payee = CASE WHEN category_source = 'user' OR payee <> description THEN payee ELSE excluded.payee END,
          amount = excluded.amount, currency = excluded.currency,
          category_id = CASE WHEN category_source IN ('user','rule') THEN category_id ELSE excluded.category_id END,
          category_source = CASE WHEN category_source IN ('user','rule') THEN category_source ELSE excluded.category_source END,
-         provider_category = excluded.provider_category, pending = excluded.pending, fingerprint = excluded.fingerprint,
+         provider_category = excluded.provider_category, pending = excluded.pending,
          updated_at = strftime('%s','now')`,
     ).run(t.id, t.account_id, t.date, t.description, t.payee ?? t.description, t.amount, t.currency ?? 'USD',
       t.category_id ?? null, t.category_source ?? (t.category_id ? 'provider' : 'none'), t.provider_category ?? '',
-      t.pending ? 1 : 0, t.source ?? 'sync', t.import_id ?? null, fp);
+      t.pending ? 1 : 0, t.source ?? 'sync');
     return existing ? 'updated' : 'added';
   }
   insertManualTransaction(t: { account_id: string; date: string; payee: string; amount: number; category_id?: string | null; category_source?: string; notes?: string }): Transaction {
     const id = `manual:${randomBytes(10).toString('hex')}`;
     this.db.prepare(
-      `INSERT INTO ${this.t('transactions')} (id, account_id, date, description, payee, amount, category_id, category_source, notes, source, reviewed, fingerprint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 1, ?)`,
-    ).run(id, t.account_id, t.date, t.payee, t.payee, t.amount, t.category_id ?? null, t.category_source ?? (t.category_id ? 'user' : 'none'), t.notes ?? '',
-      fingerprint(t.account_id, t.date, t.amount, t.payee));
+      `INSERT INTO ${this.t('transactions')} (id, account_id, date, description, payee, amount, category_id, category_source, notes, source, reviewed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 1)`,
+    ).run(id, t.account_id, t.date, t.payee, t.payee, t.amount, t.category_id ?? null, t.category_source ?? (t.category_id ? 'user' : 'none'), t.notes ?? '');
     return this.getTransaction(id)!;
-  }
-  hasFingerprint(accountId: string, fp: string): boolean {
-    return !!this.db.prepare(`SELECT 1 FROM ${this.t('transactions')} WHERE account_id = ? AND fingerprint = ?`).get(accountId, fp);
   }
   hasTransaction(id: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM ${this.t('transactions')} WHERE id = ?`).get(id);
@@ -565,27 +550,5 @@ export class FinanceStore {
   }
   listHoldings(): Holding[] {
     return this.db.prepare(`SELECT * FROM ${this.t('holdings')} ORDER BY account_id, market_value DESC`).all() as unknown as Holding[];
-  }
-
-  // ---- imports -----------------------------------------------------------
-  recordImport(i: { filename: string; format: string; account_id: string; rows_total: number; rows_added: number; rows_duplicate: number }): number {
-    const res = this.db.prepare(`INSERT INTO ${this.t('imports')} (filename, format, account_id, rows_total, rows_added, rows_duplicate) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(i.filename, i.format, i.account_id, i.rows_total, i.rows_added, i.rows_duplicate);
-    return Number(res.lastInsertRowid);
-  }
-  setImportCounts(id: number, added: number, duplicates: number): void {
-    this.db.prepare(`UPDATE ${this.t('imports')} SET rows_added = ?, rows_duplicate = ? WHERE id = ?`).run(added, duplicates, id);
-  }
-  listImports(): ImportRecord[] {
-    return this.db.prepare(`SELECT * FROM ${this.t('imports')} ORDER BY id DESC LIMIT 50`).all() as unknown as ImportRecord[];
-  }
-  /** Undo an import: removes the rows it added. */
-  deleteImport(id: number): number {
-    return this.transaction(() => {
-      const ids = (this.db.prepare(`SELECT id FROM ${this.t('transactions')} WHERE import_id = ?`).all(id) as Array<{ id: string }>).map(r => r.id);
-      for (const t of ids) this.deleteTransaction(t);
-      this.db.prepare(`DELETE FROM ${this.t('imports')} WHERE id = ?`).run(id);
-      return ids.length;
-    });
   }
 }

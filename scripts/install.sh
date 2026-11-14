@@ -164,6 +164,16 @@ note "generate:  claude setup-token       (on any machine, needs a subscription)
 note "then save it under API Keys in the admin UI"
 note "agents cannot dispatch until one is stored" 
 
+bold "==> Backups"
+# Snapshots are encrypted with a password kept in data/; nothing is written
+# until one is set, and an upgrade that changes the schema refuses to start
+# without it. Said here once rather than discovered at the first upgrade.
+if sudo test -s "${INSTALL_DIR}/data/backup-password"; then
+  note "backup password set"
+else
+  warn "no backup password yet — backups are off until:  sudo ritsu backup set-password"
+fi
+
 bold "==> Update command"
 # A real file, not a heredoc through sudo: the heredoc form failed under some
 # shells and left a built-but-unrestarted service.

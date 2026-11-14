@@ -193,40 +193,71 @@ Needs root (reads `/opt/ritsu/data/ritsu.db`, writes the key file).
 
 ## `ritsu backup`
 
-Snapshot, inspect, and restore the database. The whole system is one SQLite
-file, so a snapshot is a single consistent `VACUUM INTO` — safe to take while
-the service is running.
+Encrypted snapshots of the database, and the JSON export. The whole system is
+one SQLite file, so a snapshot is a single consistent `VACUUM INTO`, safe to
+take while the service is running. Each snapshot is encrypted with the backup
+password in the [age](https://age-encryption.org) format, so a backup can sit
+on a shared drive and still opens anywhere with `age -d`.
 
 ```
-ritsu backup                          # snapshot now
-ritsu backup list                     # newest first
-ritsu backup prune --keep 14          # keep the newest N (floor of 1)
-ritsu backup export <file.json>       # portable dump of your data, no secrets
+ritsu backup                               # snapshot now
+ritsu backup list [--host H]               # what is in the folder, newest first
+ritsu backup set-password                  # the password backups are encrypted with
+ritsu backup rehearse [latest|name|path]   # prove this build's migrations on a copy
+ritsu backup restore  [latest|name|path]   # replace the live database (service stopped)
+ritsu backup prune --keep 14               # keep the newest N daily (floor of 1)
+ritsu backup export <file.json>            # portable dump of your data, no secrets
 ritsu backup import <file.json> <new.db>   # rebuild a NEW database from an export
-ritsu backup restore <file.db>        # replace the live DB with a snapshot
 ```
 
-Two different paths, on purpose:
+**Where they go.** `RITSU_BACKUP_DIR` when set, else `backups/` beside the
+database. Point it at a mounted share and grant the service write access with
+`ritsu path add <dir>`. Files are named `ritsu-<host>-<time>.db.age`, one series
+per machine; `latest` means this host's newest daily backup, `--host` picks
+another machine's.
 
-- **`.db` snapshot** — the complete copy: every table, credentials included.
-  This is the restore path, and it needs no ritsu to read. `restore` clears
-  the write-ahead log and runs `PRAGMA integrity_check` before reporting
-  success; it snapshots the current database first, so a bad restore is
-  recoverable. **Stop the service before restoring** — an open database
-  cannot be hot-swapped.
-- **JSON export** — a readable, portable dump of your *meaningful* data
-  (agents, memories, conversations, plugin data). Credentials, tokens and the
-  audit log are deliberately excluded, so it is a portability format, not a
-  restore. `import` writes a **new** file and refuses to overwrite an existing
-  one, because importing over a live database would leave a half-populated
-  system that looks whole.
+**Password.** Set once per machine with `set-password` (or on the Backups page);
+at least 15 characters. It is kept in `data/backup-password` (mode 0600) and is
+never inside a backup. Without it nothing is written: the daily job skips, and
+a boot whose migrations would change the schema refuses to start until one is
+set. Keep a copy of the password somewhere safe; so is the master key that
+unlocks stored secrets, which is kept out of backups on purpose.
 
-Snapshots that fail their integrity check are discarded rather than kept —
-a truncated file would otherwise count toward `--keep` and displace a good one.
+**Schedule.** The service checks every ten minutes and writes a daily backup
+when this host's newest one is older than `backups.interval_hours` (24),
+keeping `backups.keep` (14) of them. Both are on the Settings page. A boot
+whose migrations change the schema first writes
+`ritsu-<host>-pre-upgrade-<time>.db.age`; the last 5 per host are kept apart
+from the daily series, so a redeploy-heavy day cannot rotate the last good
+copy away.
 
-`list` and `prune` touch only the filesystem; they never open the database.
+**Rehearse.** Decrypts a backup into a scratch folder under the data dir,
+checks its integrity, runs this build's migrations on the copy and prints
+every table's row count before and after, with any table the upgrade adds or
+drops. The live database is never opened. `update-ritsu` takes a fresh backup
+and rehearses on it before the service is touched; a failure leaves the
+running version as it was. `--keep` leaves the migrated copy in place and
+prints its path. The same report is the **Rehearse** button on the Backups page.
 
-Needs root (reads/writes under `/opt/ritsu/data`).
+**Restore.** Stop the service first: `sudo systemctl stop ritsu.service`. The
+backup is decrypted beside the live database, integrity-checked, then swapped
+in; the database it replaces moves to `data/pre-restore-<time>/` with its
+write-ahead log (the last 3 are kept), and a swap that fails halfway puts the
+previous database back. The restored file keeps its own schema; the next boot
+migrates it, taking a pre-upgrade copy first like any other. A start that
+finds no database but a pre-restore folder holding one refuses to run on an
+empty file until you choose.
+
+**JSON export** is a readable, portable dump of your *meaningful* data
+(agents, memories, conversations, plugin data). Credentials, tokens and the
+audit log are deliberately excluded, so it is a portability format, not a
+restore. `import` writes a **new** file and refuses to overwrite an existing
+one.
+
+`list` and `prune` touch only the filesystem; `backup` opens the live file
+read-only. Neither runs migrations.
+
+Needs root (reads/writes under the data dir).
 
 ---
 

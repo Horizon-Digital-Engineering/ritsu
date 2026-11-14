@@ -277,10 +277,10 @@ export function formatMessages(
 }
 
 /** A single-turn streamed prompt: one user message carrying the flattened
- *  conversation text plus the image blocks. Closing the generator after one
- *  yield tells the SDK this is a complete turn. */
-export async function* imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncGenerator<SDKUserMessage> {
-  yield {
+ *  conversation text plus the image blocks. Ending the stream after that one
+ *  message tells the SDK this is a complete turn. */
+export function imagePrompt(text: string, images: AnthropicImageBlock[]): AsyncIterableIterator<SDKUserMessage> {
+  const turn = {
     type: 'user',
     parent_tool_use_id: null,
     message: {
@@ -288,6 +288,16 @@ export async function* imagePrompt(text: string, images: AnthropicImageBlock[]):
       content: [{ type: 'text', text }, ...images],
     },
   } as SDKUserMessage;
+  let sent = false;
+  const stream: AsyncIterableIterator<SDKUserMessage> = {
+    [Symbol.asyncIterator]: () => stream,
+    next: () => {
+      if (sent) return Promise.resolve({ done: true, value: undefined });
+      sent = true;
+      return Promise.resolve({ done: false, value: turn });
+    },
+  };
+  return stream;
 }
 
 /**

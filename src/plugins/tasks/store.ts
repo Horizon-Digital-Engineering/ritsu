@@ -208,15 +208,19 @@ export class TaskStore {
     const sets: string[] = [];
     const params: unknown[] = [];
     const changed: string[] = [];
-    const col = (name: string, value: unknown) => { sets.push(`${name} = ?`); params.push(value); changed.push(name); };
-    if (patch.title !== undefined && patch.title.trim() !== cur.title) col('title', patch.title.trim());
-    if (patch.notes !== undefined && patch.notes.trim() !== cur.notes) col('notes', patch.notes.trim());
-    if (patch.due !== undefined && patch.due !== cur.due) col('due', patch.due);
-    if (patch.priority !== undefined && patch.priority !== cur.priority) col('priority', patch.priority);
-    if (patch.blocker !== undefined && patch.blocker.trim() !== cur.blocker) col('blocker', patch.blocker.trim());
-    if (patch.parent_id !== undefined && patch.parent_id !== cur.parent_id) col('parent_id', patch.parent_id);
+    const col = (name: string, next: unknown, current: unknown) => {
+      if (next === undefined || next === current) return;
+      sets.push(`${name} = ?`); params.push(next); changed.push(name);
+    };
+    const trimmed = (s: string | undefined) => (s === undefined ? undefined : s.trim());
+    col('title', trimmed(patch.title), cur.title);
+    col('notes', trimmed(patch.notes), cur.notes);
+    col('due', patch.due, cur.due);
+    col('priority', patch.priority, cur.priority);
+    col('blocker', trimmed(patch.blocker), cur.blocker);
+    col('parent_id', patch.parent_id, cur.parent_id);
     if (sets.length) {
-      sets.push('updated_at = ?'); params.push(nowSec()); params.push(id);
+      sets.push('updated_at = ?'); params.push(nowSec(), id);
       this.db.prepare(`UPDATE ${this.t('items')} SET ${sets.join(', ')} WHERE id = ?`).run(...params);
     }
     if (patch.tags !== undefined) {

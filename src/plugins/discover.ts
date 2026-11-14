@@ -27,20 +27,22 @@ export async function discoverPlugins(): Promise<Plugin[]> {
     .filter(e => e.isDirectory())
     .map(e => e.name)
     .sort((a, b) => a.localeCompare(b));  // deterministic registration order
-  const out: Plugin[] = [];
-  // Imported one at a time so module evaluation order matches the sorted list.
-  for (const name of dirs) {
+  // Imports run concurrently; the sorted index, not import completion, decides
+  // registration order.
+  const loaded = await Promise.all(dirs.map(async (name): Promise<Plugin | null> => {
     const file = ['plugin.js', 'plugin.ts'].map(f => join(here, name, f)).find(existsSync);
-    if (!file) continue;
+    if (!file) return null;
     try {
       const mod = await import(pathToFileURL(file).href) as Record<string, unknown>;
       const plugin = Object.values(mod).find(isPlugin);
-      if (plugin) out.push(plugin);
-      else logger.warn('plugin.discover.no-export', { dir: name });
+      if (plugin) return plugin;
+      logger.warn('plugin.discover.no-export', { dir: name });
     } catch (err) {
       logger.error('plugin.discover.failed', { dir: name, err: (err as Error).message });
     }
-  }
+    return null;
+  }));
+  const out = loaded.filter((p): p is Plugin => p !== null);
   logger.info('plugin.discovered', { count: out.length, ids: out.map(p => p.manifest.id) });
   return out;
 }

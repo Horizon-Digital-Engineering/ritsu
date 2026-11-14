@@ -229,4 +229,43 @@ describe('RitsuAgentDispatcher', () => {
     // The tool did NOT run — memory stays empty even though the model asked.
     assert.equal((await deps.memory.list('a', 10)).length, 0);
   });
+
+  it('parallel tool calls run concurrently; results go back in call order', async () => {
+    const db = openDatabase(':memory:');
+    const deps = makeToolDeps(db);
+    const approvals = new ApprovalStore(db);
+    const bodies: Array<{ messages: Array<{ role: string; tool_call_id?: string; content: unknown }> }> = [];
+    const inner = makeFetchQueue([
+      toolCalls([
+        { id: 'c1', name: 'memory_remember', args: { content: 'first' } },
+        { id: 'c2', name: 'memory_remember', args: { content: 'second' } },
+      ]),
+      textOnly('both handled'),
+    ]);
+    const capturing: typeof fetch = async (url, init) => {
+      bodies.push(JSON.parse(init?.body as string) as (typeof bodies)[number]);
+      return inner(url, init);
+    };
+    const d = new RitsuAgentDispatcher({
+      provider: 'openai', apiKeyRef: keyId, apiKeys, defaultModel: 'gpt-test',
+      toolDeps: deps,
+      approval: { agentId: 'a', store: approvals, gatedTools: ['memory_remember'] },
+      fetchImpl: capturing,
+    });
+    const chatP = d.chat({ messages: [{ role: 'user', content: 'remember two things' }], conversation_id: 11 });
+    // Both gated calls are pending at once — the round did not serialise on the gate.
+    await waitFor(() => approvals.pendingCount() === 2);
+    const [p1, p2] = approvals.listPending();
+    assert.equal((JSON.parse(p1.args_json) as { content: string }).content, 'first');
+    // Decide the second call first; the result order must still follow the calls.
+    approvals.decide(p2.id, 'approved', null, 'test');
+    approvals.decide(p1.id, 'rejected', 'not that one', 'test');
+    const r = await chatP;
+    assert.equal(r.content, 'both handled');
+    const toolMsgs = bodies[1].messages.filter(m => m.role === 'tool');
+    assert.deepEqual(toolMsgs.map(m => m.tool_call_id), ['c1', 'c2']);
+    assert.match(String(toolMsgs[0].content), /rejected.*not that one/);
+    assert.doesNotMatch(String(toolMsgs[1].content), /rejected/);
+    assert.equal((await deps.memory.list('a', 10)).length, 1);
+  });
 });

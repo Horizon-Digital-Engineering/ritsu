@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildProcessTools } from '../tools/ritsu-agent/process.js';
@@ -150,6 +150,26 @@ describe('ritsu-agent process tools', () => {
       const Grep = findTool(buildProcessTools(ws), 'Grep');
       const out = await Grep.handler({ pattern: 'never-found-token' });
       assert.equal(out, '(no matches)');
+    });
+
+    it('caps at 200 hits in walk order even when reads finish out of order', async () => {
+      // 40 files x 10 hits = 400 candidates; files alternate between tiny and
+      // padded with ~200KB of non-matching text so reads complete out of order.
+      const sub = join(dir, 'many');
+      mkdirSync(sub);
+      const pad = 'filler line without the token\n'.repeat(7000);
+      for (let f = 0; f < 40; f++) {
+        const body = Array.from({ length: 10 }, (_, l) => `MARK ${f}-${l}`).join('\n') + '\n';
+        writeFileSync(join(sub, `f${String(f).padStart(2, '0')}.txt`), f % 2 === 0 ? pad + body : body);
+      }
+      const expected: string[] = [];
+      for (const name of readdirSync(sub)) {  // the walker's own order
+        const lines = readFileSync(join(sub, name), 'utf8').split('\n');
+        lines.forEach((line, i) => { if (line.includes('MARK')) expected.push(`many/${name}:${i + 1}:${line}`); });
+      }
+      const Grep = findTool(buildProcessTools(ws), 'Grep');
+      const out = await Grep.handler({ pattern: 'MARK', path: 'many' });
+      assert.equal(out, expected.slice(0, 200).join('\n'));
     });
   });
 

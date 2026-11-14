@@ -158,7 +158,9 @@ function showMissing(id, reason) {
   document.title = 'ritsu — app';
   $('app-name').textContent = id || 'app';
   $('app-main').innerHTML = `<section class="pane active"><div class="panel app-missing"><h2>Not available</h2>
-    <p>${esc(reason)}</p><p>Manage plugins in <a href="/admin">Studio</a> under Server › Plugins.</p></div></section>`;
+    <p class="app-missing-reason"></p><p>Manage plugins in <a href="/admin">Studio</a> under Server › Plugins.</p></div></section>`;
+  // The reason can carry a server error message; it is text, never markup.
+  $('app-main').querySelector('.app-missing-reason').textContent = reason;
 }
 
 async function boot() {

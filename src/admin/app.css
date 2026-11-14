@@ -142,6 +142,7 @@ textarea { min-height: 8rem; resize: vertical; }
 .toast { position: fixed; top: 1rem; right: 1rem; padding: 8px 12px; border-radius: 4px; font-size: 0.85rem; z-index: 100; }
 .toast.ok { background: #1a2e1f; color: var(--ok); border: 1px solid #2d4a33; }
 .toast.err { background: #2e1a1a; color: var(--err); border: 1px solid #4a2d2d; }
+.err { color: var(--err); }
 
 .row { display: flex; gap: 8px; align-items: center; }
 .row.between { justify-content: space-between; }
@@ -448,8 +449,6 @@ body.panel-open { overflow: hidden; touch-action: none; }
    (semantic, more specific). Prefer the semantic class when one fits. */
 
 /* --- A. utilities --- */
-.hidden { display: none !important; }
-
 .txt-muted  { color: var(--muted); }
 .txt-err    { color: var(--err); }
 .txt-ok     { color: var(--ok); }
@@ -507,7 +506,7 @@ body.panel-open { overflow: hidden; touch-action: none; }
 .wrap-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
 .break-all     { word-break: break-all; }
 
-.input-auto { width: auto !important; }
+.input-auto { width: auto; }
 .input-full { width: 100%; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -850,24 +849,24 @@ body.panel-open { overflow: hidden; touch-action: none; }
   }
   #agent-list .row-actions button { width: 100%; padding: 10px; font-size: 0.85rem; }
 
-  /* Tools allowlist + can_call on the agent form: pill toggles. The JS
-     renders labels with inline style="display:flex;..." and inputs with
-     style="width:auto" — !important wins over those inline styles. */
-  #f-tools, #f-can-call, #f-capabilities { gap: 6px !important; }
+  /* Tools allowlist + can_call on the agent form: pill toggles. The id
+     prefix outranks the .row / .fs-md1 / .input-auto classes the JS puts
+     on these labels and inputs, and form.grid label. */
+  #f-tools, #f-can-call, #f-capabilities { gap: 6px; }
   #f-tools label, #f-can-call label, #f-capabilities label {
-    position: relative !important; padding: 8px 12px !important;
-    border: 1px solid var(--line) !important; border-radius: 999px !important;
-    background: var(--panel-2) !important; cursor: pointer; user-select: none;
-    font-size: 0.9rem !important;
-    display: inline-flex !important; align-items: center !important; gap: 4px !important;
+    position: relative; padding: 8px 12px;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel-2); cursor: pointer; user-select: none;
+    font-size: 0.9rem;
+    display: inline-flex; align-items: center; gap: 4px;
   }
   #f-tools label:has(input:checked), #f-can-call label:has(input:checked), #f-capabilities label:has(input:checked) {
-    background: var(--accent) !important; border-color: var(--accent) !important;
+    background: var(--accent); border-color: var(--accent);
     color: var(--bg); font-weight: 600;
   }
   #f-tools input[type="checkbox"], #f-can-call input[type="checkbox"], #f-capabilities input[type="checkbox"] {
-    position: absolute !important; opacity: 0 !important; pointer-events: none;
-    width: 1px !important; height: 1px; margin: 0;
+    position: absolute; opacity: 0; pointer-events: none;
+    width: 1px; height: 1px; margin: 0;
   }
 
   /* Bare enabled checkbox in the agent form: too small to tap. Scale up. */
@@ -940,3 +939,8 @@ body.panel-open { overflow: hidden; touch-action: none; }
 /* Note spanning both columns of a .grid form. Inline styles are CSP-blocked,
    so anything positional has to live here. */
 .form-note { grid-column: 1 / -1; }
+
+/* Last on purpose: same specificity as the component display rules above, so order decides.
+   form.grid is one notch higher, so it gets its own rule. */
+.hidden { display: none; }
+form.grid.hidden { display: none; }

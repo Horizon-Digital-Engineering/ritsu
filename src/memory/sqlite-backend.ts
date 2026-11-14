@@ -111,11 +111,17 @@ function addPrevSourceRefColumn(db: Db): void {
   logger.info('memory.sqlite.added-prev-source-ref');
 }
 
+/** Brings a database to this backend's schema. Boot does it through the
+ *  constructor; a migration rehearsal does it on a copy with no backend. */
+export function ensureMemorySchema(db: Db): void {
+  renameLegacyColumns(db);
+  addPrevSourceRefColumn(db);
+  db.exec(SCHEMA);
+}
+
 export class SqliteMemoryBackend implements MemoryBackend {
   constructor(private readonly db: Db) {
-    renameLegacyColumns(this.db);
-    addPrevSourceRefColumn(this.db);
-    this.db.exec(SCHEMA);
+    ensureMemorySchema(this.db);
   }
 
   async record(rec: RawRecordInput): Promise<{ id: string }> {

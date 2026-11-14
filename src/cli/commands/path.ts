@@ -80,7 +80,7 @@ function applyChanges(): void {
   restartService();
 }
 
-async function cmdAdd(ctx: CommandContext): Promise<number> {
+function cmdAdd(ctx: CommandContext): number {
   const target = ctx.positional[0];
   if (!target) { console.error('usage: ritsu path add <absolute-path>'); return 2; }
   if (!target.startsWith('/')) { console.error('path must be absolute'); return 2; }
@@ -95,7 +95,7 @@ async function cmdAdd(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
-async function cmdRemove(ctx: CommandContext): Promise<number> {
+function cmdRemove(ctx: CommandContext): number {
   const target = ctx.positional[0];
   if (!target) { console.error('usage: ritsu path remove <absolute-path>'); return 2; }
   const t = stripTrailingSlashes(target);
@@ -144,7 +144,7 @@ function inspectPath(path: string, extras: Set<string>): PathInfo {
   };
 }
 
-async function cmdList(ctx: CommandContext): Promise<number> {
+function cmdList(ctx: CommandContext): number {
   // Authoritative effective list comes from systemd itself — it merges the
   // base unit's ReadWritePaths with every drop-in. The CLI-managed extras
   // live in sandbox-paths.list; the effective set may include other
@@ -193,6 +193,18 @@ async function cmdList(ctx: CommandContext): Promise<number> {
   return 0;
 }
 
+function dispatch(ctx: CommandContext): number {
+  switch (ctx.subcommand) {
+    case 'add':    return cmdAdd(ctx);
+    case 'remove': return cmdRemove(ctx);
+    case 'list':   return cmdList(ctx);
+    case null:     return cmdList(ctx);
+    default:
+      console.error(`unknown subcommand: ${ctx.subcommand}`);
+      return 2;
+  }
+}
+
 export const pathCommand: Command = {
   name: 'path',
   summary: 'manage extra filesystem paths the sandbox lets ritsu write to',
@@ -211,15 +223,5 @@ export const pathCommand: Command = {
     'For paths backed by a systemd mount unit, the drop-in also adds',
     'Requires= so ritsu fails fast if the share goes offline.',
   ].join('\n'),
-  run: async (ctx) => {
-    switch (ctx.subcommand) {
-      case 'add':    return cmdAdd(ctx);
-      case 'remove': return cmdRemove(ctx);
-      case 'list':   return cmdList(ctx);
-      case null:     return cmdList(ctx);
-      default:
-        console.error(`unknown subcommand: ${ctx.subcommand}`);
-        return 2;
-    }
-  },
+  run: ctx => Promise.resolve(dispatch(ctx)),
 };

@@ -20,6 +20,9 @@ export function migrate(db: PluginDb): void {
     }
   }
   db.exec(`
+    -- File import was removed; its table and index go with it.
+    DROP TABLE IF EXISTS ${t('imports')};
+    DROP INDEX IF EXISTS idx_${t('transactions')}_fp;
     CREATE TABLE IF NOT EXISTS ${t('meta')} (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT OR REPLACE INTO ${t('meta')} (key, value) VALUES ('schema', '${SCHEMA}');
 
@@ -96,15 +99,12 @@ export function migrate(db: PluginDb): void {
       excluded          INTEGER NOT NULL DEFAULT 0,
       transfer_group    TEXT,
       source            TEXT NOT NULL DEFAULT 'sync',
-      import_id         INTEGER,
-      fingerprint       TEXT NOT NULL DEFAULT '',
       created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_${t('transactions')}_date ON ${t('transactions')}(date);
     CREATE INDEX IF NOT EXISTS idx_${t('transactions')}_account ON ${t('transactions')}(account_id, date);
     CREATE INDEX IF NOT EXISTS idx_${t('transactions')}_category ON ${t('transactions')}(category_id);
-    CREATE INDEX IF NOT EXISTS idx_${t('transactions')}_fp ON ${t('transactions')}(account_id, fingerprint);
 
     CREATE TABLE IF NOT EXISTS ${t('splits')} (
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,17 +185,6 @@ export function migrate(db: PluginDb): void {
       currency     TEXT NOT NULL DEFAULT 'USD',
       as_of        TEXT NOT NULL DEFAULT '',
       updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS ${t('imports')} (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename        TEXT NOT NULL DEFAULT '',
-      format          TEXT NOT NULL,
-      account_id      TEXT NOT NULL,
-      rows_total      INTEGER NOT NULL DEFAULT 0,
-      rows_added      INTEGER NOT NULL DEFAULT 0,
-      rows_duplicate  INTEGER NOT NULL DEFAULT 0,
-      created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
   `);
   seedCategories(db);

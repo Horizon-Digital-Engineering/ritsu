@@ -109,6 +109,36 @@ describe('GET /admin/api/memory', () => {
     assert.equal(d.stored.mode, 'flashback');
   });
 
+  const postSecrets = (body: unknown) => fetch(`${base}/admin/api/secrets`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  it('POST /admin/api/secrets writes a whole namespace in one request', async () => {
+    const res = await postSecrets({ namespace: 'email', values: { imap_user: 'me@x.test', smtp_password: 'pw-fixture' } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { wrote: 2 });
+    assert.equal(secrets.get('email', 'imap_user'), 'me@x.test');
+    assert.equal(secrets.get('email', 'smtp_password'), 'pw-fixture');
+  });
+
+  it('POST /admin/api/secrets rejects empty or malformed batches', async () => {
+    for (const body of [
+      { namespace: 'email', values: {} },
+      { namespace: 'email' },
+      { namespace: 'email', values: 'nope' },
+      { namespace: 'email', values: { '  ': 'v' } },
+      { namespace: 'email', values: { ok: 'v', bad: '' } },
+    ]) assert.equal((await postSecrets(body)).status, 400, JSON.stringify(body));
+  });
+
+  it('POST /admin/api/secrets is all-or-nothing: one oversize value writes nothing', async () => {
+    const res = await postSecrets({ namespace: 'linkedin', values: { client_id: 'cid', access_token: 'x'.repeat(8193) } });
+    assert.equal(res.status, 400);
+    assert.equal(secrets.list('linkedin').length, 0);
+  });
+
   it('the claude-token endpoint stores a token and never returns it', async () => {
     // Over the endpoint's 20-character minimum, and assembled from parts so
     // it reads as a fixture rather than a live credential.

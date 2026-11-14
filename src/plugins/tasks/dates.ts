@@ -33,5 +33,6 @@ export function dueLabel(iso: string, from = localDate()): string {
 }
 
 export function sessionTitle(date: string, topic: string): string {
-  return `Tasks — ${longDate(date)}${topic ? ` · ${topic}` : ''}`;
+  const suffix = topic ? ` · ${topic}` : '';
+  return `Tasks — ${longDate(date)}${suffix}`;
 }

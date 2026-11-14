@@ -2920,19 +2920,16 @@ async function loadExtensionsTab() {
 async function saveConnectorExt(ns) {
   const conn = EXT_CONNECTORS.find(c => c.ns === ns);
   if (!conn) return;
-  let wrote = 0;
+  const values = {};
+  for (const f of conn.fields) {
+    const value = ($(`${conn.prefix}-${f}`)?.value || '').trim();
+    if (value) values[f] = value;
+  }
+  if (!Object.keys(values).length) { toast('nothing to save'); return; }
   try {
-    // Sequential so a failure leaves an honest `wrote` count and a clean prefix saved.
-    for (const f of conn.fields) {
-      const el = $(`${conn.prefix}-${f}`);
-      const value = (el?.value || '').trim();
-      if (!value) continue;
-      await api('POST', '/admin/api/secrets', { namespace: ns, name: f, value });
-      wrote++;
-      if (conn.secretFields.includes(f)) el.value = ''; // don't keep secrets in the DOM
-    }
-    const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'}`;
-    toast(wrote ? savedMsg : 'nothing to save');
+    const { wrote } = await api('POST', '/admin/api/secrets', { namespace: ns, values });
+    for (const f of conn.secretFields) { const el = $(`${conn.prefix}-${f}`); if (el) el.value = ''; } // don't keep secrets in the DOM
+    toast(`saved ${wrote} field${wrote === 1 ? '' : 's'}`);
     background(loadExtensionsTab());
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -3020,6 +3017,7 @@ const ACTIONS = {
   'toggle-plugin':          (el) => togglePlugin(el.dataset.id, el.dataset.enabled === '1'),
   'uninstall-plugin':       (el) => uninstallPlugin(el.dataset.id, el.dataset.name, el.dataset.tables),
   'load-plugin-agent':      (el) => loadPluginAgent(el.dataset.id),
+  'settings-save':          () => saveSettings(),
   'backup-now':             () => backupNow(),
   'health-refresh':         () => loadHealthTab(),
   'claude-token-save':    () => saveClaudeToken(),
@@ -3029,6 +3027,8 @@ const ACTIONS = {
   'backup-export':          () => downloadWithAuth('/admin/api/export', `ritsu-export-${new Date().toISOString().slice(0, 10)}.json`),
   'merge-confirm':          () => mergeConfirm(),
   'backup-download':        (el) => downloadWithAuth(`/admin/api/backups/${encodeURIComponent(el.dataset.name)}`, el.dataset.name),
+  'backup-rehearse':        (el) => rehearseBackup(el.dataset.name),
+  'backup-set-password':    () => setBackupPassword(),
   'backup-delete':          (el) => deleteBackupFile(el.dataset.name),
 
   'copy-mint-token':        () => {
@@ -3164,9 +3164,10 @@ async function saveSettings() {
     $('set-search-key').value = '';   // never keep the secret in the DOM
     // Rate limits and retention are read at boot; say so rather than letting
     // the operator think a saved value took effect immediately.
-    $('settings-note').textContent = 'saved — search applies now; retention and rate limits on next restart';
     toast('settings saved');
-    background(loadSettingsTab());
+    // Reload first: the loader clears the note, so the note goes on after.
+    await loadSettingsTab();
+    $('settings-note').textContent = 'saved — search applies now; retention and rate limits on next restart';
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3195,18 +3196,16 @@ async function saveMemoryConfig() {
     ['url', $('mem-url').value], ['token', $('mem-token').value], ['mode', $('mem-mode').value],
     ['timeout_ms', $('mem-timeout').value], ['proposal_poll_ms', $('mem-poll').value],
   ];
-  let wrote = 0;
+  const values = {};
+  for (const [name, raw] of fields) {
+    const value = (raw || '').trim();
+    if (value) values[name] = value;
+  }
+  if (!Object.keys(values).length) { toast('nothing to save'); return; }
   try {
-    // Sequential so a failure leaves an honest `wrote` count and a clean prefix saved.
-    for (const [name, raw] of fields) {
-      const value = (raw || '').trim();
-      if (!value) continue;
-      await api('POST', '/admin/api/secrets', { namespace: 'flashback', name, value });
-      wrote++;
-    }
+    const { wrote } = await api('POST', '/admin/api/secrets', { namespace: 'flashback', values });
     $('mem-token').value = '';  // never keep the secret in the DOM
-    const savedMsg = `saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply`;
-    toast(wrote ? savedMsg : 'nothing to save');
+    toast(`saved ${wrote} field${wrote === 1 ? '' : 's'} — restart ritsu to apply`);
     background(loadMemoryTab());
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -3252,24 +3251,72 @@ async function loadBackupsTab() {
   const el = document.getElementById('backups-list');
   if (!el) return;
   try {
-    const { backups, dir } = await api('GET', '/admin/api/backups');
-    const backupRows = backups.map(b => `
+    const d = await api('GET', '/admin/api/backups');
+    const every = `every ${esc(d.interval_hours)} h, keeping ${esc(d.keep)}`;
+    const errLine = d.last_error ? `<br><span class="err">last backup failed: ${esc(d.last_error)}</span>` : '';
+    $('backups-status').innerHTML = d.password_set
+      ? `Folder <code>${esc(d.dir)}</code> (${esc(d.dir_source)}) · this machine is <code>${esc(d.host)}</code> · ${every}${errLine}`
+      : `<strong>No backup password set.</strong> Nothing is written until one is; set it below. Folder <code>${esc(d.dir)}</code> (${esc(d.dir_source)}).`;
+    $('backup-password').placeholder = d.password_set ? 'change the backup password (15+ characters)' : 'backup password (15+ characters)';
+    $('backup-now').disabled = !d.password_set || d.running;
+    const rows = d.backups.map(b => `
            <tr><td>${new Date(b.created_at * 1000).toLocaleString()}</td>
+               <td>${esc(b.host)}</td>
+               <td>${esc(b.kind)}</td>
                <td>${(b.size / 1024).toFixed(0)} KB</td>
                <td class="row-actions">
                  <button data-action="backup-download" data-name="${esc(b.name)}">download</button>
+                 <button data-action="backup-rehearse" data-name="${esc(b.name)}">rehearse</button>
                  <button class="danger" data-action="backup-delete" data-name="${esc(b.name)}">delete</button>
                </td></tr>`).join('');
-    el.innerHTML = backups.length
-      ? `<p class="txt-muted">Stored on the box at <code>${esc(dir)}</code></p>
-         <table><thead><tr><th>when</th><th>size</th><th></th></tr></thead><tbody>${backupRows}</tbody></table>`
-      : '<em class="txt-muted">No backups yet — one is taken automatically on restart. Or click “Back up now”.</em>';
+    el.innerHTML = d.backups.length
+      ? `<table><thead><tr><th>when</th><th>host</th><th>kind</th><th>size</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<em class="txt-muted">No backups yet. One is written daily once a password is set, or click “Back up now”.</em>';
   } catch (e) { el.textContent = `error: ${e.message}`; }
 }
 
 async function backupNow() {
-  try { const b = await api('POST', '/admin/api/backup'); toast(`backed up (${(b.size / 1024).toFixed(0)} KB)`, 'ok'); background(loadBackupsTab()); }
-  catch (e) { toast(e.message, 'err'); }
+  try {
+    const b = await api('POST', '/admin/api/backup');
+    toast(`backed up ${b.name} (${(b.size / 1024).toFixed(0)} KB)`, 'ok');
+    background(loadBackupsTab());
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function setBackupPassword() {
+  const input = $('backup-password');
+  const password = input.value;
+  if (!password) { toast('enter a password first', 'err'); return; }
+  try {
+    await api('PUT', '/admin/api/backups/password', { password });
+    input.value = '';   // never keep the secret in the DOM
+    toast('backup password set');
+    background(loadBackupsTab());
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function rehearseBackup(name) {
+  const box = $('backups-rehearsal');
+  box.textContent = `rehearsing ${name}…`;
+  try {
+    const r = await api('POST', '/admin/api/backups/rehearse', { name });
+    const changed = r.tables.filter(t => t.before !== t.after);
+    const same = r.tables.filter(t => t.before === t.after);
+    const line = (t) => {
+      if (t.before === null) return `<tr><td>${esc(t.name)}</td><td>new</td><td>${esc(t.after)}</td></tr>`;
+      if (t.after === null) return `<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>dropped</td></tr>`;
+      return `<tr><td>${esc(t.name)}</td><td>${esc(t.before)}</td><td>${esc(t.after)}</td></tr>`;
+    };
+    const unchanged = same.length ? `<p class="txt-muted">${same.length} table(s) unchanged: ${esc(same.map(t => `${t.name} ${t.before}`).join(' · '))}</p>` : '';
+    box.innerHTML = `<p><strong>Rehearsed ${esc(r.backup)}</strong> — schema ${r.schema_changed ? 'changes' : 'unchanged'}, ${(r.duration_ms / 1000).toFixed(1)} s · ok</p>`
+      + (changed.length ? `<table><thead><tr><th>table</th><th>before</th><th>after</th></tr></thead><tbody>${changed.map(line).join('')}</tbody></table>` : '')
+      + unchanged;
+  } catch (e) {
+    const p = document.createElement('p');
+    p.className = 'err';
+    p.textContent = e.message;
+    box.replaceChildren(p);
+  }
 }
 
 async function deleteBackupFile(name) {

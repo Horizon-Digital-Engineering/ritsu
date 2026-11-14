@@ -59,11 +59,10 @@ export class ChannelRegistry {
 
   async loadAll(): Promise<void> {
     const rows = this.store.listEnabled();
-    for (const row of rows) {
-      await this.addOrReplace(row).catch(err => {
-        logger.error('channel.start-failed', { id: row.id, name: row.name, err: (err as Error).message });
-      });
-    }
+    // Ids are independent; the per-id lock inside addOrReplace is all the ordering needed.
+    await Promise.all(rows.map(row => this.addOrReplace(row).catch(err => {
+      logger.error('channel.start-failed', { id: row.id, name: row.name, err: (err as Error).message });
+    })));
     logger.info('channel.registry.loaded', { count: this.running.size });
   }
 

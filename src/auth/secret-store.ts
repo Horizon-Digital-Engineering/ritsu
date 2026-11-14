@@ -64,6 +64,15 @@ export class SecretStore {
     logger.info('secret.set', { namespace: ns, name: nm });
   }
 
+  /** Upsert several secrets of one namespace atomically: all land or none do. */
+  setMany(namespace: string, values: Record<string, string>): number {
+    const names = Object.keys(values);
+    this.db.transaction(() => {
+      for (const nm of names) this.set(namespace, nm, values[nm]);
+    })();
+    return names.length;
+  }
+
   /**
    * Decrypt a secret for in-process handler use ONLY. Returns null if absent.
    * Callers MUST NOT log it, persist it, or return it to a model. This is the

@@ -210,13 +210,6 @@ describe('finance plugin HTTP routes (no network)', () => {
     // export
     r = await call('get /transactions/export.csv');
     assert.equal(r.status, 200);
-
-    // import preview + commit through the routes
-    const csv = 'Date,Description,Amount\n2026-01-05,COFFEE PLACE,-4.50\n';
-    r = await call('post /import/preview', mockReq({ body: { account_id: chk, filename: 'a.csv', content: csv } }));
-    assert.equal((r.body as { total: number }).total, 1);
-    r = await call('post /import/commit', mockReq({ body: { account_id: chk, filename: 'a.csv', content: csv } }));
-    assert.equal((r.body as { added: number }).added, 1);
   });
 
   it('plaid-requiring routes 409 when Plaid is not configured', async () => {

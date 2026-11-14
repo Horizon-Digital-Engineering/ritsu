@@ -101,13 +101,11 @@ async function cmdRotate(ctx: CommandContext): Promise<number> {
   // anything below fails we still have a valid token on disk.
   writeAdminTokenFile(tokenFile, minted.token);
 
-  for (const row of oldRows) {
-    try {
-      await apiCall({ method: 'POST', path: `/admin/api/tokens/${row.id}/revoke`, token: minted.token, baseUrl });
-    } catch (err) {
-      console.error(`warning: failed to revoke old token id=${row.id}: ${(err as Error).message}`);
-    }
-  }
+  const revoked = await Promise.allSettled(oldRows.map(row =>
+    apiCall({ method: 'POST', path: `/admin/api/tokens/${row.id}/revoke`, token: minted.token, baseUrl })));
+  revoked.forEach((r, i) => {
+    if (r.status === 'rejected') console.error(`warning: failed to revoke old token id=${oldRows[i].id}: ${(r.reason as Error).message}`);
+  });
 
   if (ctx.flags.json) { console.log(JSON.stringify(minted, null, 2)); return 0; }
   console.log('');

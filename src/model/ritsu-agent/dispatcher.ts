@@ -137,12 +137,16 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
         tool_calls: completion.tool_calls,
       });
 
-      // Execute each tool, append result. Sequential on purpose: tools can
-      // depend on an earlier call's side effects, and the gate prompts one at a time.
-      for (const call of completion.tool_calls) {
-        const result = await this.runTool(call, toolsByName, req.conversation_id ?? null);
-        messages.push({ role: 'tool', tool_call_id: call.id, content: result });
-      }
+      // The calls in one completion are independent by protocol, so they run
+      // concurrently (several gated calls = several pending approval cards).
+      // Results are appended in call order: providers pair them by
+      // tool_call_id, but some reject or misattribute out-of-order replies.
+      const results = await Promise.all(
+        completion.tool_calls.map(call => this.runTool(call, toolsByName, req.conversation_id ?? null)),
+      );
+      completion.tool_calls.forEach((call, i) => {
+        messages.push({ role: 'tool', tool_call_id: call.id, content: results[i] });
+      });
     }
 
     // Hit the cap — return whatever the model last said with a warning

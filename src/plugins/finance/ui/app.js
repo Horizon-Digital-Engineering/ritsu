@@ -134,7 +134,13 @@ function cashFlowChart(months) {
     <div class="fin-legend"><span><i class="inc"></i>income</span><span><i class="exp"></i>expenses</span></div>`;
 }
 const panel = (title, body, extra = '') => `<div class="panel ${extra}"><h2>${title}</h2>${body}</div>`;
-const err = (e) => `<p class="err">error: ${esc(e.message || String(e))}</p>`;
+// An error message is text, never markup: it is written as a text node.
+const showErr = (el, e) => {
+  const p = document.createElement('p');
+  p.className = 'err';
+  p.textContent = `error: ${e.message || String(e)}`;
+  el.replaceChildren(p);
+};
 function on(pane, sel, evt, fn) { const el = pane.querySelector(sel); if (el) el.addEventListener(evt, fn); }
 const val = (pane, id) => pane.querySelector(`#${id}`)?.value?.trim() ?? '';
 const num = (pane, id) => { const v = val(pane, id); return v === '' ? null : Number(v); };
@@ -150,8 +156,8 @@ async function renderDashboard(pane) {
     await loadRefs();
     const o = await api('GET', `${F}/overview`);
     const attention = [];
-    if (o.uncategorized_count) attention.push(`<button class="fin-chip warn" data-action="fin-go" data-tab="finance-transactions" data-filter="uncategorized">${o.uncategorized_count} uncategorized</button>`);
-    if (o.unreviewed_count) attention.push(`<button class="fin-chip" data-action="fin-go" data-tab="finance-transactions" data-filter="unreviewed">${o.unreviewed_count} to review</button>`);
+    if (o.uncategorized_count) attention.push(`<button class="fin-chip warn" data-action="fin-go" data-tab="finance-transactions" data-filter="uncategorized">${esc(o.uncategorized_count)} uncategorized</button>`);
+    if (o.unreviewed_count) attention.push(`<button class="fin-chip" data-action="fin-go" data-tab="finance-transactions" data-filter="unreviewed">${esc(o.unreviewed_count)} to review</button>`);
     const chips = attention.length ? `<div class="fin-chips">${attention.join('')}</div>` : '';
     const goals = o.goals.length ? o.goals.map(goalRow).join('') : '<p class="muted">No goals yet. Add one under Accounts.</p>';
     pane.innerHTML = `
@@ -166,7 +172,7 @@ async function renderDashboard(pane) {
         ${panel('Goals', goals)}
         ${panel('Recent transactions', txnMiniTable(o.recent), 'fin-wide')}
       </div>`;
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 function netWorthPanel(nw, delta, series) {
   let deltaHtml = '';
@@ -295,7 +301,7 @@ async function renderAccounts(pane) {
         toast('goal added'); background(renderAccounts(pane));
       } catch (e) { toast(e.message, 'err'); }
     });
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 function acctRow(a) {
   const manual = !a.connection_id;
@@ -395,7 +401,7 @@ async function renderTransactions(pane) {
     on(pane, '#ftx-q', 'keydown', (e) => { if (e.key === 'Enter') { tx.filters.q = e.target.value.trim(); tx.offset = 0; background(loadTxns()); } });
     on(pane, '#ftx-q', 'search', (e) => { tx.filters.q = e.target.value.trim(); tx.offset = 0; background(loadTxns()); });
     await loadTxns();
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 async function loadTxns() {
   const pane = tx.pane; if (!pane) return;
@@ -406,7 +412,7 @@ async function loadTxns() {
     tx.rows = r.rows; tx.total = r.total; tx.splits = r.splits || {};
     tx.selected.clear();
     renderTxTable();
-  } catch (e) { table.innerHTML = err(e); }
+  } catch (e) { showErr(table, e); }
 }
 function renderTxTable() {
   const pane = tx.pane;
@@ -649,7 +655,7 @@ async function renderBudgets(pane) {
         <p class="fin-note">Type a number next to a category to budget it. Blank it to remove the budget. Categories with no budget and no activity this month are hidden.</p>
         <div class="table-wrap"><table class="fin"><thead><tr><th>category</th><th>budget</th><th class="num">actual</th><th></th><th class="num"></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="muted">No activity this month.</td></tr>'}</tbody></table></div>
       </div>`;
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 registerAction('fbd-month', (el) => { budgetMonth = shiftMonth(budgetMonth, Number(el.dataset.dir)); background(renderBudgets(el.closest('.pane'))); });
 registerChange('fbd-scope', (el) => { budgetScope = el.value; });
@@ -723,7 +729,7 @@ async function renderRecurring(pane) {
         toast('added'); background(renderRecurring(pane));
       } catch (e) { toast(e.message, 'err'); }
     });
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 const patchRecurring = async (el, body) => { try { await api('PATCH', `${F}/recurring/${el.dataset.id}`, body); } catch (e) { toast(e.message, 'err'); } };
 registerChange('frc-cat', (el) => patchRecurring(el, { category_id: el.value || null }));
@@ -813,7 +819,7 @@ async function renderReports(pane) {
       monthChips = `<span class="sp"></span>${months}`;
     }
     pane.innerHTML = `<div class="panel"><div class="fin-chips">${viewChips}${monthChips}</div>${body}</div>`;
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 registerAction('frp-view', (el) => { rep.view = el.dataset.view; background(renderReports(el.closest('.pane'))); });
 registerAction('frp-range', (el) => { rep.range = el.dataset.range; background(renderReports(el.closest('.pane'))); });
@@ -914,7 +920,7 @@ async function renderRules(pane) {
         toast('category added'); background(renderRules(pane));
       } catch (e) { toast(e.message, 'err'); }
     });
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 registerAction('frl-toggle', async (el) => { try { await api('PATCH', `${F}/rules/${el.dataset.id}`, { enabled: el.dataset.enabled !== '1' }); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
 registerAction('frl-del', async (el) => { try { await api('DELETE', `${F}/rules/${el.dataset.id}`); background(renderRules(el.closest('.pane'))); } catch (e) { toast(e.message, 'err'); } });
@@ -933,7 +939,6 @@ registerChange('fcm-set', async (el) => { try { await api('PUT', `${F}/category-
 // ============================================================================
 // Connections + import
 // ============================================================================
-let importFile = null;
 function connError(x) {
   if (!x.error) return '';
   const cls = x.status === 'error' ? 'muted' : 'warn';
@@ -951,11 +956,6 @@ function plaidPanel(plaid) {
              <details><summary class="muted">advanced: exchange a public_token by hand</summary><form class="fin-inline-form" id="fpl-exchange"><label>public_token<input id="fpl-pt" required class="wide"></label><button type="submit">Exchange</button></form></details>
              <details><summary class="muted">change credentials</summary>${plaidConfigForm()}</details>`);
 }
-const importRow = (i) => `<tr><td>${esc(new Date(i.created_at * 1000).toLocaleDateString())}</td><td>${esc(i.filename || i.format)}<br><span class="muted">${esc(acctById.get(i.account_id)?.name || i.account_id)}</span></td><td class="muted">${i.rows_added} added, ${i.rows_duplicate} dup</td><td class="row-actions"><button class="danger" data-action="fim-undo" data-id="${i.id}" data-n="${i.rows_added}">undo</button></td></tr>`;
-function importHistory(imports) {
-  if (!imports.length) return '';
-  return `<details><summary class="muted">import history</summary><div class="table-wrap"><table class="fin"><tbody>${imports.map(importRow).join('')}</tbody></table></div></details>`;
-}
 async function renderConnections(pane) {
   pane.innerHTML = '<p class="muted">loading…</p>';
   try {
@@ -966,24 +966,13 @@ async function renderConnections(pane) {
           <div class="fin-toolbar"><button class="primary" data-action="fcn-sync-all">Sync everything now</button><span class="muted">A scheduled job also syncs once a day.</span></div>`, 'fin-wide');
     const simplefinPanel = panel('SimpleFIN', `<p class="fin-note">Read-only bank access built for self-hosted tools (about $15/year, refreshes daily). Sign up at <code>bridge.simplefin.org</code>, connect your banks there, create an app and paste its <strong>setup token</strong> here. The token is used once and then discarded; the access key it yields is stored encrypted.</p>
           <form class="fin-inline-form" id="fsf-form"><label>setup token<input id="fsf-token" required class="wide" autocomplete="off"></label><label>label<input id="fsf-label" placeholder="optional"></label><button type="submit" class="primary">Connect</button></form>`);
-    const importPanel = panel('Import a file', `<p class="fin-note">Any bank's CSV export, or an OFX/QFX “Web Connect” download. Pick the account it belongs to, preview, then commit. Rows already in the ledger are skipped, so overlapping statements are safe. Use this to backfill years of history.</p>
-          <form class="fin-inline-form" id="fim-form">
-            <label>account<select id="fim-acct">${acctOptions('', false)}</select></label>
-            <label>file<input id="fim-file" type="file" accept=".csv,.ofx,.qfx,.qbo,.txt" required></label>
-            <label><input type="checkbox" id="fim-flip"> flip signs (card exports that list charges as positive)</label>
-            <button type="submit">Preview</button>
-          </form>
-          <div id="fim-preview"></div>
-          ${importHistory(c.imports)}`, 'fin-wide');
     pane.innerHTML = `
       ${asOfLine(c.as_of)}
       <div class="fin-grid">
         ${banksPanel}
         ${simplefinPanel}
         ${plaidPanel(c.plaid)}
-        ${importPanel}
       </div>`;
-    if (!accounts.length) pane.querySelector('#fim-acct').insertAdjacentHTML('afterend', '<span class="warn">Add an account first (Accounts → manual account) so the file has somewhere to land.</span>');
     on(pane, '#fsf-form', 'submit', async (ev) => {
       ev.preventDefault();
       const btn = pane.querySelector('#fsf-form button'); btn.disabled = true; btn.textContent = 'connecting…';
@@ -1006,77 +995,10 @@ async function renderConnections(pane) {
         toast('linked'); background(renderConnections(pane));
       } catch (e) { toast(e.message, 'err'); }
     });
-    on(pane, '#fim-form', 'submit', async (e) => {
-      e.preventDefault();
-      const file = pane.querySelector('#fim-file').files[0]; if (!file) return;
-      importFile = { name: file.name, text: await file.text(), account_id: val(pane, 'fim-acct'), flip_sign: pane.querySelector('#fim-flip').checked };
-      await previewImport(pane);
-    });
-  } catch (e) { pane.innerHTML = err(e); }
+  } catch (e) { showErr(pane, e); }
 }
 const plaidConfigForm = () => `<form class="fin-inline-form" id="fpl-config"><label>client id<input id="fpl-cid" required></label><label>secret<input id="fpl-secret" type="password" required autocomplete="off"></label><label>environment<select id="fpl-env"><option value="sandbox">sandbox</option><option value="production">production</option></select></label><button type="submit" class="primary">Save</button></form>`;
 
-// CSV files larger than the admin body cap go up in row chunks; the header rides along with each.
-const CHUNK_BYTES = 180_000;
-function chunks(text, isCsv) {
-  if (!isCsv || text.length <= CHUNK_BYTES) return [text];
-  const lines = text.split(/\r?\n/);
-  const header = lines.shift();
-  const out = []; let cur = [];
-  let size = 0;
-  for (const l of lines) { cur.push(l); size += l.length + 1; if (size > CHUNK_BYTES) { out.push([header, ...cur].join('\n')); cur = []; size = 0; } }
-  if (cur.length) out.push([header, ...cur].join('\n'));
-  return out;
-}
-const previewRow = (r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.payee)}</td><td class="muted">${esc(r.description)}</td><td class="num ${r.amount > 0 ? 'pos' : ''}">${money(r.amount)}</td><td class="muted">${esc(r.category_hint)}</td></tr>`;
-async function previewImport(pane) {
-  const box = pane.querySelector('#fim-preview');
-  box.innerHTML = '<p class="muted">parsing…</p>';
-  try {
-    const isCsv = !/\.(ofx|qfx|qbo)$/i.test(importFile.name) && !/OFXHEADER|<OFX>/i.test(importFile.text.slice(0, 2000));
-    const parts = chunks(importFile.text, isCsv);
-    let total = 0, dup = 0, skipped = 0, first = null;
-    for (const p of parts) {
-      const r = await api('POST', `${F}/import/preview`, { account_id: importFile.account_id, filename: importFile.name, content: p, flip_sign: importFile.flip_sign });
-      total += r.total; dup += r.duplicates; skipped += r.skipped; first = first || r;
-    }
-    if (!first || !total) {
-      const skippedNote = skipped ? ` (${skipped} rows skipped)` : '';
-      const columnsSeen = first?.header ? `Columns seen: ${first.header.map(x => esc(x)).join(', ')}. ` : '';
-      box.innerHTML = `<p class="err">No transactions could be read${skippedNote}. ${columnsSeen}If it is a CSV with unusual headers, rename them to Date / Description / Amount and try again.</p>`;
-      return;
-    }
-    const skippedNote = skipped ? `, ${skipped} unreadable rows skipped` : '';
-    const stmtBalance = first.account_hint?.balance != null ? ` Statement balance: ${money(first.account_hint.balance)}.` : '';
-    const colPair = ([k, v]) => `${k}=${esc(first.header?.[v] ?? v)}`;
-    const columns = first.columns ? `<p class="fin-note">Detected columns: ${Object.entries(first.columns).filter(([, v]) => v >= 0).map(colPair).join(', ')}</p>` : '';
-    box.innerHTML = `<p class="fin-note">${esc(importFile.name)} → <strong>${esc(acctById.get(importFile.account_id)?.name || '')}</strong>: ${total} rows, <strong>${total - dup}</strong> new, ${dup} already in the ledger${skippedNote}.${stmtBalance}</p>
-      ${columns}
-      <div class="table-wrap fin-preview"><table class="fin"><thead><tr><th>date</th><th>payee</th><th>description</th><th class="num">amount</th><th>category hint</th></tr></thead><tbody>${first.rows.map(previewRow).join('')}</tbody></table></div>
-      <p class="fin-note">Check the sign: spending should show as negative. If it is backwards, tick “flip signs” and preview again.</p>
-      <div class="fin-toolbar"><button class="primary" data-action="fim-commit"${total - dup ? '' : ' disabled'}>Import ${total - dup} transactions</button></div>`;
-  } catch (e) { box.innerHTML = err(e); }
-}
-registerAction('fim-commit', async (el) => {
-  const pane = el.closest('.pane');
-  el.disabled = true; el.textContent = 'importing…';
-  try {
-    const isCsv = !/\.(ofx|qfx|qbo)$/i.test(importFile.name) && !/OFXHEADER|<OFX>/i.test(importFile.text.slice(0, 2000));
-    let added = 0, dup = 0;
-    for (const p of chunks(importFile.text, isCsv)) {
-      const r = await api('POST', `${F}/import/commit`, { account_id: importFile.account_id, filename: importFile.name, content: p, flip_sign: importFile.flip_sign });
-      added += r.added; dup += r.duplicates;
-    }
-    toast(`imported ${added} transactions (${dup} duplicates skipped)`); importFile = null; background(renderConnections(pane));
-  } catch (e) { toast(e.message, 'err'); el.disabled = false; el.textContent = 'Import'; }
-});
-registerAction('fim-undo', async (el) => {
-  if (!confirm(`Remove the ${el.dataset.n} transactions this import added?`)) return;
-  try {
-    await api('DELETE', `${F}/imports/${el.dataset.id}`);
-    background(renderConnections(el.closest('.pane')));
-  } catch (e) { toast(e.message, 'err'); }
-});
 registerAction('fcn-sync-all', async (el) => {
   el.disabled = true;
   try {
