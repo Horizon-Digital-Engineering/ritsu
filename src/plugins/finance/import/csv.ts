@@ -1,27 +1,46 @@
 /** RFC-4180-ish CSV: quoted fields, doubled quotes, CRLF. Returns rows of cells. */
 export function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [], cell = '', inQ = false;
-  const src = text.replace(/^﻿/, '');
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i];
-    if (inQ) {
-      if (ch === '"') { if (src[i + 1] === '"') { cell += '"'; i++; } else inQ = false; }
-      else cell += ch;
-      continue;
-    }
-    if (ch === '"') inQ = true;
-    else if (ch === ',') { row.push(cell); cell = ''; }
-    else if (ch === '\n' || ch === '\r') {
-      if (ch === '\r' && src[i + 1] === '\n') i++;
-      row.push(cell); cell = '';
-      if (row.some(c => c.trim() !== '')) rows.push(row);
-      row = [];
-    } else cell += ch;
+  const scan = new CsvScanner();
+  const src = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < src.length; i++) if (scan.feed(src[i], src[i + 1])) i++;
+  scan.endRow();
+  return scan.rows;
+}
+
+/** Rows whose cells are all blank are dropped. */
+class CsvScanner {
+  readonly rows: string[][] = [];
+  private row: string[] = [];
+  private cell = '';
+  private inQ = false;
+
+  /** Consumes one char; true when the next char was consumed with it. */
+  feed(ch: string, next: string | undefined): boolean {
+    return this.inQ ? this.quoted(ch, next) : this.plain(ch, next);
   }
-  row.push(cell);
-  if (row.some(c => c.trim() !== '')) rows.push(row);
-  return rows;
+
+  private quoted(ch: string, next: string | undefined): boolean {
+    if (ch !== '"') { this.cell += ch; return false; }
+    if (next === '"') { this.cell += '"'; return true; }
+    this.inQ = false;
+    return false;
+  }
+
+  private plain(ch: string, next: string | undefined): boolean {
+    if (ch === '"') this.inQ = true;
+    else if (ch === ',') this.endCell();
+    else if (ch === '\n' || ch === '\r') { this.endRow(); return ch === '\r' && next === '\n'; }
+    else this.cell += ch;
+    return false;
+  }
+
+  private endCell(): void { this.row.push(this.cell); this.cell = ''; }
+
+  endRow(): void {
+    this.endCell();
+    if (this.row.some(c => c.trim() !== '')) this.rows.push(this.row);
+    this.row = [];
+  }
 }
 
 export interface ColumnMap { date: number; description: number; amount: number; debit: number; credit: number; payee: number; category: number; memo: number }
@@ -53,7 +72,7 @@ export function parseAmount(s: string): number | null {
   if (/^\(.*\)$/.test(t)) { neg = true; t = t.slice(1, -1); }
   if (/\bdr$/i.test(t)) { neg = true; }
   if (/\bcr$/i.test(t)) { neg = false; }
-  t = t.replace(/[^0-9.\-]/g, '');
+  t = t.replace(/[^0-9.-]/g, '');
   if (!t || t === '-' || t === '.') return null;
   const n = Number(t);
   if (!Number.isFinite(n)) return null;

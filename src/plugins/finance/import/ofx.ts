@@ -24,6 +24,12 @@ const ofxDate = (s: string): string | null => {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 };
 
+function accountType(kind: string, acct: string): string {
+  if (kind === 'CCSTMTRS') return 'credit';
+  if (kind === 'INVSTMTRS') return 'investment';
+  return (tag(acct, 'ACCTTYPE') || 'depository').toLowerCase();
+}
+
 export function parseOfx(text: string): OfxStatement[] {
   // Headers (OFXHEADER:100 …) precede the first <OFX>; everything before it is ignored.
   const start = text.search(/<OFX>/i);
@@ -41,16 +47,16 @@ export function parseOfx(text: string): OfxStatement[] {
     while ((tm = trnRe.exec(block)) !== null) {
       const b = tm[1];
       const date = ofxDate(tag(b, 'DTPOSTED')) ?? ofxDate(tag(b, 'DTUSER'));
-      const amount = Number(tag(b, 'TRNAMT').replace(/,/g, ''));
+      const amount = Number(tag(b, 'TRNAMT').replaceAll(',', ''));
       const fitid = tag(b, 'FITID');
       if (!date || !Number.isFinite(amount) || !fitid) continue;
       txns.push({ fitid, date, amount, name: tag(b, 'NAME') || tag(b, 'PAYEE'), memo: tag(b, 'MEMO'), type: tag(b, 'TRNTYPE') });
     }
     const ledger = /<LEDGERBAL>([\s\S]*?)(?=<\/LEDGERBAL>|<AVAILBAL>|<\/STMTRS>|<\/CCSTMTRS>|$)/i.exec(block)?.[1] ?? '';
-    const bal = Number(tag(ledger, 'BALAMT').replace(/,/g, ''));
+    const bal = Number(tag(ledger, 'BALAMT').replaceAll(',', ''));
     out.push({
       account_id: tag(acct, 'ACCTID'),
-      account_type: kind === 'CCSTMTRS' ? 'credit' : kind === 'INVSTMTRS' ? 'investment' : (tag(acct, 'ACCTTYPE') || 'depository').toLowerCase(),
+      account_type: accountType(kind, acct),
       currency: tag(block, 'CURDEF') || 'USD',
       balance: Number.isFinite(bal) && ledger ? bal : null,
       balance_date: ofxDate(tag(ledger, 'DTASOF')),

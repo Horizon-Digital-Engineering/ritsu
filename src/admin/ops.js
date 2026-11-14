@@ -131,6 +131,7 @@ async function readSseBody(r, onEvent) {
 /** Authenticated SSE consumer (EventSource can't send headers). Reconnects
  *  after 2s on anything but an abort; onState reports live/dead for the dot. */
 async function sseFetch(path, onEvent, signal, onState) {
+  // Reconnect loop: one live stream at a time, next attempt only after the last drops.
   while (!signal.aborted) {
     try {
       const r = await fetch(path, { headers: { 'X-Ritsu-Admin-Token': getAdminToken() }, signal });
@@ -563,11 +564,11 @@ async function boot() {
   // independently.
   let approvalsUp = false, eventsUp = false;
   const updateDot = () => setLive(approvalsUp || eventsUp);
-  sseFetch('/admin/api/approvals/stream', () => {
+  background(sseFetch('/admin/api/approvals/stream', () => {
     background(loadPendingApprovals());
     background(loadDecidedApprovals());
     background(loadDenials());
-  }, bootAbort.signal, (up) => { approvalsUp = up; updateDot(); });
+  }, bootAbort.signal, (up) => { approvalsUp = up; updateDot(); }));
   background(sseFetch('/admin/api/events/stream', appendLogLine, bootAbort.signal, (up) => { eventsUp = up; updateDot(); }));
 
   // The slow-moving cards poll gently; ages on cards refresh with them.

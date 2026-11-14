@@ -59,17 +59,15 @@ else
 fi
 
 bold "==> Directories"
-sudo install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 750 "${INSTALL_DIR}"
+# Code is world-readable so the operator's own account can run update-ritsu
+# and the ritsu CLI from it; only data/ (DB, admin token, backups) is private.
+sudo install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 755 "${INSTALL_DIR}"
 sudo install -d -o root -g root -m 755 "${ENV_DIR}"
 note "${INSTALL_DIR} (owner: ${SERVICE_USER})"
 note "${ENV_DIR} (owner: root)"
 
 bold "==> Source code"
-# The .git probe must run WITH privileges: the install dir is 750 ritsu:ritsu,
-# so an unprivileged test can't traverse it and reports "no repo" for a
-# perfectly good checkout — sending a reinstall down the clone path to die on
-# the non-empty directory.
-if sudo test -d "${INSTALL_DIR}/.git"; then
+if [[ -d "${INSTALL_DIR}/.git" ]]; then
   note "existing checkout — syncing to origin/main"
   sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" fetch origin --prune
   sudo -u "${SERVICE_USER}" -H git -C "${INSTALL_DIR}" reset --hard origin/main
@@ -81,6 +79,12 @@ else
   note "cloning fresh"
   sudo -u "${SERVICE_USER}" -H git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
+
+bold "==> Data directory"
+# After the checkout so a fresh clone sees an empty target; re-run, this only
+# resets the mode.
+sudo install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 700 "${INSTALL_DIR}/data"
+note "${INSTALL_DIR}/data (owner: ${SERVICE_USER}, private)"
 
 bold "==> Install + build"
 sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"

@@ -137,7 +137,8 @@ export class RitsuAgentDispatcher implements ModelDispatcher {
         tool_calls: completion.tool_calls,
       });
 
-      // Execute each tool, append result.
+      // Execute each tool, append result. Sequential on purpose: tools can
+      // depend on an earlier call's side effects, and the gate prompts one at a time.
       for (const call of completion.tool_calls) {
         const result = await this.runTool(call, toolsByName, req.conversation_id ?? null);
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });

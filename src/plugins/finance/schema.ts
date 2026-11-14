@@ -22,7 +22,7 @@ export const SimpleFinSetupSchema = z.object({ setup_token: z.string().trim().mi
 export const ManualAccountSchema = z.object({
   name: text(80).min(1),
   type: z.enum(ACCOUNT_TYPES),
-  balance: z.number().finite(),
+  balance: z.number(),
   currency: z.string().trim().length(3).default('USD'),
   institution: text(80).default(''),
 });
@@ -34,7 +34,7 @@ export const AccountPatchSchema = z.object({
   closed: z.boolean().optional(),
   sort_order: z.number().int().optional(),
 });
-export const BalanceSchema = z.object({ balance: z.number().finite(), as_of: date.optional() });
+export const BalanceSchema = z.object({ balance: z.number(), as_of: date.optional() });
 
 // ---- transactions -----------------------------------------------------------
 export const TxnQuerySchema = z.object({
@@ -44,16 +44,16 @@ export const TxnQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).optional(), offset: z.coerce.number().int().min(0).optional(),
 });
 export const ManualTxnSchema = z.object({
-  account_id: idish, date, payee: text(120).min(1), amount: z.number().finite(),
+  account_id: idish, date, payee: text(120).min(1), amount: z.number(),
   category_id: idish.nullable().optional(), notes: text(500).optional(),
 });
 export const TxnPatchSchema = z.object({
   payee: text(120).optional(), category_id: idish.nullable().optional(), notes: text(500).optional(),
-  excluded: z.boolean().optional(), reviewed: z.boolean().optional(), date: date.optional(), amount: z.number().finite().optional(),
+  excluded: z.boolean().optional(), reviewed: z.boolean().optional(), date: date.optional(), amount: z.number().optional(),
   tags: z.array(text(30).min(1)).max(20).optional(),
 });
 export const SplitsSchema = z.object({
-  splits: z.array(z.object({ category_id: idish.nullable(), amount: z.number().finite(), notes: text(200).optional() })).max(30),
+  splits: z.array(z.object({ category_id: idish.nullable(), amount: z.number(), notes: text(200).optional() })).max(30),
 });
 export const BulkSchema = z.object({
   ids: z.array(idish).min(1).max(500),
@@ -84,11 +84,11 @@ export const RulePatchSchema = RuleSchema.partial().omit({ apply_to_existing: tr
 // ---- budgets / recurring / goals -------------------------------------------
 export const BudgetSchema = z.object({ category_id: idish, month: z.union([month, z.literal('*')]).default('*'), amount: z.number().nonnegative() });
 export const RecurringCreateSchema = z.object({
-  display_name: text(80).min(1), amount: z.number().finite(), cadence: z.enum(['weekly', 'biweekly', 'monthly', 'quarterly', 'yearly']),
+  display_name: text(80).min(1), amount: z.number(), cadence: z.enum(['weekly', 'biweekly', 'monthly', 'quarterly', 'yearly']),
   next_date: date, category_id: idish.nullable().default(null), account_id: idish.nullable().default(null),
 });
 export const RecurringPatchSchema = z.object({
-  status: z.enum(['detected', 'confirmed', 'dismissed']).optional(), amount: z.number().finite().optional(),
+  status: z.enum(['detected', 'confirmed', 'dismissed']).optional(), amount: z.number().optional(),
   category_id: idish.nullable().optional(), cadence: z.enum(['weekly', 'biweekly', 'monthly', 'quarterly', 'yearly']).optional(),
   next_date: date.optional(), display_name: text(80).min(1).optional(),
 });

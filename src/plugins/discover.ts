@@ -28,6 +28,7 @@ export async function discoverPlugins(): Promise<Plugin[]> {
     .map(e => e.name)
     .sort((a, b) => a.localeCompare(b));  // deterministic registration order
   const out: Plugin[] = [];
+  // Imported one at a time so module evaluation order matches the sorted list.
   for (const name of dirs) {
     const file = ['plugin.js', 'plugin.ts'].map(f => join(here, name, f)).find(existsSync);
     if (!file) continue;

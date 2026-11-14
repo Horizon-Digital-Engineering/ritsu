@@ -88,7 +88,7 @@ export function buildAgentSchedulerMcp(
           include_others: z.boolean().optional()
             .describe('Also list jobs you did not create. Names and times only.'),
         },
-        async ({ include_others }) => ({
+        ({ include_others }) => Promise.resolve({
           content: [{ type: 'text', text: listJobs(store, agentId, include_others === true) }],
         }),
       ),

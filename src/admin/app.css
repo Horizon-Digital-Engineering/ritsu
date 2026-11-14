@@ -384,6 +384,9 @@ body.panel-open { overflow: hidden; touch-action: none; }
   0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
   30%           { transform: translateY(-4px); opacity: 1; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .ap-typing > span { animation: none; opacity: 0.7; }
+}
 .ap-empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 0.85rem; }
 .ap-ask {
   /* Float above the scrolling transcript so the input is always visible.

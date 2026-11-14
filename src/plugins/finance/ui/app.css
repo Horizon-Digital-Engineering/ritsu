@@ -75,7 +75,8 @@ svg.chart .zero { stroke: var(--muted); stroke-dasharray: 2 3; }
 .badge.src-user { color: var(--accent); } .badge.src-rule { color: var(--ok); }
 .fin-goal { margin-bottom: 10px; }
 .fin-goal .h { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 3px; }
-.hidden { display: none !important; }
+/* Doubled for .fin-toolbar, the one display:flex box this also hides. */
+.hidden, .fin-toolbar.hidden { display: none; }
 @media (max-width: 900px) {
   .fin-grid { grid-template-columns: minmax(0, 1fr); }
   .fin-big { font-size: 1.5rem; }

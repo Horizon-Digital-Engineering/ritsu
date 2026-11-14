@@ -168,6 +168,7 @@ async function sseReadBody(body, onEvent, signal) {
 }
 
 async function sseFetch(path, onEvent, signal) {
+  // Reconnect loop: one live stream at a time, next attempt only after the last drops.
   while (!signal.aborted) {
     try {
       const r = await fetch(path, {
@@ -1131,10 +1132,12 @@ async function processImageFile(file) {
 
 async function addAttachmentFiles(fileList) {
   const list = Array.from(fileList || []).filter(f => f?.type?.startsWith('image/'));
-  for (const f of list) {
-    if (attachments.length >= ATTACH_MAX) { toast(`max ${ATTACH_MAX} images per message`, 'err'); break; }
-    try { attachments.push(await processImageFile(f)); }
-    catch (e) { toast(e.message || 'could not attach image', 'err'); }
+  const room = Math.max(0, ATTACH_MAX - attachments.length);
+  if (list.length > room) toast(`max ${ATTACH_MAX} images per message`, 'err');
+  const results = await Promise.allSettled(list.slice(0, room).map(processImageFile));
+  for (const r of results) {
+    if (r.status === 'fulfilled') attachments.push(r.value);
+    else toast(r.reason?.message || 'could not attach image', 'err');
   }
   renderAttachTray();
 }
@@ -1624,6 +1627,7 @@ async function uploadFiles(fileList) {
   const list = Array.from(fileList || []);
   if (!list.length) return;
   let wrote = 0;
+  // Sequential: uploadOneFile may confirm() an overwrite, and one dialog at a time is the point.
   for (const f of list) {
     if (f.size > MAX_UPLOAD_BYTES) { toast(`${f.name}: over the 25MB upload limit`, 'err'); continue; }
     const name = f.name.split(/[\\/]/).pop() || 'upload';
@@ -1869,6 +1873,7 @@ function renderMermaid(root) {
       mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' });
       mermaidInit = true;
     }
+    // Sequential: mermaid.render shares parser state, so concurrent renders corrupt each other.
     for (const box of boxes) {
       box.classList.add('mermaid-done');
       const out = box.querySelector('.mermaid-out');

@@ -37,6 +37,10 @@ versioning per [semver](https://semver.org/).
 ### Fixed
 
 - The Operations board showed a job's next run in the wrong units.
+- The install directory is readable by the operator's own account, so
+  `update-ritsu` and the `ritsu` CLI run without `sudo`; only `data/` (database,
+  admin token, backups) is private to the service user. Re-run the installer
+  once to apply the new modes to an existing install.
 
 ## [0.13.1] — 2026-09-06
 

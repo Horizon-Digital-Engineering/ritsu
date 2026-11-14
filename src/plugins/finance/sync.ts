@@ -34,7 +34,7 @@ export async function syncConnection(store: FinanceStore, provider: Provider, co
       });
       result.accounts++;
     }
-    const upsert = (t: ProviderTransaction, source: 'added' | 'modified') => {
+    const upsert = (t: ProviderTransaction) => {
       const id = txnId(provider.name, t.provider_transaction_id);
       const existed = store.hasTransaction(id);
       const cat = providerCategory(map, t.provider_categories) ?? categorizeByKeyword(`${t.payee ?? ''} ${t.description}`);
@@ -44,10 +44,9 @@ export async function syncConnection(store: FinanceStore, provider: Provider, co
         category_source: cat ? 'provider' : 'none', provider_category: t.provider_categories?.[0] ?? '', pending: t.pending,
       });
       if (existed) result.modified++; else { result.added++; newIds.push(id); }
-      void source;
     };
-    for (const t of r.added) upsert(t, 'added');
-    for (const t of r.modified) upsert(t, 'modified');
+    for (const t of r.added) upsert(t);
+    for (const t of r.modified) upsert(t);
     if (r.removed.length) { store.deleteTransactions(r.removed.map(id => txnId(provider.name, id))); result.removed = r.removed.length; }
     const byAccount = new Map<string, typeof r.holdings>();
     for (const h of r.holdings) { const k = accountId(provider.name, h.provider_account_id); const arr = byAccount.get(k); if (arr) arr.push(h); else byAccount.set(k, [h]); }
