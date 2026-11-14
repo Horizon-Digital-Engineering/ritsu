@@ -1,7 +1,7 @@
 import type { PluginDb } from '../types.js';
 import { seedCategories } from './categories.js';
 
-const SCHEMA = '2';
+const SCHEMA = '3';
 
 /**
  * The ledger. Amounts are signed from the account holder's side: inflow
@@ -55,6 +55,9 @@ export function migrate(db: PluginDb): void {
       hidden              INTEGER NOT NULL DEFAULT 0,
       closed              INTEGER NOT NULL DEFAULT 0,
       sort_order          INTEGER NOT NULL DEFAULT 0,
+      zip                 TEXT NOT NULL DEFAULT '',
+      anchor_value        REAL,
+      anchor_date         TEXT NOT NULL DEFAULT '',
       created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
@@ -187,5 +190,10 @@ export function migrate(db: PluginDb): void {
       updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     );
   `);
+  // A property's valuation anchor arrived after accounts first shipped.
+  const cols = (db.prepare(`PRAGMA table_info(${t('accounts')})`).all() as Array<{ name: string }>).map(c => c.name);
+  if (!cols.includes('zip')) db.exec(`ALTER TABLE ${t('accounts')} ADD COLUMN zip TEXT NOT NULL DEFAULT ''`);
+  if (!cols.includes('anchor_value')) db.exec(`ALTER TABLE ${t('accounts')} ADD COLUMN anchor_value REAL`);
+  if (!cols.includes('anchor_date')) db.exec(`ALTER TABLE ${t('accounts')} ADD COLUMN anchor_date TEXT NOT NULL DEFAULT ''`);
   seedCategories(db);
 }

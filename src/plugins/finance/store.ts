@@ -19,6 +19,8 @@ export interface Account {
   id: string; connection_id: string | null; provider_account_id: string; name: string; official_name: string;
   type: string; subtype: string; mask: string; institution: string; balance: number; available_balance: number | null;
   currency: string; balance_as_of: string; hidden: boolean; closed: boolean; sort_order: number;
+  /** Property only: the ZIP whose price index carries the anchor forward. */
+  zip: string; anchor_value: number | null; anchor_date: string;
   created_at: number; updated_at: number;
 }
 
@@ -154,9 +156,15 @@ export class FinanceStore {
     this.recordBalance(a.id, a.balance_as_of, a.balance);
   }
   /** Operator edits: the provider never overrides these fields on sync. */
-  updateAccount(id: string, patch: { name?: string; type?: string; hidden?: boolean; closed?: boolean; sort_order?: number; institution?: string }): boolean {
+  updateAccount(id: string, patch: {
+    name?: string; type?: string; hidden?: boolean; closed?: boolean; sort_order?: number; institution?: string;
+    zip?: string; anchor_value?: number | null; anchor_date?: string;
+  }): boolean {
     const sets: string[] = []; const vals: unknown[] = [];
     if (patch.name !== undefined) { sets.push('name = ?'); vals.push(patch.name); }
+    if (patch.zip !== undefined) { sets.push('zip = ?'); vals.push(patch.zip); }
+    if (patch.anchor_value !== undefined) { sets.push('anchor_value = ?'); vals.push(patch.anchor_value); }
+    if (patch.anchor_date !== undefined) { sets.push('anchor_date = ?'); vals.push(patch.anchor_date); }
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type); }
     if (patch.institution !== undefined) { sets.push('institution = ?'); vals.push(patch.institution); }
     if (patch.hidden !== undefined) { sets.push('hidden = ?'); vals.push(patch.hidden ? 1 : 0); }
@@ -177,6 +185,17 @@ export class FinanceStore {
   listAccounts(includeHidden = true): Account[] {
     const where = includeHidden ? '' : ' WHERE hidden = 0';
     return (this.db.prepare(`SELECT * FROM ${this.t('accounts')}${where} ORDER BY sort_order, type, name COLLATE NOCASE`).all() as Row[]).map(toAccount);
+  }
+  /** Properties with an anchor and a ZIP: what the index job values. */
+  listProperties(): Account[] {
+    return this.listAccounts().filter(a => a.type === 'property' && a.zip !== '' && a.anchor_value !== null && !a.closed);
+  }
+  getMeta(key: string): string | null {
+    const r = this.db.prepare(`SELECT value FROM ${this.t('meta')} WHERE key = ?`).get(key) as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+  setMeta(key: string, value: string): void {
+    this.db.prepare(`INSERT INTO ${this.t('meta')} (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
   }
   getAccount(id: string): Account | null {
     const r = this.db.prepare(`SELECT * FROM ${this.t('accounts')} WHERE id = ?`).get(id) as Row | undefined;
