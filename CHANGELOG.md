@@ -36,6 +36,12 @@ versioning per [semver](https://semver.org/).
   backlog, and history.
 - Plugin tools now learn which chat a turn belongs to (`conversationId` in the
   call context), so a plugin can keep per-conversation state.
+- **Finance values a house from its ZIP's price index.** A property account
+  takes a ZIP and an anchor (what you paid or a later appraisal, with its
+  date); a daily job scales the anchor by the public ZHVI index for that ZIP
+  and records the result as a balance, so each property has a current value
+  and a trend line in net worth without a vendor or a key. Revalue on demand
+  from the account row.
 - **Encrypted backups with a rehearsal.** Snapshots are now encrypted with a
   backup password in the age format, one series per host, written daily to
   `RITSU_BACKUP_DIR` or `backups/` beside the database. A boot whose

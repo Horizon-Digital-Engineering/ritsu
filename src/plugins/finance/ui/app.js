@@ -272,6 +272,8 @@ async function renderAccounts(pane) {
             <label>type<select id="fa-type">${typeOptions('')}</select></label>
             <label>balance<input id="fa-bal" type="number" step="0.01" required placeholder="owed amounts as positive for loans/cards"></label>
             <label>institution<input id="fa-inst" placeholder="optional"></label>
+            <label>ZIP<input id="fa-zip" placeholder="property: valued by its ZIP's price index" maxlength="5"></label>
+            <label>as of<input id="fa-date" type="date"></label>
             <button type="submit" class="primary">Add</button>
           </form>`);
     const goalList = goals.goals.map(goalDetail).join('') || '<p class="muted">No goals yet.</p>';
@@ -299,7 +301,9 @@ async function renderAccounts(pane) {
       let balance = num(pane, 'fa-bal') || 0;
       if ((type === 'credit' || type === 'loan') && balance > 0) balance = -balance;
       try {
-        await api('POST', `${F}/accounts`, { name: val(pane, 'fa-name'), type, balance, institution: val(pane, 'fa-inst') });
+        const zip = val(pane, 'fa-zip').trim();
+        const anchor = type === 'property' && zip ? { zip, ...(val(pane, 'fa-date') ? { anchor_date: val(pane, 'fa-date') } : {}) } : {};
+        await api('POST', `${F}/accounts`, { name: val(pane, 'fa-name'), type, balance, institution: val(pane, 'fa-inst'), ...anchor });
         toast('account added'); background(renderAccounts(pane));
       } catch (e) { toast(e.message, 'err'); }
     });
@@ -318,9 +322,12 @@ function acctRow(a) {
   const owed = (a.type === 'credit' || a.type === 'loan');
   const mask = a.mask ? ` <span class="muted">••${esc(a.mask)}</span>` : '';
   const subtype = a.subtype ? ` · ${esc(a.subtype)}` : '';
-  const actions = manual ? `<button data-action="fin-acct-balance" data-id="${esc(a.id)}">update balance</button>` : '';
+  const indexed = a.type === 'property' && a.zip && a.anchor_value !== null;
+  const anchorNote = indexed ? ` · ZIP ${esc(a.zip)}, from ${money(a.anchor_value, a.currency)} on ${esc(a.anchor_date)}` : '';
+  const revalue = indexed ? `<button data-action="fin-prop-revalue" data-id="${esc(a.id)}">revalue</button>` : '';
+  const actions = manual ? `${revalue}<button data-action="fin-acct-balance" data-id="${esc(a.id)}">update balance</button>` : '';
   return `<tr class="${a.hidden || a.closed ? 'excluded' : ''}" data-acct="${esc(a.id)}">
-    <td><span class="fin-clickable" data-action="fin-acct-edit" data-id="${esc(a.id)}">${esc(a.name)}</span>${mask}<br><span class="muted">${esc(a.institution || (manual ? 'manual' : ''))}${subtype}${a.hidden ? ' · hidden' : ''}${a.closed ? ' · closed' : ''}</span></td>
+    <td><span class="fin-clickable" data-action="fin-acct-edit" data-id="${esc(a.id)}">${esc(a.name)}</span>${mask}<br><span class="muted">${esc(a.institution || (manual ? 'manual' : ''))}${subtype}${anchorNote}${a.hidden ? ' · hidden' : ''}${a.closed ? ' · closed' : ''}</span></td>
     <td class="num">${money(owed ? -a.balance : a.balance, a.currency)}${owed ? '<br><span class="muted">owed</span>' : ''}<br><span class="muted">${esc(a.balance_as_of || '')}</span></td>
     <td class="row-actions">${actions}</td>
   </tr>
@@ -332,7 +339,11 @@ function balanceEditor(a) {
   return `<div class="fin-edit"><div class="row"><label>new balance${owed ? ' (amount owed)' : ''}</label><input id="fae-bal" type="number" step="0.01" value="${owed ? -a.balance : a.balance}"><label>as of</label><input id="fae-date" type="date" value="${today()}"><button class="primary" data-action="fin-acct-save-balance" data-id="${esc(a.id)}">Save</button><button data-action="fin-acct-close" data-id="${esc(a.id)}">Cancel</button></div></div>`;
 }
 function acctEditor(a) {
+  const anchorRow = a.type === 'property'
+    ? `<div class="row"><label>ZIP</label><input id="fae-zip" maxlength="5" value="${esc(a.zip || '')}"><label>anchor value</label><input id="fae-anchor" type="number" step="1" value="${a.anchor_value ?? ''}" placeholder="purchase price or appraisal"><label>anchor date</label><input id="fae-anchor-date" type="date" value="${esc(a.anchor_date || '')}"></div>`
+    : '';
   return `<div class="fin-edit"><div class="row"><label>name</label><input id="fae-name" value="${esc(a.name)}"><label>type</label><select id="fae-type">${typeOptions(a.type)}</select><label>institution</label><input id="fae-inst" value="${esc(a.institution)}"></div>
+       ${anchorRow}
        <div class="row"><label><input type="checkbox" id="fae-hidden"${a.hidden ? ' checked' : ''}> hide from net worth</label><label><input type="checkbox" id="fae-closed"${a.closed ? ' checked' : ''}> closed</label>
        <span class="sp"></span><button class="primary" data-action="fin-acct-save" data-id="${esc(a.id)}">Save</button><button data-action="fin-acct-close" data-id="${esc(a.id)}">Cancel</button><button class="danger" data-action="fin-acct-del" data-id="${esc(a.id)}">Delete account + its transactions</button></div></div>`;
 }
@@ -349,7 +360,10 @@ registerAction('fin-acct-save', async (el) => {
   const row = document.getElementById(`fin-acct-editor-${cssId(el.dataset.id)}`);
   const q = (s) => row.querySelector(s);
   try {
-    await api('PATCH', `${F}/accounts/${encodeURIComponent(el.dataset.id)}`, { name: q('#fae-name').value.trim(), type: q('#fae-type').value, institution: q('#fae-inst').value.trim(), hidden: q('#fae-hidden').checked, closed: q('#fae-closed').checked });
+    const anchor = q('#fae-zip')
+      ? { zip: q('#fae-zip').value.trim(), anchor_value: q('#fae-anchor').value ? Number(q('#fae-anchor').value) : null, anchor_date: q('#fae-anchor-date').value || '' }
+      : {};
+    await api('PATCH', `${F}/accounts/${encodeURIComponent(el.dataset.id)}`, { name: q('#fae-name').value.trim(), type: q('#fae-type').value, institution: q('#fae-inst').value.trim(), hidden: q('#fae-hidden').checked, closed: q('#fae-closed').checked, ...anchor });
     toast('saved'); background(renderAccounts(el.closest('.pane')));
   } catch (e) { toast(e.message, 'err'); }
 });
@@ -360,6 +374,17 @@ registerAction('fin-acct-save-balance', async (el) => {
   if (a.type === 'credit' || a.type === 'loan') balance = -Math.abs(balance);
   try { await api('PUT', `${F}/accounts/${encodeURIComponent(el.dataset.id)}/balance`, { balance, as_of: row.querySelector('#fae-date').value || today() }); toast('balance updated'); background(renderAccounts(el.closest('.pane'))); }
   catch (e) { toast(e.message, 'err'); }
+});
+registerAction('fin-prop-revalue', async (el) => {
+  el.disabled = true;
+  try {
+    const r = await api('POST', `${F}/properties/revalue`);
+    const mine = r.valued.find(v => v.id === el.dataset.id);
+    if (mine) toast(`${mine.name}: ${money(mine.value)} as of ${mine.as_of}`);
+    else if (r.missing.length) toast(`no price index for ZIP ${r.missing.join(', ')}`, 'err');
+    else toast('nothing to value', 'err');
+    background(renderAccounts(el.closest('.pane')));
+  } catch (e) { toast(e.message, 'err'); el.disabled = false; }
 });
 registerAction('fin-acct-del', async (el) => {
   if (!confirm('Delete this account and every transaction in it? This cannot be undone.')) return;

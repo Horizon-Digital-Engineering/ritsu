@@ -19,12 +19,16 @@ export const SandboxLinkSchema = z.object({ institution_id: z.string().trim().op
 export const SimpleFinSetupSchema = z.object({ setup_token: z.string().trim().min(10).max(4000), label: text(80).optional() });
 
 // ---- accounts ---------------------------------------------------------------
+const zip5 = z.string().trim().regex(/^\d{5}$/, 'ZIP must be five digits');
 export const ManualAccountSchema = z.object({
   name: text(80).min(1),
   type: z.enum(ACCOUNT_TYPES),
   balance: z.number(),
   currency: z.string().trim().length(3).default('USD'),
   institution: text(80).default(''),
+  /** Property only: the balance becomes the anchor the ZIP's index carries forward. */
+  zip: zip5.optional(),
+  anchor_date: date.optional(),
 });
 export const AccountPatchSchema = z.object({
   name: text(80).min(1).optional(),
@@ -33,6 +37,9 @@ export const AccountPatchSchema = z.object({
   hidden: z.boolean().optional(),
   closed: z.boolean().optional(),
   sort_order: z.number().int().optional(),
+  zip: z.union([zip5, z.literal('')]).optional(),
+  anchor_value: z.number().positive().nullable().optional(),
+  anchor_date: z.union([date, z.literal('')]).optional(),
 });
 export const BalanceSchema = z.object({ balance: z.number(), as_of: date.optional() });
 
