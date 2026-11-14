@@ -10,6 +10,7 @@ import { PlaidClient, type PlaidEnv } from './providers/plaid.js';
 import { SimpleFinClient, claimSetupToken } from './providers/simplefin.js';
 import type { Provider } from './providers/types.js';
 import { syncConnection, reapplyRules, refreshRecurring, enrichNew, type SyncResult } from './sync.js';
+import { revalueProperties } from './revalue.js';
 import {
   netWorth, netWorthSeries, expandLines, cashFlow, spendByCategory, spendByPayee, incomeBySource, categoryTrend,
   budgetReport, upcomingRecurring, goalProgress, monthKey, monthRange, lastMonths, addDays,
@@ -381,6 +382,13 @@ function register(ctx: PluginContext): void {
       return `Finance sync errors:\n${list}`;
     },
   });
+  ctx.schedule({
+    name: 'revalue', title: 'Finance: value properties from the price index', kind: 'every', spec: '24h',
+    run: async () => {
+      const r = await revalueProperties(store, logger);
+      return r.missing.length ? `Finance: no price index for ZIP ${r.missing.join(', ')}` : '';
+    },
+  });
 
   // ---- overview / accounts ----
   ctx.route('get', '/overview', (_req, res) => { res.json(overview(store)); });
@@ -391,8 +399,15 @@ function register(ctx: PluginContext): void {
   ctx.route('post', '/accounts', (req, res) => {
     const b = parse(req, res, S.ManualAccountSchema); if (!b) return;
     const id = `manual:${randomBytes(6).toString('hex')}`;
-    store.upsertAccount({ id, connection_id: null, name: b.name, type: b.type, balance: b.balance, currency: b.currency, institution: b.institution, balance_as_of: today() });
+    const anchored = b.type === 'property' && !!b.zip;
+    const asOf = anchored ? (b.anchor_date ?? today()) : today();
+    store.upsertAccount({ id, connection_id: null, name: b.name, type: b.type, balance: b.balance, currency: b.currency, institution: b.institution, balance_as_of: asOf });
+    if (anchored) store.updateAccount(id, { zip: b.zip, anchor_value: b.balance, anchor_date: asOf });
     res.status(201).json({ account: store.getAccount(id) });
+  });
+  ctx.route('post', '/properties/revalue', async (_req, res) => {
+    try { res.json(await revalueProperties(store, logger, true)); }
+    catch (e) { res.status(502).json({ error: (e as Error).message }); }
   });
   ctx.route('patch', '/accounts/:id', (req, res) => {
     const b = parse(req, res, S.AccountPatchSchema); if (!b) return;
