@@ -21,6 +21,7 @@ export function buildPluginToolServer(
   tools: PluginToolDef[],
   agentId: string,
   gate: McpGateContext | null = null,
+  conversationId: number | null = null,
 ) {
   return createSdkMcpServer({
     name: pluginId,
@@ -28,7 +29,7 @@ export function buildPluginToolServer(
     tools: tools.map(def => {
       const fullName = `mcp__${pluginId}__${def.name}`;
       return tool(def.name, def.description, def.input, async (args: Record<string, unknown>) => {
-        const run = () => Promise.resolve(def.handler(args, { agentId }));
+        const run = () => Promise.resolve(def.handler(args, { agentId, conversationId }));
         // Unconditional: gateMcpTool already no-ops unless the name is in the
         // agent's gated list, and `needsApproval` is only the PLUGIN AUTHOR's
         // opinion. AgentHost gates a wider set — every tool of every plugin for

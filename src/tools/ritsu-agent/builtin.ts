@@ -645,7 +645,7 @@ export function buildBuiltinTools(deps: RaToolDeps): RaTool[] {
   out.push(...buildNetworkTools(deps.network).filter(t => allowed.has(t.name)));
   // Agent-allowlisted plugin tools (parity with the claude-direct MCP path).
   // Gating/fencing mirror that path; see ./plugin.ts.
-  if (deps.plugins?.length) out.push(...buildPluginTools(deps.plugins, deps.agentId));
+  if (deps.plugins?.length) out.push(...buildPluginTools(deps.plugins, deps.agentId, deps.conversationId ?? null));
   // Scheduling. Returns nothing inside a job run, so a scheduled turn cannot
   // schedule more work.
   out.push(...buildSchedulerTools({

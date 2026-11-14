@@ -101,7 +101,13 @@ export interface PluginToolDef {
    *  The framework fences the result as UNTRUSTED so a value one agent wrote
    *  can't be laundered as instructions into another agent that reads it. */
   untrustedOutput?: boolean;
-  handler: (args: Record<string, unknown>, ctx: { agentId: string }) => Promise<PluginToolResult> | PluginToolResult;
+  handler: (args: Record<string, unknown>, ctx: PluginToolCallContext) => Promise<PluginToolResult> | PluginToolResult;
+}
+
+/** Who is calling: the agent, and the chat the turn belongs to (null for a job run). */
+export interface PluginToolCallContext {
+  agentId: string;
+  conversationId: number | null;
 }
 
 export interface PluginToolContext {

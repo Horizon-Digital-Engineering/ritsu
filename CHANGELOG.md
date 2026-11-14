@@ -28,6 +28,15 @@ versioning per [semver](https://semver.org/).
   without shelling out with a token.
 - The installer puts an `update-ritsu` command on the box; it pulls, rebuilds
   and restarts, and `--branch` deploys a branch for testing.
+- **Tasks: a to-do list you talk to.** One backlog, worked through dated
+  sessions. A new session is a chat that starts empty; you say what you want
+  to work on and the Tasks agent adds it, links it when it already exists,
+  tags it, marks it done, drops it with the reason, and keeps notes worth
+  remembering on the item itself. The backlog is always browsable by tag and
+  never pushed into a session unasked. The app page lists sessions, the
+  backlog, and history.
+- Plugin tools now learn which chat a turn belongs to (`conversationId` in the
+  call context), so a plugin can keep per-conversation state.
 
 ### Changed
 
