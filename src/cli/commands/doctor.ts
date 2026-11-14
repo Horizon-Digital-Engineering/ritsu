@@ -97,7 +97,8 @@ function checkBackups(dbPath: string): Check[] {
   const dataDir = dataDirOf(dbPath);
   const { dir, source } = resolveBackupDir(dbPath, backupDirFromEnv());
   // Whether one is set, never the value.
-  const passwordCheck: Check = loadPassword(dataDir) !== null
+  const hasBackupPassword = loadPassword(dataDir) !== null;
+  const protection: Check = hasBackupPassword
     ? { name: 'backup password', status: 'ok', detail: `${dataDir}/backup-password` }
     : { name: 'backup password', status: 'warn', detail: 'not set — backups are off until `ritsu backup set-password`' };
   const newest = listBackups(dir).find(b => b.kind === 'daily');
@@ -105,7 +106,7 @@ function checkBackups(dbPath: string): Check[] {
   const folder = existsSync(dir)
     ? { name: 'backup folder', status: 'ok' as Status, detail: `${dir} (${source}); ${age}` }
     : { name: 'backup folder', status: 'warn' as Status, detail: `${dir} (${source}) does not exist yet` };
-  return [passwordCheck, folder];
+  return [protection, folder];
 }
 
 function commandExists(cmd: string): boolean {
