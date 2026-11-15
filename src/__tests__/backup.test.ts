@@ -174,6 +174,8 @@ describe('rehearse', () => {
     const memories = report.tables.find(t => t.name === 'memories');
     assert.deepEqual(memories, { name: 'memories', before: 1, after: 1 });
     assert.ok(report.tables.some(t => t.name === 'raw_records' && t.before === null && t.after === 0), 'a table the upgrade adds');
+    assert.ok(report.schema.added.includes('table raw_records'), 'the diff names it');
+    assert.deepEqual(report.schema.removed, []);
     assert.deepEqual(readdirSync(join(tmp, 'data')).filter(n => n.startsWith('.rehearse-')), [], 'scratch removed');
 
     // Once the live file carries that schema a rehearsal reports no change.
@@ -183,6 +185,7 @@ describe('rehearse', () => {
     const fresh = await mgr.createBackup();
     const third = await mgr.rehearse(fresh.name);
     assert.equal(third.schema_changed, false);
+    assert.deepEqual(third.schema, { added: [], removed: [], altered: [] });
     assert.equal(third.kept_at, undefined);
   });
 
