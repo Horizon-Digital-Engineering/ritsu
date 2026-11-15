@@ -1,9 +1,10 @@
 import {
-  query, type CanUseTool, type SDKUserMessage, type HookCallback, type PreToolUseHookInput,
+  query, type CanUseTool, type SDKUserMessage, type SDKMessage, type HookCallback, type PreToolUseHookInput,
   type Options,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ChatRequest, ChatResponse, ChatMessage, ModelDispatcher } from './dispatcher.js';
-import { messageText, messageImages } from './dispatcher.js';
+import { messageText, messageImages, TurnRecorder, untilAborted } from './dispatcher.js';
+import { closeApprovalsOnStop } from '../turns.js';
 import type { Workspace } from '../workspace-store.js';
 import type { MemoryStore } from '../memory-store.js';
 import type { ApprovalStore } from '../approval-store.js';
@@ -113,6 +114,8 @@ export interface ClaudeDirectOpts {
    * approval. Same secret-store + gate pattern as email.
    */
   social?: { agentId: string; secrets: SecretStore; approvals: ApprovalStore };
+  /** Injected by tests. */
+  queryImpl?: (params: Parameters<typeof query>[0]) => AsyncIterable<SDKMessage>;
 }
 
 export class ClaudeDirectDispatcher implements ModelDispatcher {
@@ -147,6 +150,29 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     const canUseTool = buildCanUseToolCallback(workspaces, this.opts, conversationId, inProcessTools);
     const preToolUseHook = buildPreToolUseHook(workspaces, this.opts, conversationId, inProcessTools);
 
+    const turn = new TurnRecorder(req.onEvent);
+    const feed = new SdkTurnFeed(turn);
+    const signal = req.signal;
+    const stopped = (): ChatResponse => {
+      logger.info('claude-direct.stopped', { model });
+      return { content: turn.text, model, raw: null, tool_calls: turn.finish('stopped'), stopped: true };
+    };
+    if (signal?.aborted) return stopped();
+
+    // The SDK's own controller: a stop also ends the CLI subprocess.
+    const sdkAbort = new AbortController();
+    const options = buildQueryOptions(model, systemMsg, this.opts, {
+      mcpServers, allowedTools, canUseTool, preToolUseHook, abortController: sdkAbort,
+    });
+    const run = this.opts.queryImpl ?? query;
+    const events = run({ prompt, options })[Symbol.asyncIterator]();
+    const abortSdk = (): void => sdkAbort.abort();
+    signal?.addEventListener('abort', abortSdk, { once: true });
+    const approvals = this.opts.approval?.store ?? this.opts.email?.approvals ?? this.opts.social?.approvals;
+    const releaseApprovals = signal && approvals
+      ? closeApprovalsOnStop(signal, approvals, agentIdOf(this.opts), conversationId)
+      : () => undefined;
+
     // Cache the most recent non-empty text from any 'assistant' event as the
     // stream flows by. When the agent's final action is a tool_use (e.g.
     // mcp__memory__update_memory) without a follow-up text turn, the SDK's
@@ -154,18 +180,34 @@ export class ClaudeDirectDispatcher implements ModelDispatcher {
     // reply. The last cached assistant text is the right thing to return in
     // that case — it's the model's most recent words to the user.
     let lastAssistantText = '';
-    const options = buildQueryOptions(model, systemMsg, this.opts, {
-      mcpServers, allowedTools, canUseTool, preToolUseHook,
-    });
-    for await (const event of query({ prompt, options })) {
-      const text = extractAssistantText(event);
-      if (text) lastAssistantText = text;
-      const result = extractResult(event, model);
-      if (result) return resolveFinalResult(result, lastAssistantText);
+    try {
+      for (;;) {
+        // Raced against the stop so a stopped turn returns now, not after the CLI winds down.
+        const next = await untilAborted(events.next(), signal);
+        if (next.done) break;
+        const event = next.value;
+        feed.push(event);
+        const text = extractAssistantText(event);
+        if (text) lastAssistantText = text;
+        const result = extractResult(event, model);
+        if (result) return { ...resolveFinalResult(result, lastAssistantText), tool_calls: turn.finish('no result') };
+      }
+      throw new Error('Claude SDK stream ended without a result message');
+    } catch (err) {
+      if (signal?.aborted) return stopped();
+      throw err;
+    } finally {
+      signal?.removeEventListener('abort', abortSdk);
+      releaseApprovals();
+      // Leaving early must still end the CLI session, as a for-await exit does.
+      const closing = events.return?.(undefined).catch(() => undefined);
+      if (!signal?.aborted) await closing;
     }
-
-    throw new Error('Claude SDK stream ended without a result message');
   }
+}
+
+function agentIdOf(opts: ClaudeDirectOpts): string {
+  return opts.agentId ?? opts.memory?.agentId ?? opts.approval?.agentId ?? 'unknown';
 }
 
 /** Assemble the SDK query options from the dispatcher's per-agent wiring. */
@@ -178,11 +220,14 @@ function buildQueryOptions(
     allowedTools: string[];
     canUseTool: CanUseTool | undefined;
     preToolUseHook: HookCallback;
+    abortController: AbortController;
   },
 ): Options {
   return {
     systemPrompt: systemMsg,
     model,
+    includePartialMessages: true,
+    abortController: wiring.abortController,
     // Explicit-safe permission baseline. settingSources:[] stops the SDK
     // loading the service account's ~/.claude/settings.json (whose
     // `defaultMode: "auto"` would put the agent in classifier-auto mode);
@@ -456,8 +501,7 @@ function buildMcpServers(opts: ClaudeDirectOpts, conversationId: number | null, 
   if (opts.history) providers.push(historyProvider(opts.history.conversations));
   if (opts.plugins) providers.push(...opts.plugins);
 
-  const agentId = opts.agentId ?? opts.memory?.agentId ?? opts.approval?.agentId ?? 'unknown';
-  const asm = assembleMcp(providers, { agentId, conversationId, gate, insideJobRun });
+  const asm = assembleMcp(providers, { agentId: agentIdOf(opts), conversationId, gate, insideJobRun });
   return { mcpServers: asm.mcpServers, allowedTools: asm.allowedTools };
 }
 
@@ -483,6 +527,88 @@ export function extractAssistantText(event: unknown): string {
     .map(b => b.text)
     .join('')
     .trim();
+}
+
+export type SdkProgress =
+  | { kind: 'stream' }
+  | { kind: 'text'; text: string }
+  | { kind: 'block-text'; text: string }
+  | { kind: 'tool-start'; id: string; name: string; input: unknown }
+  | { kind: 'tool-end'; id: string; result: string; isError: boolean };
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null;
+
+/** Subagent frames (parent_tool_use_id set) are dropped: the operator follows the top-level turn. */
+export function sdkProgress(event: unknown): SdkProgress[] {
+  if (!isObj(event) || typeof event.parent_tool_use_id === 'string') return [];
+  if (event.type === 'stream_event') {
+    const e = event.event;
+    const delta = isObj(e) && e.type === 'content_block_delta' && isObj(e.delta) ? e.delta : null;
+    return delta?.type === 'text_delta' && typeof delta.text === 'string'
+      ? [{ kind: 'text', text: delta.text }]
+      : [{ kind: 'stream' }];
+  }
+  if (event.type !== 'assistant' && event.type !== 'user') return [];
+  const message = event.message;
+  const blocks: unknown[] = isObj(message) && Array.isArray(message.content) ? message.content : [];
+  const out: SdkProgress[] = [];
+  for (const b of blocks) {
+    if (!isObj(b)) continue;
+    if (event.type === 'assistant') {
+      if (b.type === 'text' && typeof b.text === 'string') out.push({ kind: 'block-text', text: b.text });
+      else if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
+        out.push({ kind: 'tool-start', id: b.id, name: b.name, input: b.input });
+      }
+    } else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+      out.push({ kind: 'tool-end', id: b.tool_use_id, result: toolResultText(b.content), isError: b.is_error === true });
+    }
+  }
+  return out;
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((b: unknown) => {
+      if (!isObj(b)) return '';
+      if (b.type === 'text' && typeof b.text === 'string') return b.text;
+      return typeof b.type === 'string' ? `[${b.type}]` : '';
+    })
+    .filter(s => s !== '')
+    .join('\n');
+}
+
+/** A completed text block is written only when no partial frame arrived, so
+ *  the text shows once whether or not the CLI streams. */
+export class SdkTurnFeed {
+  private partials = false;
+
+  constructor(private readonly turn: TurnRecorder) {}
+
+  push(event: unknown): void {
+    for (const p of sdkProgress(event)) {
+      switch (p.kind) {
+        case 'stream':
+          this.partials = true;
+          break;
+        case 'text':
+          this.partials = true;
+          this.turn.write(p.text);
+          break;
+        case 'block-text':
+          if (!this.partials) this.turn.write(p.text);
+          break;
+        case 'tool-start':
+          this.turn.toolStart(p.id, p.name, p.input);
+          break;
+        case 'tool-end':
+          this.turn.toolEnd(p.id, p.result, p.isError);
+          break;
+      }
+    }
+  }
 }
 
 /**

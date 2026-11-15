@@ -211,7 +211,7 @@ async function refuseOrApproveEscalation(
     const why = decision.reason?.trim()
       ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
       : `Operator rejected this escalated call to ${target}.`;
-    return textResult(why);
+    return { ...textResult(why), isError: true };
   }
   // approved → continue to the normal call path.
   return null;

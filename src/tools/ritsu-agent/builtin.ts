@@ -38,6 +38,7 @@ import { buildProcessTools } from './process.js';
 import { buildNetworkTools, type NetworkOptions } from './network.js';
 import { buildPluginTools, type PluginToolSet } from './plugin.js';
 import type { RaTool } from '../../model/ritsu-agent/types.js';
+import { OperatorRejected } from '../../model/ritsu-agent/operator-rejected.js';
 import type { JobStore } from '../../scheduler/store.js';
 import { buildSchedulerTools } from './scheduler.js';
 import { buildEmailTools, buildSocialTools } from './crm.js';
@@ -200,7 +201,8 @@ export function buildMemoryTools(deps: RaToolDeps): RaTool[] {
  *  through a callee holding capabilities the caller lacks, so a caller
  *  can't borrow a peer's manage_agents to mint a wider-permission agent.
  *  Returns a denial message, or null when the call may proceed (no
- *  escalation, or the operator approved it). */
+ *  escalation, or the operator approved it); throws OperatorRejected when the
+ *  operator says no. */
 async function raRefuseOrApproveEscalation(
   deps: RaToolDeps,
   def: AgentDefinition | null,
@@ -237,9 +239,9 @@ async function raRefuseOrApproveEscalation(
     });
     if (decision.state === 'rejected') {
       denials?.record({ caller: agentId, target, reason: 'escalation', detail: `escalated: ${escalated.join(', ')} (operator rejected)`, message, conversationId: conversationId ?? null });
-      return decision.reason?.trim()
+      throw new OperatorRejected(decision.reason?.trim()
         ? `Operator rejected this escalated call to ${target}: ${decision.reason.trim()}`
-        : `Operator rejected this escalated call to ${target}.`;
+        : `Operator rejected this escalated call to ${target}.`);
     }
   }
   // approved → continue to the normal call path.

@@ -10,7 +10,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageCreateParamsNonStreaming, MessageParam, ContentBlockParam } from '@anthropic-ai/sdk/resources/messages';
-import type { RaClient, RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
+import type { RaClient, RaChatOptions, RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
 import { stripTrailingSlashes } from '../../util/path-utils.js';
 
 const DEFAULT_MAX_TOKENS = 4096;
@@ -40,7 +40,7 @@ export class AnthropicClient implements RaClient {
     this.providerOptions = opts.providerOptions ?? {};
   }
 
-  async chat(messages: RaMessage[], tools: RaTool[]): Promise<RaCompletion> {
+  async chat(messages: RaMessage[], tools: RaTool[], opts: RaChatOptions = {}): Promise<RaCompletion> {
     const { system, turns } = toAnthropicMessages(messages);
     const body: MessageCreateParamsNonStreaming = {
       model: this.model,
@@ -59,7 +59,15 @@ export class AnthropicClient implements RaClient {
       }));
     }
 
-    const res = await this.client.messages.create(body);
+    const { onText, signal } = opts;
+    const res: Anthropic.Message = onText
+      ? await this.client.messages
+          .stream(body, { signal })
+          .on('text', delta => {
+            if (!signal?.aborted) onText(delta);
+          })
+          .finalMessage()
+      : await this.client.messages.create(body, { signal });
 
     const content = res.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')

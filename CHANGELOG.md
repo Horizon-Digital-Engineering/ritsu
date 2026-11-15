@@ -52,6 +52,19 @@ versioning per [semver](https://semver.org/).
   `ritsu backup restore latest` swaps a backup in with the previous database
   kept aside and put back if the swap fails. The Backups page sets the
   password, lists every machine's backups and rehearses any of them.
+- **Talk to your agents.** A microphone button in the chat writes what you
+  say into the message box. Talk mode is hands-free: it sends when you pause
+  and reads the answer aloud. Speech is transcribed on the server by a
+  built-in Whisper model on the CPU (`ritsu speech-model` downloads it, pinned
+  and hash-checked), a whisper.cpp server, or OpenAI with a stored key;
+  Studio › Settings › Voice picks one. Any answer can be read aloud.
+- **Answers stream** as they are written, on both runtimes. The tools an agent
+  calls show as chips you can open for their input and output, and are saved
+  with the answer.
+- **Stop** ends a running answer from the chat. What was written is kept and
+  marked as stopped.
+- **Phone layout.** On a phone the area rail becomes a bottom tab bar on every
+  admin page, and it steps aside while the keyboard is up.
 
 ### Changed
 
@@ -60,6 +73,16 @@ versioning per [semver](https://semver.org/).
 - Backups need a backup password; without one the daily job skips and the
   Backups page says so. Plaintext `.db` snapshots from before are left where
   they are and no longer listed.
+- Turns from every surface (channels, MCP, other agents, scheduled jobs) show
+  typing and stream into an open chat, and can be stopped there.
+- A saved answer keeps the text written before a tool call, so replies on
+  channels and to other agents include it too.
+- Api-runtime agents ask their provider to stream. A provider that refuses
+  a streamed request, or its `stream_options`, is asked again without it, and
+  the refusal is remembered until restart.
+- The speech engine adds about 490 MB of dependencies. Installs skip ONNX
+  Runtime's optional CUDA download (`ONNXRUNTIME_NODE_INSTALL=skip`); speech
+  runs on the CPU.
 
 ### Fixed
 
@@ -79,6 +102,12 @@ versioning per [semver](https://semver.org/).
   `update-ritsu` and the `ritsu` CLI run without `sudo`; only `data/` (database,
   admin token, backups) is private to the service user. Re-run the installer
   once to apply the new modes to an existing install.
+- The admin pages' Permissions-Policy blocked the microphone.
+- Live updates could reach WebKit browsers up to 20 seconds late. Each burst
+  of events is now followed by a short write that makes the browser hand it
+  over.
+- An operator's rejection of a direct-runtime agent's in-process tool reaches
+  the model as an error instead of a normal result.
 
 ## [0.13.1] — 2026-09-06
 

@@ -122,6 +122,20 @@
             <span class="edit-banner-text">Editing a message — sending forks a new branch.</span>
             <button type="button" class="edit-banner-x" data-action="cancel-edit" title="Cancel (Esc)">✕</button>
           </div>
+          <!-- The meter and clock are aria-hidden: they change ten times a second. -->
+          <div id="voice-bar" class="voice-bar hidden" role="status">
+            <span class="voice-dot" aria-hidden="true"></span>
+            <span class="voice-text"><span id="voice-tag" class="voice-tag hidden">Talk</span><span id="voice-line"></span></span>
+            <span id="voice-meter" class="voice-meter hidden" aria-hidden="true"><span id="voice-level" class="voice-level"></span></span>
+            <span id="voice-time" class="voice-time hidden" aria-hidden="true">0:00</span>
+            <button type="button" id="voice-skip" class="voice-act hidden" data-action="voice-skip" title="Stop reading and listen">Skip</button>
+            <button type="button" id="voice-cancel" class="voice-act hidden" data-action="voice-cancel" title="Discard (Esc)">Cancel</button>
+          </div>
+          <div id="voice-note" class="voice-note hidden" role="alert">
+            <span id="voice-note-text" class="voice-note-text"></span>
+            <a id="voice-note-link" class="voice-note-link hidden" href="/admin#settings">Open Settings</a>
+            <button type="button" class="voice-note-x" data-action="voice-note-close" aria-label="Dismiss">✕</button>
+          </div>
           <div id="attach-tray" class="attach-tray" aria-hidden="true"></div>
           <div id="attach-hint" class="attach-hint" aria-hidden="true"></div>
           <!-- Placeholder stays short: a textarea does not autosize to wrapped
@@ -130,7 +144,7 @@
                     title="Enter to send, Shift+Enter for a newline, “/” for commands, paste an image to attach"></textarea>
           <div class="composer-row">
             <div class="menu-wrap">
-              <button type="button" class="icon-btn" data-action="toggle-attach-menu" title="Attach" aria-label="Attach" aria-haspopup="menu">📎</button>
+              <button type="button" class="icon-btn composer-btn" data-action="toggle-attach-menu" title="Attach" aria-label="Attach" aria-haspopup="menu">📎</button>
               <div id="attach-menu" class="row-menu attach-menu">
                 <button type="button" data-action="pick-attachment">Attach image</button>
                 <button type="button" data-action="attach-webpage">Attach webpage</button>
@@ -138,8 +152,19 @@
               </div>
             </div>
             <input type="file" id="ask-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden aria-label="Attach an image">
+            <button type="button" id="voice-mic" class="icon-btn composer-btn mic-btn" data-action="voice-mic" title="Dictate" aria-label="Dictate">
+              <svg class="ico-mic" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+              <svg class="ico-stop" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg>
+            </button>
+            <button type="button" id="voice-talk" class="talk-btn" data-action="voice-talk" aria-pressed="false" title="Talk">
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>
+              <span id="voice-talk-label">Talk</span>
+            </button>
             <span class="flex1"></span>
             <button type="submit" id="ask-send" class="primary send-btn" title="Send" aria-label="Send">→</button>
+            <button type="button" id="ask-stop" class="send-btn stop-btn hidden" data-action="stop-turn" title="Stop the answer" aria-label="Stop">
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg>
+            </button>
           </div>
         </form>
       </section>

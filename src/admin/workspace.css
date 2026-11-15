@@ -349,7 +349,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   background: transparent; color: var(--muted); font-style: italic;
   font-size: 0.78rem; align-self: center; max-width: 88%; padding: 2px 0;
 }
-.msg.pending { padding: 12px 15px; opacity: 0.85; }
+.msg.live .live-text:empty { display: none; }
+.msg.live .live-text:not(:empty) + .typing { margin-top: 6px; }
 .msg-byline { color: var(--muted); font-size: 0.7rem; margin-bottom: 3px; font-family: var(--mono); }
 
 .msg-atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
@@ -396,7 +397,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   line-height: 1.5; padding: 9px 11px;
 }
 .composer-row { display: flex; align-items: center; gap: 8px; }
-.send-btn { min-width: 46px; font-size: 1rem; line-height: 1.2; }
+.send-btn { min-width: 46px; height: 36px; font-size: 1rem; line-height: 1.2; }
 .composer.dragging textarea { border-color: var(--accent); border-style: dashed; }
 
 .attach-tray { display: none; flex-wrap: wrap; gap: 6px; }
@@ -533,9 +534,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* ---- responsive ----------------------------------------------------- */
 @media (max-width: 800px) {
   .only-mobile { display: inline-flex; }
-  /* The area rail yields its 60px to content on phones; a proper mobile
-     switcher is the next pass. The ops board keeps its topbar links. */
-  .rail { display: none; }
   .shell {
     margin-left: 0;
     grid-template-columns: minmax(0, 1fr);
@@ -569,6 +567,44 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .scrim { transition: none; }
+}
+
+@media (max-width: 800px) {
+  :root {
+    --tabbar-h: 52px;
+    --tabbar-space: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+  }
+  :root.keyboard-up { --tabbar-space: 0px; }
+  .rail {
+    inset: auto 0 0 0; width: auto;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+    flex-direction: row; gap: 0;
+    padding: 0 max(4px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(4px, env(safe-area-inset-left, 0px));
+    border-right: 0; border-top: 1px solid #1c212b;
+    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar { display: none; }
+  :root.keyboard-up .rail,
+  .rail > :is(.rail-logo, .rail-sep, .rail-spacer, .rail-health) { display: none; }
+  .rail-btn { flex: 1 0 0; min-width: 48px; width: auto; }
+  /* The marker hugs the icon rather than filling the whole cell. */
+  .rail-btn::before {
+    content: ""; position: absolute; z-index: -1;
+    inset: 6px max(2px, calc(50% - 28px)); border-radius: 16px;
+  }
+  .rail-btn:hover, .rail-btn.active { background: none; box-shadow: none; }
+  .rail-btn:hover::before { background: var(--panel-2); }
+  .rail-btn.active::before {
+    background: rgba(110, 168, 255, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.25);
+  }
+  .rail-badge { right: auto; left: calc(50% + 4px); }
+
+  .shell { height: calc(var(--vvh, 100dvh) - var(--tabbar-space)); }
+  .sidebar { padding-bottom: var(--tabbar-space); }
+  /* The bar, or the keyboard, already covers the home-indicator strip. */
+  .shell .composer { padding-bottom: 9px; }
 }
 
 /* ---- markdown in assistant messages ---- */
@@ -825,6 +861,115 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .palette { left: 14px; right: 14px; }
   .hover-preview { display: none; }
   .msg-tools { opacity: 1; }
+}
+
+.composer-btn {
+  min-width: 36px; height: 36px; padding: 0 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mic-btn .ico-stop { display: none; }
+.mic-btn.recording { color: var(--err); border-color: var(--err); background: rgba(255, 118, 118, 0.12); }
+.mic-btn.recording .ico-mic { display: none; }
+.mic-btn.recording .ico-stop { display: inline; }
+.talk-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 13px; border-radius: 18px; font-weight: 600;
+}
+.talk-btn.on, .talk-btn.on:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* Dimmed but still tappable: the tap explains what voice needs. */
+.voice-off { opacity: 0.5; }
+.stop-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--fg); color: var(--bg); border-color: var(--fg);
+}
+.stop-btn:hover { background: var(--err); border-color: var(--err); color: var(--bg); }
+
+.voice-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: 8px; font-size: 0.82rem; line-height: 1.35;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.voice-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+.voice-bar[data-mode="dictating"] .voice-dot,
+.voice-bar[data-mode="listening"] .voice-dot { background: var(--err); animation: voice-pulse 1.2s ease-in-out infinite; }
+.voice-bar[data-mode="speaking"] .voice-dot { background: var(--accent); animation: voice-pulse 1.2s ease-in-out infinite; }
+.voice-text { flex: 1 1 auto; min-width: 0; }
+.voice-tag {
+  display: inline-block; margin-right: 7px; padding: 0 7px; border-radius: 9px;
+  background: rgba(110, 168, 255, 0.16); color: var(--accent); font-weight: 600; font-size: 0.74rem;
+}
+.voice-meter { width: 72px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; flex: none; }
+.voice-level {
+  display: block; height: 100%; background: var(--err);
+  transform: scaleX(0); transform-origin: left center; transition: transform 90ms linear;
+}
+.voice-time { flex: none; font-family: var(--mono); font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.voice-act { flex: none; padding: 3px 10px; font-size: 0.78rem; }
+@keyframes voice-pulse { 50% { opacity: 0.35; } }
+
+.voice-note {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
+  padding: 6px 10px; border-radius: 8px; font-size: 0.8rem;
+  border: 1px solid #4a3c2c; background: #241d13; color: var(--warn);
+}
+.voice-note-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.voice-note code { font-family: var(--mono); font-size: 0.92em; padding: 0 4px; border-radius: 4px; background: rgba(127, 127, 127, 0.18); }
+.voice-note-link { font-weight: 600; white-space: nowrap; }
+.voice-note-x { border: 0; background: none; color: inherit; padding: 0 4px; }
+
+/* white-space: the bubble's pre-wrap would turn markup gaps into blank lines. */
+.tool-group { margin: 0 0 8px; white-space: normal; font-size: 0.8rem; }
+.tool-group > summary {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
+  padding: 2px 10px 2px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--muted); font-size: 0.76rem;
+}
+.tool-group > summary::-webkit-details-marker,
+.tool-chip > summary::-webkit-details-marker { display: none; }
+.tool-group > summary::before { content: "▸"; font-size: 0.7rem; }
+.tool-group[open] > summary::before { content: "▾"; }
+.tool-group > summary:hover { color: var(--fg); border-color: var(--accent); }
+.tool-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.tool-chip { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.tool-chip > summary {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  padding: 4px 9px; cursor: pointer; list-style: none;
+}
+.tool-chip > summary:hover .tool-name { color: var(--accent); }
+.tool-ico { flex: none; width: 12px; display: inline-flex; justify-content: center; font-size: 0.75rem; }
+.tool-ico::before { content: "✓"; color: var(--ok); }
+.tool-chip.error .tool-ico::before { content: "✕"; color: var(--err); }
+.tool-chip.running .tool-ico::before {
+  content: ""; width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid var(--accent); border-right-color: transparent;
+  animation: tool-spin 0.8s linear infinite;
+}
+.tool-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 0.78rem; }
+.tool-srv { flex: none; color: var(--muted); font-size: 0.72rem; }
+.tool-state { flex: none; margin-left: auto; color: var(--muted); font-size: 0.72rem; }
+.tool-chip.error .tool-state { color: var(--err); }
+.tool-body { padding: 2px 9px 9px; border-top: 1px solid var(--line); }
+.tool-label { margin: 7px 0 3px; color: var(--muted); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.tool-pre { max-height: 260px; overflow: auto; font-size: 0.76rem; }
+.tool-wait { color: var(--muted); font-style: italic; font-size: 0.76rem; }
+@keyframes tool-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-bar[data-mode] .voice-dot, .tool-chip.running .tool-ico::before { animation: none; }
+}
+
+@media (max-width: 800px) {
+  .composer-row { gap: 6px; }
+  .composer-btn, .send-btn { min-width: 44px; height: 44px; }
+  .composer-btn { font-size: 1.1rem; }
+  .talk-btn { height: 44px; padding: 0 16px; border-radius: 22px; }
+  .voice-act { min-height: 36px; padding: 6px 12px; }
+  .voice-note-x { min-width: 36px; min-height: 36px; }
+  .voice-meter { width: 56px; }
+  .tool-group > summary { min-height: 36px; padding: 6px 12px 6px 10px; }
+  .tool-chip > summary { min-height: 40px; }
+  .msg-tool { min-height: 34px; padding: 6px 10px; }
+  .voice-bar { gap: 8px; }
 }
 
 /* Last on purpose: same specificity as the component display rules above, so order decides. */

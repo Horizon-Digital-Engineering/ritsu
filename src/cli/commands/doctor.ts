@@ -13,6 +13,7 @@ import type { Command, CommandContext } from '../registry.js';
 import { SERVICE_NAME } from '../systemd.js';
 import { loadConfig } from '../../config.js';
 import { backupDirFromEnv, dataDirOf, listBackups, loadPassword, resolveBackupDir } from '../../backup.js';
+import { SPEECH_ENGINE, WHISPER_URL, speechStatus } from '../../speech/index.js';
 
 type Status = 'ok' | 'warn' | 'fail';
 interface Check { name: string; status: Status; detail: string }
@@ -121,6 +122,24 @@ function checkBackups(dbPath: string): Check[] {
   return [protection, folder];
 }
 
+export function checkVoice(dbPath: string): Check {
+  // Read-only: opening the live file for real would run migrations as root.
+  const stored = new Map<string, string>();
+  let openai = false;
+  if (existsSync(dbPath)) {
+    try {
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const rows = db.prepare('SELECT key, value FROM settings WHERE key IN (?, ?)').all(SPEECH_ENGINE, WHISPER_URL) as Array<{ key: string; value: string }>;
+        for (const r of rows) stored.set(r.key, r.value);
+        openai = db.prepare("SELECT 1 AS x FROM api_keys WHERE provider = 'openai' AND revoked_at IS NULL LIMIT 1").get() !== undefined;
+      } finally { db.close(); }
+    } catch { /* an unreadable database reads as nothing set up */ }
+  }
+  const st = speechStatus({ dataDir: dataDirOf(dbPath), setting: k => stored.get(k) ?? null, hasOpenAiKey: () => openai });
+  return { name: 'voice', status: st.engine ? 'ok' : 'warn', detail: st.sentence };
+}
+
 function commandExists(cmd: string): boolean {
   // Use `which` rather than the shell builtin `command -v` so we don't need
   // `{ shell: true }` (which would propagate the calling shell's settings).
@@ -144,6 +163,7 @@ export const doctorCommand: Command = {
       checkMasterKey(),
       checkSubscriptionToken(cfg.dbPath),
       ...checkBackups(cfg.dbPath),
+      checkVoice(cfg.dbPath),
       checkSandboxPaths(),
       checkTailscale(),
     ];

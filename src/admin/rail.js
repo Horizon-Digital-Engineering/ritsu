@@ -37,10 +37,18 @@ function background(promise) { promise.catch(e => console.error(e)); }
     return a;
   }
 
-  async function mount() {
-    const rail = document.querySelector('nav.rail');
+  // On a phone the rail is a bottom tab bar that can scroll sideways.
+  function revealActive(rail) {
+    const active = rail.querySelector('.rail-btn.active');
+    const room = rail.scrollWidth - rail.clientWidth;
+    if (!active || room <= 0) return;
+    const centered = active.offsetLeft - (rail.clientWidth - active.offsetWidth) / 2;
+    rail.scrollLeft = Math.min(room, Math.max(0, centered));
+  }
+
+  async function mount(rail) {
     const token = localStorage.getItem(TOKEN_KEY) || '';
-    if (!rail || !token) return;
+    if (!token) return;
     let plugins = [];
     try {
       const r = await fetch('/admin/api/plugins', { headers: { 'X-Ritsu-Admin-Token': token } });
@@ -62,8 +70,61 @@ function background(promise) { promise.catch(e => console.error(e)); }
     const sep = document.createElement('span');
     sep.className = 'rail-sep';
     after.after(sep);
+    revealActive(rail);
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
-  else background(mount());
+  // .keyboard-up hides the tab bar under a phone keyboard. iOS opens no keyboard
+  // for a scripted focus, so only a tap or a visual viewport that shrank counts.
+  const TYPING = 'textarea, select, [contenteditable]:not([contenteditable="false"]), input:not('
+    + '[type="checkbox"], [type="radio"], [type="button"], [type="submit"], [type="reset"], '
+    + '[type="range"], [type="color"], [type="file"], [type="image"], [type="hidden"])';
+  const coarse = matchMedia('(pointer: coarse)');
+  let press = { target: null, at: 0 };
+  let tapped = false;
+  let keyboardWasUp = false;
+
+  function typingInto(el) {
+    return el instanceof Element && el.matches(TYPING) && !el.readOnly;
+  }
+  function pressedOn(field, at) {
+    const t = press.target;
+    return t instanceof Element && at - press.at < 1000
+      && (field.contains(t) || t.closest('label')?.control === field);
+  }
+  function keyboardUp() {
+    const vv = window.visualViewport;
+    return !!vv && document.documentElement.clientHeight - vv.height * vv.scale > 150;
+  }
+  function syncKeyboard() {
+    const up = coarse.matches && typingInto(document.activeElement) && (tapped || keyboardUp());
+    document.documentElement.classList.toggle('keyboard-up', up);
+  }
+  document.addEventListener('pointerdown', (e) => { press = { target: e.target, at: e.timeStamp }; }, true);
+  document.addEventListener('focusin', (e) => {
+    tapped = typingInto(e.target) && pressedOn(e.target, e.timeStamp);
+    syncKeyboard();
+  });
+  // A tap on a field a script already focused opens the keyboard as well.
+  document.addEventListener('click', (e) => {
+    const field = document.activeElement;
+    if (!tapped && typingInto(field) && field.contains(e.target)) { tapped = true; syncKeyboard(); }
+  }, true);
+  document.addEventListener('focusout', () => { tapped = false; syncKeyboard(); });
+  window.visualViewport?.addEventListener('resize', () => {
+    const up = keyboardUp();
+    // Put away without a blur (Android's back button): the bar comes back.
+    if (keyboardWasUp && !up) tapped = false;
+    keyboardWasUp = up;
+    syncKeyboard();
+  });
+
+  function start() {
+    const rail = document.querySelector('nav.rail');
+    if (!rail) return;
+    new ResizeObserver(() => revealActive(rail)).observe(rail);
+    background(mount(rail));
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
 })();

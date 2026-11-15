@@ -152,6 +152,23 @@ CREATE TABLE IF NOT EXISTS message_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_attachments_conversation ON message_attachments(conversation_id);
 
+-- Tool calls an assistant turn made, in call order (id), as the operator saw
+-- them. Display and audit only: never replayed into model context. args and
+-- result are clipped text; conversation_id is denormalized like attachments.
+CREATE TABLE IF NOT EXISTS message_tool_calls (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id      INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  call_id         TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  args            TEXT NOT NULL,
+  result          TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL CHECK (status IN ('done','error')),
+  created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON message_tool_calls(message_id);
+
 -- MCP bearer tokens (Flashback-style). Full token shown to user once at mint;
 -- stored as sha256 hash. prefix is the first 8 chars after the rt_ prefix,
 -- kept for display so the operator can identify tokens by sight.

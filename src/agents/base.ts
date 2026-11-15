@@ -1,15 +1,30 @@
 import type { MemoryStore } from '../memory-store.js';
 import type { ConversationStore, ConversationMessage, MessageAttachment } from '../conversation-store.js';
-import type { ChatMessage, ChatRequest, ChatContentBlock, DispatcherKind, ModelDispatcher } from '../model/dispatcher.js';
+import type { ChatMessage, ChatRequest, ChatResponse, ChatContentBlock, DispatcherKind, ModelDispatcher, TurnEvent } from '../model/dispatcher.js';
 import type { AgentDefinition } from '../admin/schema.js';
 import type { MemoryService } from '../memory/service.js';
 import type { Scope } from '../memory/backend.js';
+import { conversationBus } from '../conversation-bus.js';
+import { beginTurn } from '../turns.js';
 import { logger } from '../util/log.js';
 import { createHash } from 'node:crypto';
 
 /** How many flashback-retrieved records to inject as relevant context. Bounded
  *  so a large store can't blow the prompt budget. */
 const CONTEXT_RECORD_LIMIT = 20;
+
+export const STOPPED_MARK = '_(stopped)_';
+
+/** Stores everything the operator watched stream, so text written before a
+ *  tool call survives; a final text never streamed (a runtime's notice) follows. */
+export function storedReply(resp: Pick<ChatResponse, 'content' | 'stopped'>, streamed = ''): string {
+  const shown = streamed.trim();
+  const final = resp.content.trim();
+  let text = resp.content;
+  if (shown) text = !final || shown.endsWith(final) ? shown : `${shown}\n\n${final}`;
+  if (!resp.stopped) return text;
+  return text.trim() ? `${text}\n\n${STOPPED_MARK}` : STOPPED_MARK;
+}
 
 export interface AgentRequest {
   message: string;
@@ -25,6 +40,7 @@ export interface AgentRequest {
    *  Sent to the model with this turn and persisted for transcript rendering;
    *  not replayed into later turns' context (see onMessage). */
   attachments?: MessageAttachment[];
+  signal?: AbortSignal;
 }
 
 export interface AgentResponse {
@@ -33,6 +49,8 @@ export interface AgentResponse {
   memories_written: number[];
   dispatcher_used: DispatcherKind;
   model_used: string;
+  /** When set, `reply` already carries the stop marker. */
+  stopped?: boolean;
 }
 
 export interface AgentDeps {
@@ -394,6 +412,24 @@ export abstract class AgentBase {
     return Promise.resolve(this.deps.dispatcher);
   }
 
+  private publishAsk(kind: 'ask-start' | 'ask-end', conversationId: number): void {
+    conversationBus.publish({ kind, conversation_id: conversationId, agent_id: this.id, ts: Math.floor(Date.now() / 1000) });
+  }
+
+  private turnEvents(conversationId: number): { onEvent: (e: TurnEvent) => void; streamed: () => string } {
+    let streamed = '';
+    return {
+      onEvent: (e) => {
+        if (e.type === 'text') streamed += e.delta;
+        const base = { conversation_id: conversationId, agent_id: this.id, ts: Math.floor(Date.now() / 1000) };
+        conversationBus.publish(e.type === 'text'
+          ? { kind: 'delta', ...base, text: e.delta }
+          : { kind: 'tool', ...base, call: e.call });
+      },
+      streamed: () => streamed,
+    };
+  }
+
   /**
    * Produce a SIBLING answer to an existing assistant message: same parent
    * user turn, same path context, a fresh dispatch. The original stays — the
@@ -402,7 +438,10 @@ export abstract class AgentBase {
    * contradictions; whichever the operator continues from gets recorded by
    * the next normal turn.
    */
-  async regenerate(conversationId: number, assistantMessageId: number): Promise<{ message_id: number; content: string }> {
+  async regenerate(
+    conversationId: number,
+    assistantMessageId: number,
+  ): Promise<{ message_id: number; content: string; stopped?: boolean }> {
     const all = this.deps.conversations.recent(conversationId, 1000);
     const target = all.find(m => m.id === assistantMessageId && m.role === 'assistant');
     if (!target) throw new Error('no such assistant message in this conversation');
@@ -412,19 +451,32 @@ export abstract class AgentBase {
       ?? all.findLast(m => (m.id ?? Infinity) < assistantMessageId && m.role === 'user')?.id
       ?? null;
     if (parentUserId == null) throw new Error('cannot find the user turn this answered');
-    const path = this.pathMessages(conversationId, parentUserId);
-    const userMsg = path.at(-1);
-    const contextMsgs = await this.loadContext(typeof userMsg?.content === 'string' ? userMsg.content : '', conversationId);
-    const messages: ChatMessage[] = [
-      { role: 'system', content: this.systemPrompt },
-      ...contextMsgs,
-      ...path.map(m => ({ role: m.role, content: m.content })),
-    ];
-    const dispatcher = await this.selectDispatcher(userMsg?.content ?? '');
-    logger.info('agent.regenerate', { agent: this.id, conv: conversationId, of: assistantMessageId });
-    const resp = await dispatcher.chat({ messages, conversation_id: conversationId, caller_label: 'regenerate' });
-    const id = this.deps.conversations.append(conversationId, 'assistant', resp.content, null, undefined, parentUserId);
-    return { message_id: id, content: resp.content };
+    const turn = beginTurn(conversationId);
+    try {
+      this.publishAsk('ask-start', conversationId);
+      const path = this.pathMessages(conversationId, parentUserId);
+      const userMsg = path.at(-1);
+      const contextMsgs = await this.loadContext(typeof userMsg?.content === 'string' ? userMsg.content : '', conversationId);
+      const messages: ChatMessage[] = [
+        { role: 'system', content: this.systemPrompt },
+        ...contextMsgs,
+        ...path.map(m => ({ role: m.role, content: m.content })),
+      ];
+      const dispatcher = await this.selectDispatcher(userMsg?.content ?? '');
+      logger.info('agent.regenerate', { agent: this.id, conv: conversationId, of: assistantMessageId });
+      const events = this.turnEvents(conversationId);
+      const resp = await dispatcher.chat({
+        messages, conversation_id: conversationId, caller_label: 'regenerate',
+        onEvent: events.onEvent, signal: turn.signal,
+      });
+      const content = storedReply(resp, events.streamed());
+      const id = this.deps.conversations.append(
+        conversationId, 'assistant', content, null, undefined, parentUserId, resp.tool_calls);
+      return { message_id: id, content, ...(resp.stopped ? { stopped: true } : {}) };
+    } finally {
+      turn.end();
+      this.publishAsk('ask-end', conversationId);
+    }
   }
 
   async onMessage(req: AgentRequest): Promise<AgentResponse> {
@@ -460,78 +512,90 @@ export abstract class AgentBase {
     const userMsgId = this.deps.conversations.append(
       conversationId, 'user', req.message, req.caller_label ?? null, attachments, anchorId);
 
-    // History follows the tree path to this turn's anchor — after a branch
-    // switch the other branch's tail must not leak into context.
-    const history: ChatMessage[] = [
-      ...this.pathMessages(conversationId, anchorId),
-      ...this.deps.conversations.recent(conversationId, 1).filter(m => m.id === userMsgId),
-    ].map(m => ({ role: m.role, content: m.content }));
-    const contextMsgs = await this.loadContext(req.message, conversationId);
+    const turn = beginTurn(conversationId, req.signal);
+    try {
+      this.publishAsk('ask-start', conversationId);
+      // History follows the tree path to this turn's anchor — after a branch
+      // switch the other branch's tail must not leak into context.
+      const history: ChatMessage[] = [
+        ...this.pathMessages(conversationId, anchorId),
+        ...this.deps.conversations.recent(conversationId, 1).filter(m => m.id === userMsgId),
+      ].map(m => ({ role: m.role, content: m.content }));
+      const contextMsgs = await this.loadContext(req.message, conversationId);
 
-    // Attach THIS turn's images to the current user message (the last one in
-    // history — we just appended it). Images ride along only on the turn they
-    // were sent; we don't replay them into later turns to keep token cost flat.
-    if (attachments) {
-      const last = history.at(-1);
-      if (last?.role === 'user') {
-        // Providers reject empty text blocks, so an image-only turn gets a
-        // minimal prompt the model can act on.
-        const text = (typeof last.content === 'string' ? last.content : '') || 'Please look at the attached image(s).';
-        const blocks: ChatContentBlock[] = [
-          { type: 'text', text },
-          ...attachments.map((a): ChatContentBlock => ({ type: 'image', media_type: a.media_type, data: a.data })),
-        ];
-        last.content = blocks;
+      // Attach THIS turn's images to the current user message (the last one in
+      // history — we just appended it). Images ride along only on the turn they
+      // were sent; we don't replay them into later turns to keep token cost flat.
+      if (attachments) {
+        const last = history.at(-1);
+        if (last?.role === 'user') {
+          // Providers reject empty text blocks, so an image-only turn gets a
+          // minimal prompt the model can act on.
+          const text = (typeof last.content === 'string' ? last.content : '') || 'Please look at the attached image(s).';
+          const blocks: ChatContentBlock[] = [
+            { type: 'text', text },
+            ...attachments.map((a): ChatContentBlock => ({ type: 'image', media_type: a.media_type, data: a.data })),
+          ];
+          last.content = blocks;
+        }
       }
+
+      const messages: ChatMessage[] = [
+        { role: 'system', content: this.systemPrompt },
+        ...contextMsgs,
+        ...history,
+      ];
+
+      const dispatcher = await this.selectDispatcher(req.message);
+
+      logger.info('agent.onMessage', {
+        agent: this.id,
+        conv: conversationId,
+        dispatcher: dispatcher.kind,
+        model: dispatcher.defaultModel,
+      });
+
+      const events = this.turnEvents(conversationId);
+      const resp = await dispatcher.chat({
+        messages, conversation_id: conversationId, caller_label: req.caller_label ?? null,
+        onEvent: events.onEvent, signal: turn.signal,
+      } satisfies ChatRequest);
+
+      const reply = storedReply(resp, events.streamed());
+      const assistantAt = Date.now() / 1000;
+      const assistantMsgId = this.deps.conversations.append(
+        conversationId, 'assistant', reply, null, undefined, userMsgId, resp.tool_calls);
+      const written = await this.persistAfterTurn(req.message, reply);
+      await this.recordTurn(
+        conversationId,
+        {
+          text: req.message,
+          id: userMsgId,
+          at: userAt,
+          callerLabel: req.caller_label ?? null,
+          attachments,
+        },
+        {
+          text: reply,
+          id: assistantMsgId,
+          at: assistantAt,
+          model: resp.model,
+          usage: resp.usage,
+          latencyMs: Math.round((assistantAt - userAt) * 1000),
+        },
+      );
+
+      return {
+        conversation_id: conversationId,
+        reply,
+        memories_written: written,
+        dispatcher_used: dispatcher.kind,
+        model_used: resp.model,
+        ...(resp.stopped ? { stopped: true } : {}),
+      };
+    } finally {
+      turn.end();
+      this.publishAsk('ask-end', conversationId);
     }
-
-    const messages: ChatMessage[] = [
-      { role: 'system', content: this.systemPrompt },
-      ...contextMsgs,
-      ...history,
-    ];
-
-    const dispatcher = await this.selectDispatcher(req.message);
-
-    logger.info('agent.onMessage', {
-      agent: this.id,
-      conv: conversationId,
-      dispatcher: dispatcher.kind,
-      model: dispatcher.defaultModel,
-    });
-
-    const resp = await dispatcher.chat({
-      messages, conversation_id: conversationId, caller_label: req.caller_label ?? null,
-    } satisfies ChatRequest);
-
-    const assistantAt = Date.now() / 1000;
-    const assistantMsgId = this.deps.conversations.append(conversationId, 'assistant', resp.content, null, undefined, userMsgId);
-    const written = await this.persistAfterTurn(req.message, resp.content);
-    await this.recordTurn(
-      conversationId,
-      {
-        text: req.message,
-        id: userMsgId,
-        at: userAt,
-        callerLabel: req.caller_label ?? null,
-        attachments,
-      },
-      {
-        text: resp.content,
-        id: assistantMsgId,
-        at: assistantAt,
-        model: resp.model,
-        usage: resp.usage,
-        latencyMs: Math.round((assistantAt - userAt) * 1000),
-      },
-    );
-
-    return {
-      conversation_id: conversationId,
-      reply: resp.content,
-      memories_written: written,
-      dispatcher_used: dispatcher.kind,
-      model_used: resp.model,
-    };
   }
 }

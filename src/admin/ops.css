@@ -282,10 +282,43 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .admin-login-input { width: 100%; margin-bottom: 1rem; font-family: var(--mono); }
 .admin-login-card button { width: 100%; padding: 9px; }
 
+@media (max-width: 900px) {
+  :root {
+    --tabbar-h: 52px;
+    --tabbar-space: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+  }
+  :root.keyboard-up { --tabbar-space: 0px; }
+  .rail {
+    inset: auto 0 0 0; width: auto;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+    flex-direction: row; gap: 0;
+    padding: 0 max(4px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(4px, env(safe-area-inset-left, 0px));
+    border-right: 0; border-top: 1px solid #1c212b;
+    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar { display: none; }
+  :root.keyboard-up .rail,
+  .rail > :is(.rail-logo, .rail-sep, .rail-spacer, .rail-health) { display: none; }
+  .rail-btn { flex: 1 0 0; min-width: 48px; width: auto; }
+  /* The marker hugs the icon rather than filling the whole cell. */
+  .rail-btn::before {
+    content: ""; position: absolute; z-index: -1;
+    inset: 6px max(2px, calc(50% - 28px)); border-radius: 16px;
+  }
+  .rail-btn:hover, .rail-btn.active { background: none; box-shadow: none; }
+  .rail-btn:hover::before { background: var(--panel-2); }
+  .rail-btn.active::before {
+    background: rgba(110, 168, 255, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.25);
+  }
+  .rail-badge { right: auto; left: calc(50% + 4px); }
+
+  .page { margin-left: 0; padding-bottom: var(--tabbar-space); }
+}
+
 /* ---- responsive ------------------------------------------------------ */
 @media (max-width: 900px) {
-  .rail { display: none; }
-  .page { margin-left: 0; }
   .status-strip { grid-template-columns: minmax(0, 1fr); }
   .approval-grid { grid-template-columns: minmax(0, 1fr); }
   .bottom-grid { grid-template-columns: minmax(0, 1fr); }

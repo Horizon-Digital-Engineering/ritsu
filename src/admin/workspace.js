@@ -12,6 +12,10 @@
 //   #/a/<agentId>/p/<projId>   → a project
 //   #/a/<agentId>/files        → the workspace file browser
 
+import {
+  voiceProblem, startRecording, speakable, canSpeak, primeSpeech, speak, stopSpeaking, speaking,
+} from '/admin/voice.js';
+
 // Fire-and-forget for handlers that start async work and move on: a rejection
 // becomes a visible toast instead of an unhandled promise in the console.
 function background(promise) { promise.catch(e => toast(e?.message || String(e), 'err')); }
@@ -112,15 +116,22 @@ async function ensureAdminToken(reason) {
 
 /** Every admin API request carries the token via X-Ritsu-Admin-Token. A 401
  *  clears it and re-prompts, then retries once. */
-async function api(method, path, body) {
+async function api(method, path, body, rawType) {
   if (!getAdminToken()) {
     const got = await ensureAdminToken('Admin token required.');
     if (!got) throw new Error('admin token required');
   }
   const doFetch = () => {
     const headers = { 'X-Ritsu-Admin-Token': getAdminToken() };
-    if (body) headers['Content-Type'] = 'application/json';
-    return fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    let payload;
+    if (rawType) {
+      headers['Content-Type'] = rawType;
+      payload = body;
+    } else if (body) {
+      headers['Content-Type'] = 'application/json';
+      payload = JSON.stringify(body);
+    }
+    return fetch(path, { method, headers, body: payload });
   };
   let r = await doFetch();
   if (r.status === 401) {
@@ -167,7 +178,7 @@ async function sseReadBody(body, onEvent, signal) {
   }
 }
 
-async function sseFetch(path, onEvent, signal) {
+async function sseFetch(path, onEvent, signal, onOpen) {
   // Reconnect loop: one live stream at a time, next attempt only after the last drops.
   while (!signal.aborted) {
     try {
@@ -176,6 +187,7 @@ async function sseFetch(path, onEvent, signal) {
         signal,
       });
       if (!r.ok || !r.body) throw new Error(`sse ${r.status}`);
+      onOpen?.();
       await sseReadBody(r.body, onEvent, signal);
     } catch (e) {
       if (signal.aborted) return;
@@ -212,10 +224,10 @@ let searchQuery = '';
 let searchHits = null;
 let searchSeq = 0;
 let showArchived = false;
-let sending = false;
 let attachments = [];       // pasted/dropped/picked but not yet sent
 let contextChips = [];      // { label, text } — server-fenced context to prepend
 const inFlight = new Set(); // conversation ids someone is mid-turn on
+const ownTurns = new Set(); // conversation ids this page has an /ask or /regenerate open on
 
 // Sequence guards: a slow response for an agent/chat the operator has already
 // navigated away from must not paint over the newer one.
@@ -271,6 +283,7 @@ async function onRoute() {
 async function applyView(r) {
   showView(r.view);
   closeSidebar();
+  if (r.view !== 'chat') endVoice();
   if (r.view === 'chat') {
     const target = r.cid ?? defaultChat?.conversation_id ?? null;
     if (target !== convoId) await openChat(target);
@@ -563,6 +576,7 @@ function renderChatHead() {
 }
 
 async function openChat(cid) {
+  endVoice();
   convoId = cid;
   clearAttachments();
   clearContextChips();
@@ -571,6 +585,7 @@ async function openChat(cid) {
   pathChoice = loadPathChoice(cid);
   lastMessages = [];
   renderChatHead();
+  syncComposer();
   const t = $('transcript');
   if (!cid) { t.innerHTML = '<div class="empty">No conversation yet — send something below.</div>'; return; }
   const seq = ++txSeq;
@@ -619,26 +634,36 @@ function cancelEdit() {
 
 async function regenerateMsg(idx) {
   const m = lastRendered[idx];
-  if (!m?.id || !convoId || sending) return;
-  sending = true;
-  $('ask-send').disabled = true;
-  ensurePendingBubble();
+  const cid = convoId;
+  if (!m?.id || cid == null || turnRunning()) return;
+  ownTurns.add(cid);
+  // The new sibling will be the newest child, so the walk lands on it.
+  unpin(m.parent_message_id);
+  regenSlot = { cid, parent: m.parent_message_id };
+  renderPath();
+  trackLive(cid, false);
+  syncComposer();
   try {
-    await api('POST', `/admin/api/conversations/${convoId}/regenerate`, { assistant_message_id: m.id });
-    unpin(m.parent_message_id);   // the new sibling is newest — let it win
+    await api('POST', `/admin/api/conversations/${cid}/regenerate`, { assistant_message_id: m.id });
+    regenSlot = null;
+    endOwnTurn(cid);
     await reloadTranscript();
     scheduleRefresh();
   } catch (e) {
-    removePendingBubble();
-    toast(e.message, 'err');
+    regenSlot = null;
+    if (lives.get(cid)?.finished === false) dropLive(cid);
+    renderPath();
+    toast(errText(e), 'err');
   } finally {
-    sending = false;
-    $('ask-send').disabled = false;
+    ownTurns.delete(cid);
+    if (stopWhenStarted === cid) stopWhenStarted = null;
+    syncComposer();
   }
 }
 
 /** Send a literal message as a normal turn (the Continue button). */
 function sendLiteral(text) {
+  if (turnRunning()) return;
   cancelEdit();
   $('ask-input').value = text;
   autosize();
@@ -775,7 +800,9 @@ function md(raw) {
     .replace(/^# (.+)$/gm, '<h2>$1</h2>');
   text = text
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*\s][^*\n]*?)\*(?!\*)/g, '$1<em>$2</em>');
+    .replace(/(^|[^*])\*([^*\s][^*\n]*?)\*(?!\*)/g, '$1<em>$2</em>')
+    // _italic_ only between spaces or line ends, so snake_case and URLs keep their underscores.
+    .replace(/(^|\s)_([^_\s][^_\n]*?)_(?=$|[\s.,;:!?)])/gm, '$1<em>$2</em>');
   // esc() ran first, so a quote in the URL is already &quot; and cannot
   // break out of the attribute; the ^https? anchor shuts out javascript: etc.
   text = text.replace(/\[([^[\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
@@ -887,6 +914,10 @@ function msgToolsHtml(node, i, flat, isLastAssistant) {
   if (m.role === 'user' && m.id != null && m.content) {
     bits.push(`<button type="button" class="msg-tool" data-action="edit-msg" data-idx="${i}">Edit</button>`);
   }
+  if (m.role === 'assistant' && m.content && canSpeak()) {
+    const on = readingId != null && readingId === m.id;
+    bits.push(`<button type="button" class="msg-tool" data-action="read-aloud" data-idx="${i}" aria-pressed="${on}">${on ? 'Stop reading' : 'Read aloud'}</button>`);
+  }
   if (isLastAssistant && m.id != null) {
     bits.push(`<button type="button" class="msg-tool" data-action="regen-msg" data-idx="${i}">Regenerate</button>`
       + '<button type="button" class="msg-tool" data-action="continue-msg">Continue</button>');
@@ -899,13 +930,39 @@ function msgToolsHtml(node, i, flat, isLastAssistant) {
 
 function renderTranscript(messages) {
   lastMessages = (messages || []).filter(m => m.role !== 'system');
+  // A finished live answer stood in for its stored row, which this fetch carries.
+  if (lives.get(convoId)?.finished) dropLive(convoId);
   renderPath();
+}
+
+let renderedFor = null;
+
+function nearBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+// New content and a shrinking view (voice bar, keyboard) pull the transcript
+// along only while the reader is at its end.
+let followEnd = true;
+let autoTop = -1;   // where the page itself last scrolled to
+function scrollToEnd() {
+  const t = $('transcript');
+  t.scrollTop = t.scrollHeight;
+  autoTop = t.scrollTop;
+}
+
+function openDetailKeys(root) {
+  return new Set([...root.querySelectorAll('details[open][data-key]')].map(d => d.dataset.key));
 }
 
 /** Paint the chosen path. Cheap enough to re-run on every arrow click, so a
  *  fork switch never refetches. */
 function renderPath() {
   const t = $('transcript');
+  const same = renderedFor === convoId;
+  const stick = !same || followEnd;
+  const prevTop = t.scrollTop;
+  const opened = same ? openDetailKeys(t) : new Set();
   if (!lastMessages.length) {
     lastRendered = [];
     t.innerHTML = '<div class="empty">No messages yet — send something below.</div>';
@@ -919,6 +976,7 @@ function renderPath() {
     for (let i = 0; i < path.length; i++) if (path[i].msg.role === 'assistant') lastAssistant = i;
     t.innerHTML = path.map((node, i) => {
       const m = node.msg;
+      if (m.role === 'assistant' && regenSlot?.cid === convoId && String(node.parentKey) === String(regenSlot.parent)) return '';
       const byline = m.role === 'user' && m.caller_label && agentIds.has(m.caller_label)
         ? `<div class="msg-byline">${esc(m.caller_label)}</div>` : '';
       const attImgs = (m.attachments || []).map(a =>
@@ -931,11 +989,18 @@ function renderPath() {
         ? `<button type="button" class="msg-copy" data-action="copy-msg" data-idx="${i}" aria-label="Copy message">copy</button>` : '';
       const when = m.created_at ? ` title="${esc(new Date(m.created_at * 1000).toLocaleString())}"` : '';
       const tools = msgToolsHtml(node, i, flat, i === lastAssistant);
-      return `<div class="msg ${esc(m.role)}"${when}>${byline}${body}${atts}${tools}${copy}</div>`;
+      const calls = m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length
+        ? toolGroupHtml(m.tool_calls, m.id) : '';
+      return `<div class="msg ${esc(m.role)}"${when}>${byline}${calls}${body}${atts}${tools}${copy}</div>`;
     }).join('');
   }
-  if (convoId !== null && inFlight.has(convoId)) ensurePendingBubble();
-  t.scrollTop = t.scrollHeight;
+  for (const d of t.querySelectorAll('details[data-key]')) if (opened.has(d.dataset.key)) d.open = true;
+  renderedFor = convoId;
+  const lv = convoId == null ? null : lives.get(convoId);
+  if (lv && !lv.finished) attachLive(lv);
+  followEnd = stick;
+  if (stick) scrollToEnd();
+  else t.scrollTop = prevTop;
   renderMath(t);
   renderMermaid(t);
 }
@@ -964,80 +1029,329 @@ function appendMsg(role, content, attachmentUrls) {
     div.appendChild(wrap);
   }
   t.appendChild(div);
-  t.scrollTop = t.scrollHeight;
+  followEnd = true;
+  scrollToEnd();
   return div;
 }
 
-/** Idempotent: repeated ask-start events only ever produce one bubble. */
-function ensurePendingBubble() {
-  const t = $('transcript');
-  if (t.querySelector('.msg.pending')) return;
-  if (t.querySelector('.empty')) t.innerHTML = '';
-  const div = document.createElement('div');
-  div.className = 'msg assistant pending';
-  div.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
-  t.appendChild(div);
-  t.scrollTop = t.scrollHeight;
-}
-function removePendingBubble() {
-  $('transcript').querySelector('.msg.pending')?.remove();
+// Every turn the stream reports is followed, open chat or not, so a chat
+// opened mid-answer shows the answer so far.
+const lives = new Map();
+/** A regenerate in progress: the answer it replaces stays hidden meanwhile. */
+let regenSlot = null;
+
+/** A `partial` turn was joined midway: its earlier text never reached this page, so none shows. */
+function trackLive(cid, partial) {
+  let lv = lives.get(cid);
+  if (!lv || lv.finished) {
+    if (lv) dropLive(cid);
+    lv = { cid, text: '', calls: new Map(), partial, finished: false, lastKind: null, el: null, raf: 0 };
+    lives.set(cid, lv);
+  }
+  if (cid === convoId && !lv.el?.isConnected) attachLive(lv);
+  return lv;
 }
 
-async function sendAsk() {
-  if (sending || !agentId) return;
+function attachLive(lv) {
+  const t = $('transcript');
+  if (!lv.el) {
+    lv.el = document.createElement('div');
+    lv.el.className = 'msg assistant live';
+    lv.el.setAttribute('aria-busy', 'true');
+    lv.el.innerHTML = '<details class="tool-group hidden" open><summary class="tool-group-sum"></summary><div class="tool-list"></div></details>'
+      + '<div class="live-text"></div>'
+      + '<span class="typing" aria-hidden="true"><span></span><span></span><span></span></span>';
+  }
+  if (lv.el.parentNode !== t) {
+    t.querySelector(':scope > .empty')?.remove();
+    t.appendChild(lv.el);
+  }
+  syncLiveTools(lv);
+  paintLive(lv);
+}
+
+function scheduleLivePaint(lv) {
+  if (lv.raf || !lv.el?.isConnected) return;
+  lv.raf = requestAnimationFrame(() => { lv.raf = 0; paintLive(lv); });
+}
+
+function liveVisible(text) {
+  const low = text.toLowerCase();
+  const open = Math.max(low.lastIndexOf('<think>'), low.lastIndexOf('<thinking>'));
+  const close = Math.max(low.lastIndexOf('</think>'), low.lastIndexOf('</thinking>'));
+  return open > close ? { text: text.slice(0, open), thinking: true } : { text, thinking: false };
+}
+
+function paintLive(lv) {
+  if (!lv.el?.isConnected) return;
+  const { text, thinking } = lv.partial ? { text: '', thinking: false } : liveVisible(lv.text);
+  const box = lv.el.querySelector('.live-text');
+  if (box.dataset.len !== String(text.length)) {
+    box.innerHTML = text.trim() ? md(text) : '';
+    box.dataset.len = String(text.length);
+  }
+  const writing = lv.lastKind === 'text' && !thinking && !!text.trim();
+  lv.el.querySelector('.typing').classList.toggle('hidden', writing || lv.finished);
+  if (followEnd) scrollToEnd();
+}
+
+/** The stored row is on its way: keep the text up until the reload paints it. */
+function finishLive(cid) {
+  const lv = lives.get(cid);
+  if (regenSlot?.cid === cid) regenSlot = null;
+  if (!lv) return;
+  cancelAnimationFrame(lv.raf);
+  lv.raf = 0;
+  lv.finished = true;
+  if (cid === convoId) paintLive(lv);
+  else lives.delete(cid);
+}
+
+/** The stream's closing events can arrive late (a proxy or the browser holding them back). */
+function endOwnTurn(cid) {
+  if (cid == null) return;
+  inFlight.delete(cid);
+  finishLive(cid);
+}
+
+function dropLive(cid) {
+  const lv = lives.get(cid);
+  if (!lv) return;
+  cancelAnimationFrame(lv.raf);
+  lv.el?.remove();
+  lives.delete(cid);
+}
+
+/** After missed events nothing live can be trusted; our own open request is still a running turn. */
+function resyncLive() {
+  for (const cid of [...lives.keys()]) dropLive(cid);
+  inFlight.clear();
+  if (convoId != null && ownTurns.has(convoId)) trackLive(convoId, true);
+  syncComposer();
+}
+
+function markRunning(cid) {
+  if (inFlight.has(cid)) return;
+  inFlight.add(cid);
+  if (cid === convoId) syncComposer();
+}
+
+function onLiveEvent(ev) {
+  const cid = ev.conversation_id;
+  markRunning(cid);
+  const lv = trackLive(cid, true);
+  if (ev.kind === 'delta') {
+    lv.text += String(ev.text ?? '');
+    lv.lastKind = 'text';
+  } else {
+    const call = { ...ev.call, id: String(ev.call.id) };
+    lv.calls.set(call.id, call);
+    lv.lastKind = 'tool';
+    if (lv.el?.isConnected) syncLiveTools(lv);
+  }
+  scheduleLivePaint(lv);
+}
+
+function toolNameParts(name) {
+  const s = String(name ?? '');
+  const m = /^mcp__(.+?)__(.+)$/.exec(s);
+  return m ? { tool: m[2], server: m[1] } : { tool: s, server: '' };
+}
+
+const TOOL_STATES = { running: 'running', done: 'done', error: 'failed' };
+
+function prettyArgs(args) {
+  const s = String(args ?? '');
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
+}
+
+function toolChipHtml(call, key) {
+  const { tool, server } = toolNameParts(call.name);
+  const st = Object.hasOwn(TOOL_STATES, call.status) ? call.status : 'done';
+  const label = st === 'error' && call.result === 'stopped' ? 'stopped' : TOOL_STATES[st];
+  let out;
+  if (st === 'running') out = '<div class="tool-wait">waiting for the result…</div>';
+  else if (call.result) out = `<pre class="tool-pre">${esc(call.result)}</pre>`;
+  else out = '<div class="tool-wait">(no output)</div>';
+  return `<details class="tool-chip ${st}" data-call-id="${esc(call.id)}"${key ? ` data-key="${esc(key)}"` : ''}>`
+    + `<summary title="${esc(call.name)}"><span class="tool-ico" aria-hidden="true"></span>`
+    + `<span class="tool-name">${esc(tool)}</span>`
+    + (server ? `<span class="tool-srv">${esc(server)}</span>` : '')
+    + `<span class="tool-state">${label}</span></summary>`
+    + '<div class="tool-body"><div class="tool-label">Input</div>'
+    + `<pre class="tool-pre">${esc(prettyArgs(call.args))}</pre>`
+    + `<div class="tool-label">Output</div>${out}</div></details>`;
+}
+
+function toolGroupLabel(calls) {
+  const running = calls.filter(c => c.status === 'running');
+  if (running.length === 1) return `Running ${toolNameParts(running[0].name).tool}…`;
+  if (running.length > 1) return `Running ${running.length} tools…`;
+  const stopped = calls.filter(c => c.status === 'error' && c.result === 'stopped').length;
+  const failed = calls.filter(c => c.status === 'error').length - stopped;
+  return `Used ${calls.length} tool${calls.length === 1 ? '' : 's'}`
+    + (failed ? ` · ${failed} failed` : '') + (stopped ? ` · ${stopped} stopped` : '');
+}
+
+function toolGroupHtml(calls, msgId) {
+  return `<details class="tool-group" data-key="g${esc(msgId)}">`
+    + `<summary class="tool-group-sum">${esc(toolGroupLabel(calls))}</summary>`
+    + `<div class="tool-list">${calls.map(c => toolChipHtml(c, `c${msgId}:${c.id}`)).join('')}</div></details>`;
+}
+
+/** In place, chip by chip, so one the operator opened stays open. */
+function syncLiveTools(lv) {
+  const group = lv.el.querySelector('.tool-group');
+  const list = group.querySelector('.tool-list');
+  const calls = [...lv.calls.values()];
+  group.classList.toggle('hidden', !calls.length);
+  if (!calls.length) return;
+  group.querySelector('.tool-group-sum').textContent = toolGroupLabel(calls);
+  calls.forEach((call, i) => {
+    const sig = `${call.status}:${String(call.result ?? '').length}`;
+    const cur = list.children[i];
+    if (cur?.dataset.callId === call.id && cur.dataset.sig === sig) return;
+    const tpl = document.createElement('template');
+    tpl.innerHTML = toolChipHtml(call);
+    const chip = tpl.content.firstElementChild;
+    chip.dataset.sig = sig;
+    if (cur?.dataset.callId === call.id) {
+      chip.open = cur.open;
+      cur.replaceWith(chip);
+    } else {
+      list.insertBefore(chip, cur ?? null);
+    }
+  });
+}
+
+function errText(e) { return e?.message || String(e); }
+
+/** fetch() rejects with a TypeError when the connection itself failed. */
+function isNetworkError(e) {
+  return e?.name === 'TypeError' || /load failed|networkerror|failed to fetch|network connection was lost/i.test(errText(e));
+}
+
+function turnRunning() {
+  return convoId != null && (ownTurns.has(convoId) || inFlight.has(convoId));
+}
+
+function syncComposer() {
+  const running = turnRunning();
+  $('ask-send').classList.toggle('hidden', running);
+  $('ask-stop').classList.toggle('hidden', !running);
+  syncVoiceUi();
+}
+
+/** A Stop pressed before its turn had started: stop that turn as soon as it starts. */
+let stopWhenStarted = null;
+
+async function stopTurn() {
+  const cid = convoId;
+  if (cid == null) return;
+  const btn = $('ask-stop');
+  btn.disabled = true;
+  try {
+    const r = await api('POST', `/admin/api/conversations/${cid}/stop`);
+    if (!r?.stopped && ownTurns.has(cid)) stopWhenStarted = cid;
+  } catch (e) {
+    toast(errText(e), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function turnReachedServer(cid, lastIdBefore, message) {
+  if (cid == null) return false;
+  try {
+    const { messages } = await api('GET', `/admin/api/conversations/${cid}`);
+    if (convoId === cid) renderTranscript(messages);
+    if (inFlight.has(cid)) return true;
+    return (messages || []).some(m => m.role === 'user' && (m.id ?? 0) > lastIdBefore && m.content === message);
+  } catch {
+    return inFlight.has(cid);
+  }
+}
+
+/** Typed sends wait for the running turn; Stop is the way to cut it short. */
+function sendFromBox() {
+  if (!turnRunning()) background(sendAsk());
+}
+
+async function sendAsk(opts = {}) {
+  const cid = convoId;
+  if (!agentId || ownTurns.has(cid)) return { ok: false };
   const input = $('ask-input');
-  const msg = input.value.trim();
+  const fromBox = opts.text === undefined;
+  const msg = (fromBox ? input.value : opts.text).trim();
   // An image-only turn ("look at this") is valid — require text OR an image.
-  if (!msg && !attachments.length) return;
-  sending = true;
-  $('ask-send').disabled = true;
+  if (!msg && !attachments.length) return { ok: false };
+  ownTurns.add(cid);
   closePalette();
-  input.value = '';
-  autosize();
+  if (fromBox) {
+    input.value = '';
+    autosize();
+  }
   // Snapshot + clear so the tray empties immediately and a double-tap can't
   // resend; restored into the tray if the send fails.
   const sent = attachments;
   const chips = contextChips;
-  const editParent = editing ? editing.parent_message_id : undefined;
+  const editParent = fromBox && editing ? editing.parent_message_id : undefined;
   attachments = [];
   contextChips = [];
   renderAttachTray();
+  const lastIdBefore = lastMessages.reduce((n, m) => Math.max(n, m.id ?? 0), 0);
   const optimistic = appendMsg('user', msg, sent.map(a => a.url));
+  if (cid != null) trackLive(cid, false);
+  syncComposer();
+  // Chip text arrives from the server already wrapped in the untrusted
+  // fence — it is prepended verbatim, never unwrapped or re-fenced.
+  const prefix = chips.map(c => c.text).filter(Boolean).join('\n\n');
+  const body = { message: prefix ? `${prefix}\n\n${msg}` : msg };
+  if (cid != null) body.conversation_id = cid;
+  if (editParent !== undefined) body.parent_message_id = editParent;
+  if (sent.length) body.attachments = sent.map(a => ({ media_type: a.media_type, data: a.data }));
   try {
-    // Chip text arrives from the server already wrapped in the untrusted
-    // fence — it is prepended verbatim, never unwrapped or re-fenced.
-    const prefix = chips.map(c => c.text).filter(Boolean).join('\n\n');
-    const body = { message: prefix ? `${prefix}\n\n${msg}` : msg };
-    if (convoId) body.conversation_id = convoId;
-    if (editParent !== undefined) body.parent_message_id = editParent;
-    if (sent.length) body.attachments = sent.map(a => ({ media_type: a.media_type, data: a.data }));
     const resp = await api('POST', `/admin/agents/${encodeURIComponent(agentId)}/ask`, body);
-    if (resp?.conversation_id) convoId = resp.conversation_id;
+    if (convoId === cid && resp?.conversation_id) convoId = resp.conversation_id;
+    endOwnTurn(resp?.conversation_id ?? cid);
     if (editParent !== undefined) { unpin(editParent); cancelEdit(); }
     await reloadTranscript();
     scheduleRefresh();
+    return { ok: true, reply: String(resp?.reply ?? ''), stopped: !!resp?.stopped };
   } catch (e) {
+    // The connection can die after the server took the turn (a phone locking
+    // mid-answer); putting the text back then would invite sending it twice.
+    if (isNetworkError(e) && await turnReachedServer(cid, lastIdBefore, body.message)) {
+      if (editParent !== undefined) { unpin(editParent); cancelEdit(); }
+      toast('Connection dropped — the message got through; the answer will show here.', 'err');
+      return { ok: false, dropped: true };
+    }
     // Losing the operator's text into the void is the worst failure here, so
     // put the bubble away and the message (and images) back in the box.
     optimistic.remove();
-    removePendingBubble();
-    input.value = msg;
+    if (cid != null && lives.get(cid)?.finished === false && !inFlight.has(cid)) dropLive(cid);
+    // Anything typed or dictated meanwhile stays, after the restored text.
+    const typed = input.value.trim();
+    input.value = msg && typed ? `${msg}\n${typed}` : (msg || typed);
     autosize();
     attachments = sent;
     contextChips = chips;
     renderAttachTray();
-    const friendly = /load failed|networkerror|failed to fetch/i.test(e.message)
+    const friendly = isNetworkError(e)
       ? 'connection dropped — press Send to retry'
-      : `error: ${e.message}`;
+      : `error: ${errText(e)}`;
     const node = document.createElement('div');
     node.className = 'msg system';
     node.textContent = friendly;
     $('transcript').appendChild(node);
     toast(friendly, 'err');
+    return { ok: false };
   } finally {
-    sending = false;
-    $('ask-send').disabled = false;
-    input.focus();
+    ownTurns.delete(cid);
+    if (stopWhenStarted === cid) stopWhenStarted = null;
+    syncComposer();
+    // On a phone a refocus raises the keyboard over the answer.
+    if (fromBox && hoverCapable()) input.focus();
   }
 }
 
@@ -1191,6 +1505,368 @@ function openLightbox(src) {
 }
 function closeLightbox() { document.querySelectorAll('.lightbox').forEach(n => n.remove()); }
 
+const TALK_PAUSE_MS = 1500;
+const VOICE_LINES = {
+  starting: 'Starting the microphone…',
+  dictating: 'Listening. Tap ■ when you are done.',
+  transcribing: 'Transcribing…',
+  listening: 'Listening. Pause and it sends.',
+  hearing: 'Transcribing…',
+  thinking: 'Thinking…',
+  speaking: 'Speaking…',
+};
+/** Null until it loads; taps meanwhile still try, and the server explains. */
+let speech = null;
+/** `seq` moves on whenever voice work is abandoned, so late results drop out. */
+const voice = { mode: 'idle', talk: false, rec: null, seq: 0, meter: 0, limited: false, wake: null };
+let readingId = null;
+let readSeq = 0;
+
+async function loadSpeechStatus() {
+  try { speech = await api('GET', '/admin/api/speech'); }
+  catch { speech = null; }
+  syncVoiceUi();
+}
+
+function voiceBlocker() {
+  const problem = voiceProblem();
+  if (problem) return { text: problem, settings: false };
+  if (speech && !speech.engine) return { text: speech.sentence || 'No speech engine can run.', settings: true };
+  return null;
+}
+
+/** Explains and refuses when voice cannot work; the explanation is the whole point of the tap. */
+function voiceUsable() {
+  const b = voiceBlocker();
+  if (!b) {
+    hideVoiceNote();
+    return true;
+  }
+  showVoiceNote(b.text, b.settings);
+  if (b.settings) background(loadSpeechStatus());
+  return false;
+}
+
+/** Server sentences mark commands with backticks. */
+function showVoiceNote(text, settings = false) {
+  const box = $('voice-note-text');
+  box.replaceChildren();
+  String(text ?? '').split('`').forEach((part, i) => {
+    if (!part) return;
+    if (i % 2) {
+      const code = document.createElement('code');
+      code.textContent = part;
+      box.appendChild(code);
+    } else {
+      box.appendChild(document.createTextNode(part));
+    }
+  });
+  $('voice-note-link').classList.toggle('hidden', !settings);
+  $('voice-note').classList.remove('hidden');
+}
+function hideVoiceNote() { $('voice-note').classList.add('hidden'); }
+
+function speechMaxSeconds() { return Number(speech?.max_seconds) || 300; }
+
+function transcribe(wav) {
+  const q = convoId == null ? '' : `?conversation_id=${convoId}`;
+  return api('POST', `/admin/api/speech/transcribe${q}`, wav, 'audio/wav');
+}
+
+function fmtClock(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function setVoiceMode(mode) {
+  const recording = mode === 'dictating' || mode === 'listening';
+  if (recording && voice.mode !== mode) {
+    $('voice-level').style.transform = 'scaleX(0)';
+    $('voice-time').textContent = '0:00';
+  }
+  voice.mode = mode;
+  syncVoiceUi();
+}
+
+function paintMeter() {
+  const rec = voice.rec;
+  if (!rec) return;
+  const level = Math.min(1, Math.max(0, Number(rec.level()) || 0));
+  $('voice-level').style.transform = `scaleX(${level.toFixed(3)})`;
+  $('voice-time').textContent = fmtClock(rec.seconds());
+}
+
+function syncVoiceUi() {
+  const { mode, talk } = voice;
+  const form = $('ask-form');
+  form.dataset.voice = mode;
+  form.classList.toggle('talking', talk);
+
+  const bar = $('voice-bar');
+  bar.dataset.mode = mode;
+  bar.classList.toggle('hidden', mode === 'idle');
+  $('voice-tag').classList.toggle('hidden', !talk);
+  $('voice-line').textContent = VOICE_LINES[mode] ?? '';
+  const recording = mode === 'dictating' || mode === 'listening';
+  $('voice-meter').classList.toggle('hidden', !recording);
+  $('voice-time').classList.toggle('hidden', !recording);
+  $('voice-skip').classList.toggle('hidden', mode !== 'speaking');
+  $('voice-cancel').classList.toggle('hidden', talk || !['starting', 'dictating', 'transcribing'].includes(mode));
+  if (recording && !voice.meter) voice.meter = setInterval(paintMeter, 100);
+  else if (!recording && voice.meter) {
+    clearInterval(voice.meter);
+    voice.meter = 0;
+  }
+
+  const blocked = !!voiceBlocker();
+  const status = speech?.sentence && speech.engine ? ` ${speech.sentence}` : '';
+  const mic = $('voice-mic');
+  const micStops = !talk && (mode === 'dictating' || mode === 'starting');
+  mic.classList.toggle('voice-off', blocked);
+  mic.classList.toggle('recording', micStops);
+  mic.disabled = talk || mode === 'transcribing';
+  mic.setAttribute('aria-label', micStops ? 'Stop and transcribe' : 'Dictate');
+  mic.title = micStops ? 'Stop and transcribe' : `Dictate: speak, and the words land in the box.${status}`;
+
+  const tb = $('voice-talk');
+  tb.classList.toggle('voice-off', blocked);
+  tb.classList.toggle('on', talk);
+  tb.setAttribute('aria-pressed', String(talk));
+  tb.disabled = !talk && (mode !== 'idle' || turnRunning());
+  $('voice-talk-label').textContent = talk ? 'End' : 'Talk';
+  tb.title = talk ? 'End Talk' : `Talk: speak, it sends when you pause and reads the answer aloud.${status}`;
+}
+
+function micTapped() {
+  if (voice.talk) return;
+  if (voice.mode === 'dictating') { background(finishDictation()); return; }
+  if (voice.mode === 'starting') { endVoice(); return; }
+  if (voice.mode !== 'idle' || !voiceUsable()) return;
+  stopReading();
+  background(startDictation());
+}
+
+async function startDictation() {
+  const seq = ++voice.seq;
+  voice.limited = false;
+  // Before the first await: iOS starts audio only inside the tap itself.
+  const starting = startRecording({
+    maxSeconds: speechMaxSeconds(),
+    onLimit: () => {
+      if (seq !== voice.seq) return;
+      voice.limited = true;
+      background(finishDictation());
+    },
+  });
+  setVoiceMode('starting');
+  let rec;
+  try {
+    rec = await starting;
+  } catch (e) {
+    if (seq === voice.seq) {
+      setVoiceMode('idle');
+      showVoiceNote(errText(e));
+    }
+    return;
+  }
+  if (seq !== voice.seq) { rec.cancel(); return; }
+  voice.rec = rec;
+  setVoiceMode('dictating');
+}
+
+async function finishDictation() {
+  const rec = voice.rec;
+  if (!rec || voice.mode !== 'dictating') return;
+  voice.rec = null;
+  const seq = voice.seq;
+  setVoiceMode('transcribing');
+  try {
+    const heard = await transcribe(await rec.stop());
+    if (seq !== voice.seq) return;
+    if (heard?.text) {
+      insertDictation(heard.text);
+      if (voice.limited) showVoiceNote(`Recording stopped at the ${fmtClock(speechMaxSeconds())} limit.`);
+    } else {
+      showVoiceNote(heard?.note || 'Nothing was heard.');
+    }
+  } catch (e) {
+    if (seq === voice.seq) showVoiceNote(errText(e));
+  } finally {
+    if (seq === voice.seq) setVoiceMode('idle');
+  }
+}
+
+function insertDictation(text) {
+  const input = $('ask-input');
+  const before = input.value.replace(/\s+$/, '');
+  input.value = before ? `${before} ${text}` : text;
+  autosize();
+  if (hoverCapable()) {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+}
+
+function talkTapped() {
+  if (voice.talk) { endVoice(); return; }
+  if (voice.mode !== 'idle' || turnRunning() || !voiceUsable()) return;
+  stopReading();
+  primeSpeech();
+  cancelEdit();
+  voice.talk = true;
+  const seq = ++voice.seq;
+  // iOS Auto-Lock ignores the microphone and speech, and a locked screen ends Talk.
+  // Asked for in the tap itself: WebKit grants it only from a tap.
+  navigator.wakeLock?.request('screen').then(
+    (lock) => {
+      if (seq === voice.seq && voice.talk) voice.wake = lock;
+      else lock.release().catch(() => undefined);
+    },
+    () => undefined,
+  );
+  background(talkListen(seq));
+}
+
+async function talkListen(seq) {
+  if (seq !== voice.seq || !voice.talk) return;
+  const starting = startRecording({
+    maxSeconds: speechMaxSeconds(),
+    pauseMs: TALK_PAUSE_MS,
+    onPause: () => background(talkHeard(seq)),
+    onLimit: () => background(talkHeard(seq)),
+  });
+  setVoiceMode('listening');
+  let rec;
+  try {
+    rec = await starting;
+  } catch (e) {
+    if (seq === voice.seq) {
+      endVoice();
+      showVoiceNote(errText(e));
+    }
+    return;
+  }
+  if (seq !== voice.seq) { rec.cancel(); return; }
+  voice.rec = rec;
+}
+
+async function talkHeard(seq) {
+  const rec = voice.rec;
+  if (seq !== voice.seq || voice.mode !== 'listening' || !rec) return;
+  voice.rec = null;
+  setVoiceMode('hearing');
+  let heard;
+  try {
+    heard = await transcribe(await rec.stop());
+  } catch (e) {
+    if (seq === voice.seq) {
+      endVoice();
+      showVoiceNote(errText(e));
+    }
+    return;
+  }
+  if (seq !== voice.seq) return;
+  if (!heard?.text) {
+    showVoiceNote(heard?.note || 'Nothing was heard.');
+    background(talkListen(seq));
+    return;
+  }
+  hideVoiceNote();
+  // sendAsk refuses while this page's own turn runs (typed, Regenerate, Continue).
+  if (ownTurns.has(convoId)) {
+    endVoice();
+    insertDictation(heard.text);
+    showVoiceNote('An answer was still coming, so Talk stopped. What you said is in the message box.');
+    return;
+  }
+  setVoiceMode('thinking');
+  const res = await sendAsk({ text: heard.text });
+  if (seq !== voice.seq) return;
+  if (!res.ok) {
+    endVoice();
+    showVoiceNote(res.dropped
+      ? 'The connection dropped, so Talk stopped. The answer will still show in the chat.'
+      : 'That message did not go through, so Talk stopped.');
+    return;
+  }
+  const words = res.stopped ? '' : speakable(res.reply.replace(THINK_RE, ''));
+  if (!words.trim()) { background(talkListen(seq)); return; }
+  setVoiceMode('speaking');
+  speak(words, () => {
+    if (seq === voice.seq && voice.mode === 'speaking') background(talkListen(seq));
+  });
+}
+
+function voiceSkip() {
+  if (voice.mode !== 'speaking') return;
+  const seq = voice.seq;
+  stopSpeaking();
+  if (seq === voice.seq && voice.mode === 'speaking') background(talkListen(seq));
+}
+
+function endVoice() {
+  voice.seq++;
+  voice.talk = false;
+  voice.wake?.release().catch(() => undefined);
+  voice.wake = null;
+  const rec = voice.rec;
+  voice.rec = null;
+  rec?.cancel();
+  if (voice.mode === 'speaking' || readingId != null || speaking()) stopSpeaking();
+  readingId = null;
+  syncReadButtons();
+  setVoiceMode('idle');
+}
+
+// No mic left open behind the operator's back; iOS stops background capture anyway.
+function voiceToBackground() {
+  if (voice.talk) {
+    endVoice();
+    showVoiceNote('Talk ended when the page went to the background.');
+  } else if (voice.mode === 'dictating') {
+    background(finishDictation());
+  } else if (voice.mode === 'starting') {
+    endVoice();
+  }
+}
+
+function readAloud(idx) {
+  const m = lastRendered[idx];
+  if (!m?.content) return;
+  // Dictation is recording: the reading would land in the box with the operator's words.
+  if (voice.mode === 'starting' || voice.mode === 'dictating') return;
+  const again = readingId === m.id;
+  if (voice.talk) endVoice();
+  else stopSpeaking();
+  readingId = null;
+  if (!again) {
+    const token = ++readSeq;
+    readingId = m.id;
+    speak(speakable(m.content.replace(THINK_RE, '')), () => {
+      if (token !== readSeq) return;
+      readingId = null;
+      syncReadButtons();
+    });
+  }
+  syncReadButtons();
+}
+
+// An open microphone would record the reading along with the operator.
+function stopReading() {
+  if (readingId == null && !speaking()) return;
+  stopSpeaking();
+  readingId = null;
+  syncReadButtons();
+}
+
+function syncReadButtons() {
+  for (const b of $('transcript').querySelectorAll('[data-action="read-aloud"]')) {
+    const on = readingId != null && lastRendered[Number(b.dataset.idx)]?.id === readingId;
+    b.textContent = on ? 'Stop reading' : 'Read aloud';
+    b.setAttribute('aria-pressed', String(on));
+  }
+}
+
 // ---- inline approval cards -------------------------------------------------
 // A gated tool call the agent is blocked on shows as a card right in the
 // transcript — approve/reject without leaving the chat.
@@ -1201,7 +1877,10 @@ async function refreshInlineApprovals() {
   try {
     const { approvals } = await api('GET', `/admin/api/approvals?conversation_id=${convoId}`);
     for (const a of approvals) t.insertAdjacentHTML('beforeend', approvalCardHtml(a));
-    if (approvals.length) t.scrollTop = t.scrollHeight;
+    if (approvals.length) {
+      followEnd = true;
+      scrollToEnd();
+    }
   } catch { /* best-effort — the operations board is the durable queue */ }
 }
 
@@ -1668,10 +2347,19 @@ function rerenderCurrentView() {
 let convoSseAbort = null;
 let approvalSseAbort = null;
 
+let convoStreamOpens = 0;
+/** Events sent while the stream was down are lost, so a reconnect resyncs. */
+function onConvoStreamOpen() {
+  if (convoStreamOpens++ === 0) return;
+  resyncLive();
+  background(reloadTranscript());
+  scheduleRefresh();
+}
+
 function openStreams() {
   if (!convoSseAbort) {
     convoSseAbort = new AbortController();
-    background(sseFetch('/admin/api/conversations/stream', onConvoEvent, convoSseAbort.signal));
+    background(sseFetch('/admin/api/conversations/stream', onConvoEvent, convoSseAbort.signal, onConvoStreamOpen));
   }
   if (!approvalSseAbort) {
     approvalSseAbort = new AbortController();
@@ -1683,18 +2371,35 @@ function closeStreams() {
   approvalSseAbort?.abort();
   convoSseAbort = null;
   approvalSseAbort = null;
-  inFlight.clear();
+  resyncLive();
 }
 
 /** The stream carries every conversation event on the server; filter here. */
 function onConvoEvent(ev) {
+  const cid = ev.conversation_id;
+  if (ev.kind === 'delta' || ev.kind === 'tool') {
+    if (ev.kind === 'tool' && ev.call?.id == null) return;
+    onLiveEvent(ev);
+    return;
+  }
   if (ev.agent_id === agentId) scheduleRefresh();
-  if (ev.kind === 'ask-start') inFlight.add(ev.conversation_id);
-  if (ev.kind === 'ask-end') inFlight.delete(ev.conversation_id);
-  if (ev.conversation_id !== convoId) return;
+  if (ev.kind === 'ask-start') {
+    inFlight.add(cid);
+    trackLive(cid, false);
+    if (stopWhenStarted === cid) {
+      stopWhenStarted = null;
+      background(api('POST', `/admin/api/conversations/${cid}/stop`));
+    }
+  } else if (ev.kind === 'message' && ev.role === 'assistant') {
+    finishLive(cid);
+  } else if (ev.kind === 'ask-end') {
+    inFlight.delete(cid);
+    // Ended without an answer row (an error): nothing will replace the live bubble.
+    if (lives.get(cid)?.finished === false) dropLive(cid);
+  }
+  if (cid !== convoId) return;
   if (ev.kind === 'message') background(reloadTranscript());
-  else if (ev.kind === 'ask-start') ensurePendingBubble();
-  else if (ev.kind === 'ask-end') removePendingBubble();
+  syncComposer();
 }
 
 function onApprovalEvent(ev) {
@@ -1714,12 +2419,15 @@ function onApprovalEvent(ev) {
 // SSE connection can sit there delivering nothing. On every return to visible,
 // force-reconnect and re-read the thread.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !agentId) return;
+  if (document.visibilityState === 'hidden') { voiceToBackground(); return; }
+  if (!agentId) return;
   closeStreams();
   openStreams();
   background(reloadTranscript());
+  background(loadSpeechStatus());
   scheduleRefresh();
 });
+window.addEventListener('pagehide', () => endVoice());
 
 // ---- sidebar / menu chrome -------------------------------------------------
 function openSidebar() {
@@ -2752,6 +3460,13 @@ const ACTIONS = {
   'download-file': (el) => downloadFile(el.dataset.path),
   'delete-file': (el) => deleteFile(el.dataset.path),
   'untag-file': (el) => tagFile(el.dataset.path, null),
+  'stop-turn': () => background(stopTurn()),
+  'voice-mic': micTapped,
+  'voice-talk': talkTapped,
+  'voice-cancel': endVoice,
+  'voice-skip': voiceSkip,
+  'voice-note-close': hideVoiceNote,
+  'read-aloud': (el) => readAloud(Number(el.dataset.idx)),
 };
 
 const CHANGES = {
@@ -2787,6 +3502,7 @@ document.addEventListener('keydown', (e) => {
   if ($('modal-host').firstChild) { closeModal(); return; }
   if (paletteOpen()) { closePalette(); return; }
   if ($('agent-menu').classList.contains('open') || document.querySelector('.row-menu.open')) { closeMenus(); return; }
+  if (voice.talk || voice.mode !== 'idle' || readingId != null) { endVoice(); return; }
   if (editing) { cancelEdit(); return; }
   if (!$('artifact-panel').classList.contains('hidden')) { closeArtifact(); return; }
   if ($('sidebar').classList.contains('open')) closeSidebar();
@@ -2806,7 +3522,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---- composer wiring -------------------------------------------------------
-$('ask-form').addEventListener('submit', (e) => { e.preventDefault(); background(sendAsk()); });
+$('ask-form').addEventListener('submit', (e) => { e.preventDefault(); sendFromBox(); });
 $('ask-input').addEventListener('keydown', (e) => {
   // The palette owns the arrows and Enter while it is open.
   if (paletteOpen()) {
@@ -2816,7 +3532,8 @@ $('ask-input').addEventListener('keydown', (e) => {
     if (e.key === 'Tab') { e.preventDefault(); pickPalette(paletteIdx); return; }
     if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
   }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); background(sendAsk()); }
+  // isComposing: Enter that confirms an IME candidate is not a send.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendFromBox(); }
 });
 $('ask-input').addEventListener('input', () => { autosize(); syncPalette(); });
 $('ask-input').addEventListener('blur', () => {
@@ -2851,6 +3568,14 @@ composer.addEventListener('drop', (e) => {
   const dropped = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
   if (dropped.length) { e.preventDefault(); background(addAttachmentFiles(dropped)); }
 });
+
+$('transcript').addEventListener('scroll', () => {
+  const t = $('transcript');
+  // Our own follow can land after more content grew in; only the reader's scroll decides.
+  if (Math.abs(t.scrollTop - autoTop) < 2) return;
+  followEnd = nearBottom(t);
+}, { passive: true });
+new ResizeObserver(() => { if (followEnd) scrollToEnd(); }).observe($('transcript'));
 
 $('sidebar').addEventListener('mouseover', (e) => {
   const row = e.target.closest('[data-action="open-chat"][data-cid]');
@@ -2887,6 +3612,7 @@ async function refreshRailOpsBadge() {
 
 async function boot() {
   syncViewport();
+  syncVoiceUi();
   background(refreshRailOpsBadge());
   setInterval(refreshRailOpsBadge, 30_000);
   try {
@@ -2909,6 +3635,7 @@ async function boot() {
     return;
   }
   openStreams();
+  background(loadSpeechStatus());
   await onRoute();
 }
 

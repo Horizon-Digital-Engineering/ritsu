@@ -7,7 +7,7 @@
  *
  * Every integer id is remapped on insert, so nothing that exists is ever
  * overwritten; FKs are re-pointed through the maps (message parents,
- * attachment links, memory supersession/lineage, project filings).
+ * attachment and tool-call links, memory supersession/lineage, project filings).
  * Credentials NEVER merge: tokens, API keys, audit rows, channel configs,
  * settings — the live side keeps its own.
  */
@@ -231,7 +231,8 @@ class Merger {
       rep.inserted++;
     }
     this.mergeMessages();
-    this.mergeAttachments();
+    this.mergeMessageChildren('message_attachments');
+    this.mergeMessageChildren('message_tool_calls');
   }
 
   private mergeProjects(): void {
@@ -275,18 +276,18 @@ class Merger {
     }
   }
 
-  private mergeAttachments(): void {
-    if (!this.has('message_attachments')) return;
-    const rep = this.table('message_attachments');
-    const liveCols = this.liveColumnsStrict('message_attachments');
-    for (const row of this.rows('message_attachments', liveCols)) {
+  private mergeMessageChildren(table: 'message_attachments' | 'message_tool_calls'): void {
+    if (!this.has(table)) return;
+    const rep = this.table(table);
+    const liveCols = this.liveColumnsStrict(table);
+    for (const row of this.rows(table, liveCols)) {
       const newMsg = this.map('messages').get(Number(row.message_id));
       const newConv = this.map('conversations').get(Number(row.conversation_id));
       if (newMsg === undefined || newConv === undefined) { rep.skipped++; continue; }
       const { id: _id, ...rest } = row;
       rest.message_id = newMsg;
       rest.conversation_id = newConv;
-      this.insert('message_attachments', rest);
+      this.insert(table, rest);
       rep.inserted++;
     }
   }
@@ -296,7 +297,7 @@ class Merger {
   mergeAuxTables(): void {
     const handled = new Set([
       'agent_definitions', 'agent_workspaces', 'memories', 'raw_records',
-      'conversations', 'messages', 'message_attachments',
+      'conversations', 'messages', 'message_attachments', 'message_tool_calls',
       'agent_projects', 'agent_project_files',
     ]);
     for (const [table, raw] of Object.entries(this.file.tables)) {

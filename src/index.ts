@@ -32,6 +32,7 @@ import { SqliteChannelStore } from './channels/channel-store.js';
 import { ChannelRegistry } from './channels/registry.js';
 import { SqliteJobStore } from './scheduler/store.js';
 import { SchedulerRunner } from './scheduler/runner.js';
+import { SpeechService, storeSources } from './speech/index.js';
 import { logger } from './util/log.js';
 
 const cfg = loadConfig();
@@ -236,6 +237,7 @@ async function main(): Promise<void> {
     mcpUrl: `http://${cfg.mcpHost === '0.0.0.0' ? '127.0.0.1' : cfg.mcpHost}:${cfg.mcpPort}`,
     memoryBoot: { mode: memoryConfig.mode, remote: memoryConfig.flashback?.endpoint ?? null },
     settings,
+    speech: new SpeechService(storeSources(dataDirOf(cfg.dbPath), settings, apiKeys)),
   });
 
   const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, () => {
