@@ -3309,7 +3309,9 @@ async function rehearseBackup(name) {
     };
     const sameText = same.map(t => `${t.name} ${t.before}`).join(' · ');
     const unchanged = same.length ? `<p class="txt-muted">${same.length} table(s) unchanged: ${esc(sameText)}</p>` : '';
-    box.innerHTML = `<p><strong>Rehearsed ${esc(r.backup)}</strong> — schema ${r.schema_changed ? 'changes' : 'unchanged'}, ${(r.duration_ms / 1000).toFixed(1)} s · ok</p>`
+    const schemaLines = [...r.schema.added.map(k => `+ ${k}`), ...r.schema.removed.map(k => `- ${k}`), ...r.schema.altered.map(k => `~ ${k}`)];
+    const schemaNote = schemaLines.length ? `<p class="txt-muted">${esc(schemaLines.join(' · '))}</p>` : '';
+    box.innerHTML = `<p><strong>Rehearsed ${esc(r.backup)}</strong> — schema ${r.schema_changed ? 'changes' : 'unchanged'}, ${(r.duration_ms / 1000).toFixed(1)} s · ok</p>${schemaNote}`
       + (changed.length ? `<table><thead><tr><th>table</th><th>before</th><th>after</th></tr></thead><tbody>${changed.map(line).join('')}</tbody></table>` : '')
       + unchanged;
   } catch (e) {
