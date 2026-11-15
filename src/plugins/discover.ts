@@ -9,6 +9,12 @@ function isPlugin(x: unknown): x is Plugin {
   return !!m && typeof m === 'object' && typeof m.id === 'string';
 }
 
+export interface PluginScan {
+  plugins: Plugin[];
+  /** Folders with a plugin file that threw on import or exported no plugin. */
+  failed: string[];
+}
+
 /**
  * Auto-register first-party plugins by scanning sibling subdirectories for a
  * `plugin.{js,ts}` that exports a Plugin — no index.ts edit to add one, just
@@ -19,14 +25,14 @@ function isPlugin(x: unknown): x is Plugin {
  * Resolves relative to THIS module so it works both from the build
  * (dist/plugins/<name>/plugin.js) and under tsx in dev/test
  * (src/plugins/<name>/plugin.ts). A plugin that throws on import is logged and
- * skipped rather than crashing boot.
+ * skipped rather than crashing boot, and reported in `failed`.
  */
-export async function discoverPlugins(): Promise<Plugin[]> {
-  const here = dirname(fileURLToPath(import.meta.url));
+export async function scanPlugins(here = dirname(fileURLToPath(import.meta.url))): Promise<PluginScan> {
   const dirs = readdirSync(here, { withFileTypes: true })
     .filter(e => e.isDirectory())
     .map(e => e.name)
     .sort((a, b) => a.localeCompare(b));  // deterministic registration order
+  const failed: string[] = [];
   // Imports run concurrently; the sorted index, not import completion, decides
   // registration order.
   const loaded = await Promise.all(dirs.map(async (name): Promise<Plugin | null> => {
@@ -40,9 +46,10 @@ export async function discoverPlugins(): Promise<Plugin[]> {
     } catch (err) {
       logger.error('plugin.discover.failed', { dir: name, err: (err as Error).message });
     }
+    failed.push(name);
     return null;
   }));
-  const out = loaded.filter((p): p is Plugin => p !== null);
-  logger.info('plugin.discovered', { count: out.length, ids: out.map(p => p.manifest.id) });
-  return out;
+  const plugins = loaded.filter((p): p is Plugin => p !== null);
+  logger.info('plugin.discovered', { count: plugins.length, ids: plugins.map(p => p.manifest.id), ...(failed.length ? { failed: failed.length } : {}) });
+  return { plugins, failed: failed.toSorted((a, b) => a.localeCompare(b)) };
 }

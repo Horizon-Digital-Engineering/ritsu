@@ -28,7 +28,7 @@
 #      and starts the systemd service
 #   3. if --env supplied: substitutes placeholders + writes /etc/ritsu/env
 #   4. installs /usr/local/bin/update-ritsu so `ssh <host> update-ritsu` works
-#   5. restarts ritsu and smoke-tests the health endpoints
+#   5. restarts ritsu and waits until `ritsu health` answers
 #
 # After this, one interactive step on the remote (claude device-code login):
 #   ssh <host>
@@ -120,23 +120,27 @@ SHIM
 EOF
 note "/usr/local/bin/update-ritsu installed"
 
-bold "==> Restart + smoke test"
-ssh "${SSH_USER}@${HOST}" bash -s <<'EOF'
+bold "==> Restart + health"
+# The CLI runs as root on the remote: the env file with the admin address is
+# private to the service user. install.sh above built it.
+rc=0
+ssh "${SSH_USER}@${HOST}" bash -s <<'EOF' || rc=$?
 set -euo pipefail
+started="$(date '+%Y-%m-%d %H:%M:%S')"
 sudo systemctl restart ritsu
-sleep 1
-sudo systemctl --no-pager status ritsu | head -8
-PORT="$(grep -E '^PORT=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
-ADMIN_PORT="$(grep -E '^ADMIN_PORT=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
-MCP_HOST="$(grep -E '^MCP_HOST=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
-echo
-echo "--- admin /healthz (127.0.0.1:${ADMIN_PORT:-7334}) ---"
-curl -s "http://127.0.0.1:${ADMIN_PORT:-7334}/healthz" || true
-echo
-echo "--- MCP /mcp (${MCP_HOST:-127.0.0.1}:${PORT:-7333}; 401 or 405 = up) ---"
-curl -s -o /dev/null -w '%{http_code}\n' "http://${MCP_HOST:-127.0.0.1}:${PORT:-7333}/mcp" || true
-echo
+rc=0
+sudo /usr/bin/node /opt/ritsu/dist/cli.js health --wait 120 || rc=$?
+if [[ "${rc}" -ne 0 ]]; then
+  sudo journalctl -u ritsu --no-pager --since "${started}" -n 40
+fi
+exit "${rc}"
 EOF
+case "${rc}" in
+  0) ;;
+  1) fail "ritsu is up on ${HOST} but a part is failing — the log since the restart is above" ;;
+  3) fail "ritsu did not answer on ${HOST} within 120 s — the log since the restart is above" ;;
+  *) fail "the health check on ${HOST} could not run (exit ${rc})" ;;
+esac
 
 bold "==> Done"
 note "one-time interactive step on ${HOST}:"

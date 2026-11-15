@@ -2,8 +2,8 @@
  * `ritsu doctor` — sanity checks for an installed ritsu deployment.
  *
  * Each check returns a Result so we can render a tidy table and exit
- * non-zero if anything's broken — useful as a post-install / post-update
- * verification AND for `update-ritsu` to invoke automatically.
+ * non-zero if anything's broken. Run it by hand after an install or update;
+ * the scripts wait on `ritsu health` instead, which asks the running service.
  */
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';

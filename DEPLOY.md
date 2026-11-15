@@ -23,7 +23,7 @@ Footprint: ~67 MB for the Node process + ~134 MB for the Claude SDK subprocess (
 
 ### Option A: from your laptop (`bootstrap-remote.sh`)
 
-If you have SSH access to the target with a sudo-capable user, drive the install over SSH. This is the recommended path because you get the env file (with `__TAILSCALE_IP__` substitution if needed), the `update-ritsu` shortcut, and a smoke test all in one shot.
+If you have SSH access to the target with a sudo-capable user, drive the install over SSH. This is the recommended path because you get the env file (with `__TAILSCALE_IP__` substitution if needed), the `update-ritsu` shortcut, and a health check all in one shot.
 
 ```bash
 git clone https://github.com/Horizon-Digital-Engineering/ritsu.git /tmp/ritsu
@@ -53,7 +53,7 @@ It does:
 4. Writes a default `/etc/ritsu/env` if missing (won't overwrite an existing one)
 5. Installs `ritsu.service` to `/etc/systemd/system/`
 6. Enables + starts the service
-7. Smoke-tests the health endpoints
+7. Waits up to 120 s for `ritsu health`; if a part is failing or nothing answers, prints the log since the start and exits 1
 
 After install:
 
@@ -92,13 +92,19 @@ For metered calls, create an `api`-runtime agent with a key from the admin UI's 
 
 ## Verify
 
+Health lives on the admin port (7334), not the MCP port.
+
 ```bash
-curl -s http://127.0.0.1:7333/healthz
-curl -s http://127.0.0.1:7333/readyz
-curl -s http://127.0.0.1:7333/version
+sudo ritsu health                                                     # every part: ✓ ok, ! warn, ✗ fail, – off
+curl -s http://127.0.0.1:7334/healthz                                 # the same as JSON; 200 while ritsu answers
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7334/readyz # 503 when a part fails
+curl -s http://127.0.0.1:7334/version
 curl -s http://127.0.0.1:7334/metrics | head
 sudo journalctl -u ritsu -f
 ```
+
+`ritsu health` needs no root; `sudo` lets it read the admin address from the
+env file when it isn't the default.
 
 ## Manage
 
@@ -114,10 +120,23 @@ Mint a token in the Tokens tab. Point your MCP client at `http://<host-or-tailne
 ## Updates
 
 ```bash
-bash /opt/ritsu/scripts/update.sh
+update-ritsu                    # or: bash /opt/ritsu/scripts/update.sh
+update-ritsu --branch feat/x    # try a branch
 ```
 
-Pulls latest, rebuilds, restarts, tails the logs. Schema migrations are additive (`ALTER TABLE ADD COLUMN IF MISSING`) — no manual steps.
+In order:
+
+1. Syncs the checkout to `origin/main` (or the branch) and rebuilds.
+2. **Backup + rehearse**: writes an encrypted backup of the live database, then
+   runs the new build's migrations on a copy of it. Either failing stops the
+   update before the service is touched. Backups need a password first:
+   `sudo ritsu backup set-password`.
+3. Refreshes the systemd unit and the `ritsu` / `update-ritsu` commands.
+4. Restarts, then waits up to 10 minutes for `ritsu health` (a boot whose
+   migrations change the schema writes a pre-upgrade backup before it listens).
+   Nothing answering: it stops the service, prints the log since the restart
+   and exits 1. A part failing: it prints the log and exits 1, leaving the
+   service running. Otherwise it shows the log since the restart.
 
 ## Backups
 

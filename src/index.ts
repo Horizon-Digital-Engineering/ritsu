@@ -9,7 +9,7 @@ import { SqliteAgentDefinitionStore, seedIfEmpty } from './agent-definition-stor
 import { WorkspaceStore } from './workspace-store.js';
 import { ApprovalStore } from './approval-store.js';
 import { PluginHost } from './plugins/host.js';
-import { discoverPlugins } from './plugins/discover.js';
+import { scanPlugins } from './plugins/discover.js';
 import { CommsDenialStore } from './comms-denial-store.js';
 import { SecretStore } from './auth/secret-store.js';
 import { TokenStore } from './auth/token-store.js';
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   // goes to the backup folder encrypted, and the boot stops here without one.
   checkNotStranded(cfg.dbPath);
   cleanScratch(dataDirOf(cfg.dbPath));
-  const plugins = await discoverPlugins();
+  const { plugins, failed: failedPlugins } = await scanPlugins();
   const backupDir = resolveBackupDir(cfg.dbPath, backupDirFromEnv()).dir;
   const backupHost = hostName();
   const preUpgradeCopy = await preUpgrade({ dbPath: cfg.dbPath, dir: backupDir, host: backupHost, plugins });
@@ -238,9 +238,17 @@ async function main(): Promise<void> {
     memoryBoot: { mode: memoryConfig.mode, remote: memoryConfig.flashback?.endpoint ?? null },
     settings,
     speech: new SpeechService(storeSources(dataDirOf(cfg.dbPath), settings, apiKeys)),
+    // mcpServer is assigned below, before the admin port starts answering.
+    mcpListening: () => mcpServer.listening,
+    schedulerRunning: () => scheduler.running,
+    pluginFailures: () => failedPlugins.length,
   });
 
-  const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, () => {
+  const mcpServer = mcpApp.listen(cfg.mcpPort, cfg.mcpHost, (err) => {
+    if (err) {
+      logger.error('mcp.listen-failed', { host: cfg.mcpHost, port: cfg.mcpPort, err: err.message });
+      return;
+    }
     logger.info('mcp.listening', {
       host: cfg.mcpHost,
       port: cfg.mcpPort,
@@ -248,7 +256,11 @@ async function main(): Promise<void> {
     });
   });
 
-  const adminServer = adminApp.listen(cfg.adminPort, cfg.adminHost, () => {
+  const adminServer = adminApp.listen(cfg.adminPort, cfg.adminHost, (err) => {
+    if (err) {
+      logger.error('admin.listen-failed', { host: cfg.adminHost, port: cfg.adminPort, err: err.message });
+      return;
+    }
     logger.info('admin.listening', {
       host: cfg.adminHost,
       port: cfg.adminPort,

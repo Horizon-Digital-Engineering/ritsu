@@ -6,6 +6,7 @@ import { masterKeyCommand } from './commands/master-key.js';
 import { envCommand } from './commands/env.js';
 import { urlCommand } from './commands/url.js';
 import { doctorCommand } from './commands/doctor.js';
+import { healthCommand } from './commands/health.js';
 import { backupCommand } from './commands/backup.js';
 import { speechModelCommand } from './commands/speech-model.js';
 
@@ -33,6 +34,7 @@ export const ALL_COMMANDS: Command[] = [
   envCommand,
   urlCommand,
   doctorCommand,
+  healthCommand,
   backupCommand,
   speechModelCommand,
 ];

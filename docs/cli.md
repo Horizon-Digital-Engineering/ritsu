@@ -12,7 +12,8 @@ The operator CLI. Installed at `/usr/local/bin/ritsu` by `scripts/install.sh`
 | [`admin-token`](#ritsu-admin-token) | bootstrap-admin-token (show / rotate) |
 | [`master-key`](#ritsu-master-key) | rotate the AES-256-GCM master key |
 | [`url`](#ritsu-url) | print operator-facing URLs |
-| [`doctor`](#ritsu-doctor) | health-check the install |
+| [`doctor`](#ritsu-doctor) | sanity-check the host around the install |
+| [`health`](#ritsu-health) | how each part of the running service is doing |
 | [`speech-model`](#ritsu-speech-model) | download the Whisper model for voice |
 
 ```bash
@@ -285,9 +286,9 @@ Needs root (env file is 0600).
 
 ## `ritsu doctor`
 
-Run a sanity-check battery against the deployed ritsu. Useful as a
-post-install / post-update verification, and `sudo update-ritsu` invokes
-it automatically.
+Run a sanity-check battery against the deployed ritsu and the host around
+it. Run it by hand after an install or update; the scripts wait on
+[`ritsu health`](#ritsu-health) instead, which asks the running service.
 
 Checks:
 
@@ -297,6 +298,10 @@ Checks:
 - ritsu user can write the DB dir
 - a master key exists, so secrets can be stored (warn if missing)
 - a subscription token is stored for the direct runtime (warn if missing)
+- a backup password is set (warn if not: backups are off until
+  `ritsu backup set-password`)
+- the backup folder exists, with the age of the newest daily backup (warn if
+  the folder doesn't exist yet)
 - Declared sandbox paths exist
 - Tailscale is installed + authenticated
 - a speech engine can run for the chat's microphone (warn if none, or voice is off)
@@ -309,6 +314,54 @@ ritsu doctor --json     # machine-readable
 Exit code 0 if everything passes, 1 if any check fails.
 
 Needs root (checks DB writability + reads the admin-token file).
+
+---
+
+## `ritsu health`
+
+Asks the running service how each of its parts is doing, through the open
+`/readyz` on the admin port. The address is the one
+[`ritsu url`](#ritsu-url) prints as `local_admin` (`0.0.0.0` is asked as
+`127.0.0.1`).
+
+```
+ritsu health
+ritsu 0.13.1 · up 3 h 12 min
+  ✓  Database            open, 812 GB free
+  ✓  Secret storage      key loaded
+  !  Subscription token  missing
+  ✓  Agents              4 loaded
+  ✓  MCP server          listening
+  –  Voice               turned off
+  ✓  Backups             newest 6 h old
+  ✓  Scheduler           3 jobs, none failing
+  ✓  Plugins             5 loaded
+  –  Channels            none set up
+
+  up, 1 warning
+```
+
+`✓` ok, `!` warn, `✗` fail, `–` off (not set up or not needed; never counts
+against the summary). The last line is `all parts up`, `up, N warnings` or
+`N failing`.
+
+| Flag | Notes |
+|---|---|
+| `--wait <s>` | keep asking every second for up to `s` seconds until ritsu answers, with one waiting line. A failing answer is asked again for up to 15 s while parts come up. |
+| `--json` | the summary as JSON: `name`, `status`, `version`, `uptime_s`, and `parts` of `id`, `label`, `status`, `note` |
+| `--url <base>` | another admin address, e.g. `http://127.0.0.1:7334` (or set `RITSU_URL`) |
+
+Each try waits 5 s for a reply.
+
+Exit `0` up (warnings included), `1` a part is failing, `2` a bad flag or an
+unreadable config, `3` no answer: nothing listening, no reply, or a reply that
+isn't a health summary.
+
+`update-ritsu` runs `ritsu health --wait 600` after its restart; the
+installer, `configure.sh` and `bootstrap-remote.sh` wait 120 s.
+
+Needs neither root nor a token. On a server whose admin address isn't the
+default, run it with `sudo` so it can read `/etc/ritsu/env`.
 
 ---
 
@@ -352,17 +405,23 @@ Standard across all subcommands:
 - `1` — operational failure (file missing, API error, sub-process failed)
 - `2` — usage error (unknown subcommand, missing required arg)
 
+`ritsu health` adds `3`: no answer.
+
 ---
 
 ## When to reach for which
 
-- **First install**: `scripts/install.sh` → `ritsu doctor` (verify).
+- **First install**: `scripts/install.sh` (it waits on `ritsu health`) →
+  `ritsu doctor` for the host around it.
+- **Is it up?** `ritsu health`; from a script after a restart,
+  `ritsu health --wait 120`.
 - **After-install configuration**: `ritsu env set ...`, `ritsu path add ...`.
 - **Day-to-day ops**: `ritsu service logs --follow`, `ritsu service restart`.
 - **Token hygiene**: `ritsu token list` to audit, `ritsu token revoke` to
   pull a compromised token, `ritsu admin-token rotate` quarterly.
-- **Troubleshooting**: `ritsu doctor` first; if anything's red, follow
-  the hint into the relevant subcommand.
+- **Troubleshooting**: `ritsu health` for the running service, then
+  `ritsu doctor` for the host; if anything's red, follow the hint into the
+  relevant subcommand.
 - **Before a risky change**: `ritsu backup` — and `ritsu backup restore` if it
   went badly.
 - **Remote / scripted**: every command takes `--json`; pipe to `jq`.

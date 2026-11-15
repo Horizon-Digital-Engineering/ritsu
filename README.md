@@ -78,8 +78,9 @@ and you're in. From there you can mint per-client MCP tokens in the
 **Tokens** tab.
 
 ```bash
-# health (admin port)
-curl -s http://localhost:7334/healthz
+# health: every part (database, agents, MCP, backups, ...) and its state
+npm run cli -- health
+curl -s http://localhost:7334/healthz    # the same, as JSON (admin port)
 
 # call an agent (use the rt_ token you minted, not the admin bootstrap one)
 curl -s -X POST http://localhost:7333/mcp \
@@ -112,9 +113,10 @@ Bind-mounts the host's `~/.claude/` so a local session is available if you have 
 | `GET /mcp` (port 7333) | Real `@modelcontextprotocol/sdk` Streamable HTTP transport. Bearer-token-gated (`rt_*`). |
 | `POST /oauth/{register,authorize,token}` | RFC 7591/8414/9728/8707 OAuth 2.1 + DCR + PKCE for spec-compliant clients (claude.ai web, Claude Desktop Connectors). |
 | `/admin` (port 7334) | Three areas on an icon rail — Workspace (chat), Operations (approvals, jobs, health, logs) and Studio (agents and configuration) — plus one app page per plugin that ships a UI (`/admin/apps/<id>`, e.g. Tasks, Finance, Health, Projects). |
-| `GET /healthz`, `/readyz`, `/version` | Liveness / readiness. |
+| `GET /healthz`, `/readyz` (port 7334) | Open health check naming every part — database, secret storage, subscription token, agents, MCP server, voice, backups, scheduler, plugins, channels — each ok, warn, fail or off with a short note. `/healthz` is 200 while ritsu answers; `/readyz` is 503 when a part fails. |
+| `GET /version` | Name, version, uptime, MCP tools, auth mode. |
 | `GET /metrics` | Prometheus exposition. |
-| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `master-key`, `backup`, `url`, `doctor`. Full reference: [`docs/cli.md`](./docs/cli.md). |
+| `ritsu` CLI | Operator commands: `service`, `env`, `path`, `token`, `admin-token`, `master-key`, `backup`, `url`, `doctor`, `health`. Full reference: [`docs/cli.md`](./docs/cli.md). |
 
 ### MCP tools (current)
 

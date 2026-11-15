@@ -2,7 +2,7 @@
 # Pull latest, rebuild, restart. Run as your own user (with sudo).
 #
 # Idempotent + safe: aborts on uncommitted changes, only restarts if
-# the build succeeded, prints status at the end.
+# the build succeeded, then waits until `ritsu health` answers.
 #
 # Usage (update-ritsu is the installed shim for this script):
 #   update-ritsu                       # deploy origin/main (default)
@@ -66,16 +66,17 @@ bold "==> Backup + rehearse"
 # A fresh encrypted backup of the running database, then the NEW build's
 # migrations run on a copy of it. Either failing stops here, before anything
 # the service uses changes. The CLI opens the live file read-only.
-CLI="sudo /usr/bin/node ${INSTALL_DIR}/dist/cli.js"
-DB_PATH="$(sudo grep -E '^DB_PATH=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')"
+CLI=(sudo /usr/bin/node "${INSTALL_DIR}/dist/cli.js")
+# grep finds nothing when the key is unset, and pipefail would end the script.
+DB_PATH="$(sudo grep -E '^DB_PATH=' /etc/ritsu/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "' || true)"
 DB_PATH="${DB_PATH:-${INSTALL_DIR}/data/ritsu.db}"
 if sudo test -f "${DB_PATH}"; then
-  if ! ${CLI} backup; then
+  if ! "${CLI[@]}" backup; then
     echo "backup failed — the running service is untouched." >&2
     echo "If no backup password is set yet:  sudo ritsu backup set-password" >&2
     exit 1
   fi
-  if ! ${CLI} backup rehearse latest; then
+  if ! "${CLI[@]}" backup rehearse latest; then
     echo "the new build's migrations failed on a copy of the backup — the running service is untouched." >&2
     exit 1
   fi
@@ -108,12 +109,37 @@ sudo install -o root -g root -m 755 "${INSTALL_DIR}/scripts/update-ritsu" /usr/l
 note "refreshed /usr/local/bin/update-ritsu"
 
 bold "==> Restart"
+started="$(date '+%Y-%m-%d %H:%M:%S')"
 sudo systemctl restart "${SERVICE_NAME}"
-sleep 1
-sudo systemctl --no-pager status "${SERVICE_NAME}" | head -8
+log_since_restart() { sudo journalctl -u "${SERVICE_NAME}" --no-pager --since "${started}" -n "$1"; }
 
-bold "==> Recent log"
-sudo journalctl -u "${SERVICE_NAME}" --no-pager -n 15
+bold "==> Health"
+# systemd calls the unit started before ritsu listens, and a boot whose
+# migrations change the schema writes a pre-upgrade backup first.
+rc=0
+"${CLI[@]}" health --wait 600 || rc=$?
+case "${rc}" in
+  0)
+    bold "==> Recent log"
+    log_since_restart 15
+    ;;
+  1)
+    log_since_restart 40
+    echo "ritsu is up but a part is failing — left running; the log since the restart is above." >&2
+    exit 1
+    ;;
+  3)
+    sudo systemctl stop "${SERVICE_NAME}"
+    log_since_restart 40
+    echo "ritsu did not answer within 600 s — stopped it; the log since the restart is above." >&2
+    exit 1
+    ;;
+  *)
+    log_since_restart 40
+    echo "the health check could not run (exit ${rc}) — ritsu left running." >&2
+    exit 1
+    ;;
+esac
 
 bold "==> Done"
 note "follow logs with:  sudo journalctl -u ${SERVICE_NAME} -f"

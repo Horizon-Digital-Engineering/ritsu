@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Command, CommandContext } from '../registry.js';
 import { loadConfig } from '../../config.js';
 import { openDatabase } from '../../db.js';
-import { discoverPlugins } from '../../plugins/discover.js';
+import { scanPlugins } from '../../plugins/discover.js';
 import { spawnSync } from '../../util/safe-spawn.js';
 import { SERVICE_NAME } from '../systemd.js';
 import { promptSecret } from '../prompt.js';
@@ -132,7 +132,7 @@ async function runRehearse(ctx: CommandContext): Promise<number> {
   const dataDir = dataDirOf(cfg.dbPath);
   const password = await passwordFor(dataDir);
   try {
-    const report = await rehearse(file, password, await discoverPlugins(), dataDir, ctx.flags.keep === true);
+    const report = await rehearse(file, password, (await scanPlugins()).plugins, dataDir, ctx.flags.keep === true);
     out(ctx.flags.json ? JSON.stringify(report, null, 2) : renderRehearsal(report));
     return 0;
   } catch (e) {

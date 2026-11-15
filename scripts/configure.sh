@@ -20,7 +20,8 @@
 #     - ritsu binds 127.0.0.1, SSH-tunnel from clients
 #
 # Plus: prints the admin token banner on first run, installs the
-# /usr/local/bin/update-ritsu shortcut, restarts the service, smoke-tests.
+# /usr/local/bin/update-ritsu shortcut, restarts the service, waits until
+# `ritsu health` answers.
 #
 # Idempotent — re-run any time to roll detection forward.
 #
@@ -146,10 +147,8 @@ install -o root -g root -m 755 /opt/ritsu/scripts/update-ritsu /usr/local/bin/up
 note "ok — update-ritsu pulls, rebuilds, backs up, rehearses and restarts"
 
 bold "==> Restart"
+started="$(date '+%Y-%m-%d %H:%M:%S')"
 systemctl restart "${SERVICE_NAME}"
-# Give the service a beat to bootstrap the admin token (first boot only).
-sleep 2
-systemctl --no-pager status "${SERVICE_NAME}" | head -8
 
 if ${USE_TS_SERVE}; then
   bold "==> Configure tailscale serve"
@@ -161,10 +160,26 @@ if ${USE_TS_SERVE}; then
   note "mcp:   https port ${MCP_SERVE_PORT} → 127.0.0.1:7333"
 fi
 
-bold "==> Smoke test"
-note "admin /healthz: $(curl -s "http://${ADMIN_HOST}:7334/healthz" || echo failed)"
-note "admin /readyz:  $(curl -s "http://${ADMIN_HOST}:7334/readyz"  || echo failed)"
-note "admin /version: $(curl -s "http://${ADMIN_HOST}:7334/version" || echo failed)"
+bold "==> Health"
+# systemd calls the unit started before ritsu listens; an answer also means the
+# first boot's admin token, printed below, is on disk. A failure still prints
+# the URLs and the token, which are what fixing it needs, and exits 1 at the end.
+health_rc=0
+if [[ -f /opt/ritsu/dist/cli.js ]]; then
+  /usr/bin/node /opt/ritsu/dist/cli.js health --wait 120 || health_rc=$?
+  if [[ "${health_rc}" -ne 0 ]]; then
+    journalctl -u "${SERVICE_NAME}" --no-pager --since "${started}" -n 40
+  fi
+  case "${health_rc}" in
+    0) ;;
+    1) warn "ritsu is up but a part is failing — the log since the restart is above" ;;
+    3) warn "ritsu did not answer within 120 s — the log since the restart is above" ;;
+    *) warn "the health check could not run (exit ${health_rc})" ;;
+  esac
+else
+  health_rc=1
+  warn "dist/cli.js not found — run 'npm run build', then re-run configure"
+fi
 
 # Print URLs the operator should actually use.
 bold "==> URLs"
@@ -208,3 +223,5 @@ note ""
 note "direct-runtime agents authenticate with a subscription token:"
 note "  claude setup-token   # on any machine, then save it under API Keys in the admin UI"
 note "A local CLI session at /home/${SERVICE_USER}/.claude/ also works if you have one."
+
+[[ "${health_rc}" -eq 0 ]] || exit 1
