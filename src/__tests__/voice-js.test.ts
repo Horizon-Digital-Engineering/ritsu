@@ -210,6 +210,8 @@ describe('speakable', () => {
   it('keeps inline code as words and drops HTML tags', () => {
     assert.equal(voice.speakable('Run `ritsu doctor` now, or ``a `b` c``.'), 'Run ritsu doctor now, or a b c.');
     assert.equal(voice.speakable('A <b>tag</b> and a<br>break'), 'A tag and abreak');
+    assert.equal(voice.speakable('Hi <!-- note --> there <!-- x --!>now'), 'Hi there now');
+    assert.equal(voice.speakable('a <scr<b>ipt>b'), 'a b');
   });
 
   it('collapses blank lines and trims', () => {

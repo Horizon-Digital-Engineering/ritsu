@@ -453,19 +453,27 @@ function heading(s) {
   return text.trim();
 }
 
+/** One pass can join the text around a removed match into a new match. */
+function stripAll(s, re) {
+  let before;
+  do {
+    before = s;
+    s = s.replace(re, '');
+  } while (s !== before);
+  return s;
+}
+
 function plain(line) {
-  return heading(line
-    .replace(/\\([\\`*_{}[\]()#+\-.!|~>])/g, '$1')
-    .replace(/<!--.*?-->/g, '')
-    .replace(/^(?:>\s?)+/, ''))
+  const unescaped = line.replace(/\\([\\`*_{}[\]()#+\-.!|~>])/g, '$1');
+  const linked = heading(stripAll(unescaped, /<!--[\s\S]*?--!?>/g).replace(/^(?:>\s?)+/, ''))
     .replace(/^[-*+]\s+(?:\[[ xX]\]\s+)?/, '')
     .replace(/!\[([^[\]]*)\]\([^()]*\)/g, '$1')
     .replace(/\[([^[\]]+)\]\([^()]*\)/g, '$1')
     .replace(/\[([^[\]]+)\]\[[^[\]]*\]/g, '$1')
     .replace(/\[\^[^[\]]+\]/g, '')
     .replace(/<([a-z][\w+.-]*:\/\/[^<>\s]+)>/gi, (_m, url) => host(url))
-    .replace(/\bhttps?:\/\/[^\s<>()]+/gi, (url) => host(url))
-    .replace(/<\/?[a-z][^<>]*>/gi, '')
+    .replace(/\bhttps?:\/\/[^\s<>()]+/gi, (url) => host(url));
+  return stripAll(linked, /<\/?[a-z][^<>]*>/gi)
     .replace(/`+/g, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*(\S[^*]*)\*/g, '$1')

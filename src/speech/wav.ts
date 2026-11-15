@@ -14,16 +14,16 @@ export interface Wav {
 }
 
 export function readWav(b: Buffer): Wav | null {
-  if (b.length < 12 || b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') return null;
+  if (b.byteLength < 12 || b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') return null;
   let fmt: Buffer | null = null;
   let data: Buffer | null = null;
   let at = 12;
-  while (at + 8 <= b.length) {
+  while (at + 8 <= b.byteLength) {
     const id = b.toString('ascii', at, at + 4);
     const len = b.readUInt32LE(at + 4);
     const start = at + 8;
     // A streaming writer may leave the length at its maximum; take what arrived.
-    const end = Math.min(start + len, b.length);
+    const end = Math.min(start + len, b.byteLength);
     if (id === 'fmt ' && end - start >= 16) fmt = b.subarray(start, end);
     else if (id === 'data') data = b.subarray(start, end);
     at = start + len + (len % 2);
@@ -35,14 +35,14 @@ export function readWav(b: Buffer): Wav | null {
   const bits = fmt.readUInt16LE(14);
   if (format !== 1 || bits !== 16 || channels < 1 || rate < MIN_RATE || rate > MAX_RATE) return null;
   const frame = 2 * channels;
-  const frames = Math.floor(data.length / frame);
+  const frames = Math.floor(data.byteLength / frame);
   const samples = data.subarray(0, frames * frame);
   return { rate, channels, seconds: frames / rate, silent: loudestWindow(samples, rate, channels) < SILENCE_RMS, data: samples };
 }
 
 function loudestWindow(data: Buffer, rate: number, channels: number): number {
   const perWindow = Math.max(1, Math.floor((rate * WINDOW_MS) / 1000)) * channels;
-  const total = data.length / 2;
+  const total = data.byteLength / 2;
   let loudest = 0;
   for (let from = 0; from < total; from += perWindow) {
     const to = Math.min(total, from + perWindow);
@@ -58,7 +58,7 @@ function loudestWindow(data: Buffer, rate: number, channels: number): number {
 
 /** Whisper reads one channel at 16 kHz in [-1, 1). */
 export function whisperSamples(wav: Wav): Float32Array {
-  const frames = wav.data.length / (2 * wav.channels);
+  const frames = wav.data.byteLength / (2 * wav.channels);
   const mono = new Float32Array(frames);
   for (let f = 0; f < frames; f++) {
     let sum = 0;
