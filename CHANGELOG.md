@@ -65,6 +65,16 @@ versioning per [semver](https://semver.org/).
   marked as stopped.
 - **Phone layout.** On a phone the area rail becomes a bottom tab bar on every
   admin page, and it steps aside while the keyboard is up.
+- **Health names every part.** `/healthz` and `/readyz` list database, secret
+  storage, subscription token, agents, MCP server, voice, backups, scheduler,
+  plugins and channels, each ok, warn, fail or off with a short note.
+- `/readyz` answers 503 when a part fails; `/healthz` stays 200 while ritsu
+  answers.
+- `ritsu health` prints the parts and exits 0 up, 1 a part failing, 3 no
+  answer; `--wait N` keeps asking until the service answers, `--json` prints
+  the summary.
+- The Operations health card, the rail dot and Studio's Health tab show
+  warnings as well as failures.
 
 ### Changed
 
@@ -83,14 +93,18 @@ versioning per [semver](https://semver.org/).
 - The speech engine adds about 490 MB of dependencies. Installs skip ONNX
   Runtime's optional CUDA download (`ONNXRUNTIME_NODE_INSTALL=skip`); speech
   runs on the CPU.
+- `update-ritsu` waits up to 10 minutes for `ritsu health` after the restart.
+  If nothing answers it stops the service; if a part fails it leaves it
+  running; either way it prints the log since the restart and exits 1.
+- The installer, `configure.sh` and `bootstrap-remote.sh` wait up to 120 s for
+  `ritsu health` instead of sleeping and probing with curl.
 
 ### Fixed
 
 - `update-ritsu` no longer stops before the restart: the `ritsu` command is
   installed from a file in `scripts/`, as `update-ritsu` already was, instead
   of through a heredoc that had nothing to read under sudo. The installer
-  puts both commands in place, and its smoke test probes the port that
-  actually serves health.
+  puts both commands in place.
 - `ritsu doctor` sees a subscription token stored under API Keys instead of
   warning that it cannot tell.
 - The Settings page loads and saves. It had no server route and its Save
@@ -108,6 +122,13 @@ versioning per [semver](https://semver.org/).
   over.
 - An operator's rejection of a direct-runtime agent's in-process tool reaches
   the model as an error instead of a normal result.
+- `update-ritsu` no longer ends without a word when `/etc/ritsu/env` has no
+  `DB_PATH` line.
+- `bootstrap-remote.sh` no longer dies reading the root-only env file as the
+  SSH user.
+- A health check on `/admin/api/health` that throws shows as its own failed
+  row instead of failing the whole page.
+- DEPLOY.md probed health on the MCP port; it lives on the admin port.
 
 ## [0.13.1] — 2026-09-06
 

@@ -472,19 +472,20 @@ async function loadChannels() {
 async function loadHealth() {
   try {
     const { checks } = await api('GET', '/admin/api/health');
-    const dotFor = (c) => {
-      if (c.status === 'ok') return 'ok';
-      return c.status === 'skip' ? 'off' : 'err';
-    };
+    const dotFor = (c) => ({ ok: 'ok', skip: 'off', warn: 'warn' })[c.status] ?? 'err';
     $('health-list').innerHTML = checks.map(c =>
       `<div class="status-row">
         <span class="status-dot ${dotFor(c)}"></span>
         <span class="grow">${esc(c.label)}</span>
         <span class="status-sub" title="${esc(c.detail || '')}">${esc(c.detail || c.status)}</span>
       </div>`).join('');
-    const worst = checks.some(c => c.status === 'fail') ? 'err' : 'ok';
+    let worst = 'ok';
+    if (checks.some(c => c.status === 'fail')) worst = 'err';
+    else if (checks.some(c => c.status === 'warn')) worst = 'warn';
     $('rail-health-dot').className = `rail-health ${worst}`;
-    $('rail-health-dot').title = worst === 'ok' ? 'All health checks passing' : 'A health check is failing';
+    $('rail-health-dot').title = {
+      ok: 'All health checks passing', warn: 'A health check has a warning', err: 'A health check is failing',
+    }[worst];
   } catch (e) {
     showNote($('health-list'), e.message);
     $('rail-health-dot').className = 'rail-health warn';

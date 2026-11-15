@@ -11,7 +11,7 @@
 #   3. Runs `npm ci && npm run build` as the ritsu user
 #   4. If /etc/ritsu/env doesn't exist, writes a template (does NOT overwrite)
 #   5. Installs systemd/ritsu.service and enables it
-#   6. (Re)starts the service and prints status
+#   6. (Re)starts the service and waits until `ritsu health` answers
 #
 # Run as your own user with sudo available:
 #   curl -L https://raw.githubusercontent.com/Horizon-Digital-Engineering/ritsu/main/scripts/install.sh | bash
@@ -184,25 +184,27 @@ note "/usr/local/bin/update-ritsu — pulls, rebuilds, backs up, rehearses, rest
 
 bold "==> Start"
 sudo systemctl enable "${SERVICE_NAME}" >/dev/null
+started="$(date '+%Y-%m-%d %H:%M:%S')"
 sudo systemctl restart "${SERVICE_NAME}"
-sleep 1
-sudo systemctl --no-pager status "${SERVICE_NAME}" | head -10
 
-bold "==> Smoke test"
-# The env file is 0600 and owned by the service user, so read it as root —
-# otherwise every install ends with a permission error that looks like failure.
-env_val() { sudo grep -E "^$1=" "${ENV_FILE}" | tail -1 | cut -d= -f2 | tr -d ' "'; }
-port="$(env_val PORT)"
-admin_port="$(env_val ADMIN_PORT)"
-mcp_host="$(env_val MCP_HOST)"
-# Health lives on the admin port. The MCP port serves only the protocol and
-# OAuth endpoints; a 401 or 405 from /mcp means it is up and refusing, as it should.
-note "admin healthz:  $(curl -s "http://127.0.0.1:${admin_port:-7334}/healthz" || echo failed)"
-note "MCP port:       HTTP $(curl -s -o /dev/null -w '%{http_code}' "http://${mcp_host:-127.0.0.1}:${port:-7333}/mcp" || echo 000) from /mcp (401 or 405 = up)"
+bold "==> Health"
+# systemd calls the unit started before ritsu listens, and an upgrade's first
+# boot may write a backup before it does. As root, so it reads the env file's
+# admin address (the file is private to the service user).
+rc=0
+sudo /usr/bin/node "${INSTALL_DIR}/dist/cli.js" health --wait 120 || rc=$?
+if [[ "${rc}" -ne 0 ]]; then
+  sudo journalctl -u "${SERVICE_NAME}" --no-pager --since "${started}" -n 40
+  case "${rc}" in
+    1) fail "ritsu is up but a part is failing — the log since the start is above" ;;
+    3) fail "ritsu did not answer within 120 s — the log since the start is above" ;;
+    *) fail "the health check could not run (exit ${rc})" ;;
+  esac
+fi
 
 bold "==> Done"
 note "logs:    sudo journalctl -u ${SERVICE_NAME} -f"
 note "env:     sudo \$EDITOR ${ENV_FILE}  &&  sudo systemctl restart ${SERVICE_NAME}"
 note "update:  update-ritsu   (from anywhere on this box; re-running this script also works)"
-note "admin:   ssh-tunnel localhost:${admin_port:-7334} then open http://localhost:${admin_port:-7334}/admin"
+note "admin:   ritsu url   (the admin address; ssh-tunnel to it from your own machine)"
 note "voice:   sudo ritsu speech-model   (downloads the built-in Whisper; or set a whisper server or an OpenAI key in Settings)"

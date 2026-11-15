@@ -37,10 +37,8 @@ import { stripTrailingSlashes } from './util/path-utils.js';
  * OAuthTokenVerifier; AuthInfo plumbs into tool callbacks via `extra.authInfo`
  * and every call writes an audit row to mcp_token_usage.
  *
- * Standard server endpoints (always open, no auth):
- *   GET /healthz   — alive
- *   GET /readyz    — ready (db open, agents loaded)
- *   GET /version   — name, version, features
+ * The open health routes (/healthz, /readyz, /version, /metrics) are on the
+ * admin port, not this one; see src/admin/server.ts.
  */
 
 export interface CreateMcpServerDeps {

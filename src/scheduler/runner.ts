@@ -139,6 +139,10 @@ export class SchedulerRunner {
     this.timer = null;
   }
 
+  get running(): boolean {
+    return this.timer !== null;
+  }
+
   /** One pass. Public so tests can drive it without waiting on a timer. */
   async tick(): Promise<void> {
     if (this.ticking) { logger.warn('scheduler.tick-overlap'); return; }

@@ -3270,7 +3270,8 @@ async function loadHealthTab() {
     }).join('');
     target.innerHTML = `<table><thead><tr><th></th><th>check</th><th>status</th><th>latency</th><th>detail</th></tr></thead><tbody>${rows}</tbody></table>`;
     const bad = checks.filter(c => c.status === 'fail').length;
-    meta.textContent = `${checks.length} checks, ${bad} failing · ${Date.now() - t0} ms`;
+    const warns = checks.filter(c => c.status === 'warn').length;
+    meta.textContent = `${checks.length} checks, ${bad} failing, ${warns} warning${warns === 1 ? '' : 's'} · ${Date.now() - t0} ms`;
   } catch (e) {
     target.innerHTML = `<em class="txt-muted">health check failed: ${esc(e.message)}</em>`;
   }

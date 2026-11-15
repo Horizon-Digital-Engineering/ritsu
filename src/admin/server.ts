@@ -30,6 +30,8 @@ import { TWITTER_NS, TWITTER_SECRET_KEYS } from '../connectors/twitter.js';
 import { LINKEDIN_NS, LINKEDIN_SECRET_KEYS } from '../connectors/linkedin.js';
 import { LITELLM_NS, LITELLM_SECRET_KEYS } from '../model/ritsu-agent/client.js';
 import { runHealthChecks } from './health.js';
+import { createParts, summarize } from '../health/parts.js';
+import type { HealthSummary } from '../health/types.js';
 import { CLAUDE_NS } from '../model/claude-direct-dispatcher.js';
 import { masterKeyStatus } from '../util/secret-crypto.js';
 import { INGEST_NS, INGEST_SECRET_KEYS } from '../ingestion/extractors.js';
@@ -211,6 +213,12 @@ export interface AdminDeps {
   settings?: import('../settings-store.js').SettingsStore;
   /** Absent = the speech routes report 503. */
   speech?: SpeechService;
+  /** Absent = the health check reports the MCP server as not listening. */
+  mcpListening?: () => boolean;
+  /** Absent = the health check reports the scheduler as not running. */
+  schedulerRunning?: () => boolean;
+  /** Plugin folders that failed to load at boot. Absent = none. */
+  pluginFailures?: () => number;
 }
 
 /**
@@ -690,37 +698,33 @@ export function createAdminApp(deps: AdminDeps) {
 
   const startedAt = Math.floor(Date.now() / 1000);
 
+  const checkParts = createParts({
+    db: deps.db,
+    dataDir: backup.dataDir(),
+    agentsLoaded: () => host.list().length,
+    secrets,
+    mcpListening: deps.mcpListening ?? (() => false),
+    ...(deps.speech ? { speech: deps.speech } : {}),
+    backups: backup,
+    backupIntervalHours: () => deps.settings?.getNumber('backups.interval_hours', 24) ?? 24,
+    schedulerRunning: deps.schedulerRunning ?? (() => false),
+    plugins: pluginHost,
+    pluginFailures: deps.pluginFailures ?? (() => 0),
+    runningChannels: () => deps.channelRegistry.runningIds(),
+  });
+  const healthSummary = (): HealthSummary => summarize(checkParts(), deps.version, Math.floor(process.uptime()));
+
+  // Liveness: answering at all is the signal, so always 200; the body says which parts are up.
   app.get('/healthz', (_req, res) => {
-    // Minimal liveness — "is the process listening and answering."
-    // Returns 200 unconditionally; the existence of a response IS the signal.
-    res.json({
-      status: 'ok',
-      name: 'ritsu',
-      version: deps.version,
-      uptime_s: Math.floor(process.uptime()),
-    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(healthSummary());
   });
 
+  // Readiness: the same body, 503 while any part is failing.
   app.get('/readyz', (_req, res) => {
-    // Deeper readiness — "is the server actually able to serve traffic."
-    // Catches conditions where the process is up but the agent host or
-    // DB isn't (rare with our synchronous-init shape, but documented).
-    try {
-      const agents = host.list();
-      res.json({
-        status: 'ready',
-        name: 'ritsu',
-        version: deps.version,
-        uptime_s: Math.floor(process.uptime()),
-        agents_loaded: agents.length,
-      });
-    } catch (err) {
-      res.status(503).json({
-        status: 'degraded',
-        error: (err as Error).message,
-        uptime_s: Math.floor(process.uptime()),
-      });
-    }
+    const summary = healthSummary();
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(summary.status === 'fail' ? 503 : 200).json(summary);
   });
 
   app.get('/version', (_req, res) => {
@@ -748,12 +752,12 @@ export function createAdminApp(deps: AdminDeps) {
 
   // ---- ADMIN BEARER AUTH -------------------------------------------------
   // Everything under /admin (UI + every API endpoint) requires an
-  // admin-scoped token. The token is bootstrapped at first boot and lives
-  // at /etc/ritsu/admin-token on disk; the operator pastes it into the UI
-  // (sessionStorage) or sends it as `Authorization: Bearer rt_...`.
+  // admin-scoped token. The token is bootstrapped at first boot into the
+  // admin-token file (RITSU_ADMIN_TOKEN_FILE); the operator pastes it into the
+  // UI (localStorage) or sends it as `Authorization: Bearer rt_...`.
   //
-  // /healthz and /metrics above stay open so monitoring works without a
-  // secret distributed to scrapers.
+  // /healthz, /readyz, /version and /metrics above stay open so monitoring
+  // works without a secret distributed to scrapers.
 
   app.use('/admin', (req: Request, res: Response, next) => {
     // Let the UI HTML and its sidecar JS load freely — they're static
@@ -2106,7 +2110,7 @@ export function createAdminApp(deps: AdminDeps) {
   // ---- health (live connectivity checks) ---------------------------------
   app.get('/admin/api/health', async (_req: Request, res: Response) => {
     res.json(await runHealthChecks({
-      defStore, apiKeys: deps.apiKeys, secrets,
+      parts: checkParts, apiKeys: deps.apiKeys, secrets,
       ...(deps.settings ? { settings: deps.settings } : {}),
     }));
   });
