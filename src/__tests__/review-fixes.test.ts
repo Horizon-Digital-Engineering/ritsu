@@ -163,7 +163,7 @@ describe('CRM tools on the api runtime', () => {
     const call = send.handler({ to: 'a@b.com', subject: 'hi', body: 'there' });
     const id = await waitForPending(approvals);
     approvals.decide(id, 'rejected', 'not this one', 'operator');
-    assert.match(await call, /Operator rejected sending this email: not this one/);
+    await assert.rejects(call, { name: 'OperatorRejected', message: 'Operator rejected sending this email: not this one' });
   });
 
   it('blocks post_tweet on the operator too', async () => {
@@ -171,7 +171,7 @@ describe('CRM tools on the api runtime', () => {
     const call = post.handler({ text: 'hello world' });
     const id = await waitForPending(approvals);
     approvals.decide(id, 'rejected', null, 'operator');
-    assert.match(await call, /Operator rejected this post\./);
+    await assert.rejects(call, { name: 'OperatorRejected', message: 'Operator rejected this post.' });
   });
 
   it('rejects an over-length post without consuming an approval', async () => {
@@ -403,7 +403,7 @@ describe('self-gating tools are not gated twice', () => {
     const call = send.handler({ to: 'a@b.com', subject: 's', body: 'b' });
     const id = await waitForPending(approvals);
     approvals.decide(id, 'rejected', 'once is enough', 'operator');
-    assert.match(await call, /Operator rejected sending this email/);
+    await assert.rejects(call, { name: 'OperatorRejected', message: /Operator rejected sending this email/ });
     assert.equal(approvals.listPending(10).length, 0, 'no second card was left behind');
   });
 });
@@ -462,10 +462,11 @@ describe('CRM tools after approval', () => {
 
   it('a reply carries the tweet it replies to onto the approval card', async () => {
     const post = buildSocialTools(deps()).find(t => t.name === 'social_post_tweet')!;
-    void post.handler({ text: 'replying', reply_to: '12345' });
+    const call = post.handler({ text: 'replying', reply_to: '12345' });
     const id = await waitForPending(approvals);
     const row = approvals.listPending(10).find(r => r.id === id)!;
     assert.deepEqual(JSON.parse(row.args_json), { text: 'replying', reply_to: '12345' });
     approvals.decide(id, 'rejected', null, 'operator');
+    await assert.rejects(call, { name: 'OperatorRejected' });
   });
 });

@@ -7,6 +7,7 @@ import { envCommand } from './commands/env.js';
 import { urlCommand } from './commands/url.js';
 import { doctorCommand } from './commands/doctor.js';
 import { backupCommand } from './commands/backup.js';
+import { speechModelCommand } from './commands/speech-model.js';
 
 export interface CommandContext {
   subcommand: string | null;
@@ -33,4 +34,5 @@ export const ALL_COMMANDS: Command[] = [
   urlCommand,
   doctorCommand,
   backupCommand,
+  speechModelCommand,
 ];

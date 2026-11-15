@@ -51,7 +51,7 @@ export async function gateMcpTool(
       const why = decision.reason?.trim()
         ? `Operator rejected this ${fullToolName} call: ${decision.reason.trim()}`
         : `Operator rejected this ${fullToolName} call.`;
-      return { content: [{ type: 'text', text: why }] };
+      return { content: [{ type: 'text', text: why }], isError: true };
     }
   }
   return run();

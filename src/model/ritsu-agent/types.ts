@@ -14,11 +14,18 @@ export type Role = 'system' | 'user' | 'assistant' | 'tool';
  *  OpenAI-compatible base_url) share the minimal wire client. */
 export type RaProvider = 'anthropic' | 'openai' | 'gemini' | 'xai' | 'openrouter' | 'litellm' | 'custom';
 
+export interface RaChatOptions {
+  /** Setting this makes the client stream. */
+  onText?: (delta: string) => void;
+  signal?: AbortSignal;
+}
+
 /** One provider round-trip: current transcript + tool defs in, the
  *  assistant's reply (text and/or tool calls) out. Each provider client
- *  implements this; the dispatcher loop is provider-agnostic. */
+ *  implements this; the dispatcher loop is provider-agnostic. Streamed or
+ *  not, the completion is the same; when `signal` aborts, `chat` rejects. */
 export interface RaClient {
-  chat(messages: RaMessage[], tools: RaTool[]): Promise<RaCompletion>;
+  chat(messages: RaMessage[], tools: RaTool[], opts?: RaChatOptions): Promise<RaCompletion>;
 }
 
 /** A part of a multi-part message. Mirrors the dispatcher-level ChatContentBlock;

@@ -13,6 +13,7 @@ The operator CLI. Installed at `/usr/local/bin/ritsu` by `scripts/install.sh`
 | [`master-key`](#ritsu-master-key) | rotate the AES-256-GCM master key |
 | [`url`](#ritsu-url) | print operator-facing URLs |
 | [`doctor`](#ritsu-doctor) | health-check the install |
+| [`speech-model`](#ritsu-speech-model) | download the Whisper model for voice |
 
 ```bash
 ritsu help                  # top-level listing
@@ -298,6 +299,7 @@ Checks:
 - a subscription token is stored for the direct runtime (warn if missing)
 - Declared sandbox paths exist
 - Tailscale is installed + authenticated
+- a speech engine can run for the chat's microphone (warn if none, or voice is off)
 
 ```
 ritsu doctor
@@ -307,6 +309,38 @@ ritsu doctor --json     # machine-readable
 Exit code 0 if everything passes, 1 if any check fails.
 
 Needs root (checks DB writability + reads the admin-token file).
+
+---
+
+## `ritsu speech-model`
+
+Downloads the Whisper model the built-in speech engine reads: the engine that
+turns the chat's microphone recordings into text on this machine's processor,
+with nothing sent anywhere else.
+
+```
+ritsu speech-model                 # small.en (252 MB), the default
+ritsu speech-model tiny.en         # 44 MB: fastest, more mistakes
+ritsu speech-model base.en         # 80 MB
+ritsu speech-model --list          # the models, their sizes, which is installed
+ritsu speech-model remove          # delete the installed model
+```
+
+The files are the English Whisper models converted to ONNX (Apache-2.0),
+fetched from Hugging Face at a pinned revision into `speech-model/` in the data
+folder. Every file is checked against its recorded size and SHA-256 in a
+staging folder first; only a complete, verified download replaces the
+installed model, and a failed one leaves it as it was. The files take the data
+folder's owner so the service can read them. The running service reads a new
+model on the next recording, without a restart, and lets the model go from
+memory after 15 idle minutes.
+
+Which engine a recording goes to is set under Settings → Voice: automatic (the
+first of the built-in Whisper, a whisper.cpp server, OpenAI that can run), one
+of them, or off.
+
+Needs root on a server (its env file and data folder are private to the
+service user).
 
 ---
 

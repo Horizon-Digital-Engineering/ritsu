@@ -9,10 +9,6 @@ header h1 small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis
 header .info { display: flex; align-items: center; gap: 8px; }
 header .info a.chip { text-decoration: none; }
 
-/* The app's home link doubles for the hidden rail on phones. */
-.only-mobile { display: none; }
-.app-home { width: 28px; height: 28px; margin: 0; font-size: 13px; border-radius: 8px; }
-
 /* One row of tabs; scrolls sideways instead of wrapping so a wide app stays
    one line tall on a phone. */
 nav.app-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
@@ -46,7 +42,6 @@ nav.app-tabs:empty { display: none; }
 .admin-login-card button { width: 100%; padding: 9px; }
 
 @media (max-width: 900px) {
-  .only-mobile { display: flex; }
   header { flex-wrap: nowrap; }
   header .info { width: auto; margin-left: auto; }
   nav.app-tabs { flex-wrap: nowrap; }

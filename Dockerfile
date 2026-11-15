@@ -4,11 +4,11 @@
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS builder
 WORKDIR /app
 
-# No native deps: ritsu uses node:sqlite (built-in) and zero other C add-ons,
-# so we don't need python3/make/g++ during npm install.
+# Native add-ons (ONNX Runtime, sharp) ship prebuilt, so no compiler toolchain.
+# Speech runs on the CPU, so ONNX Runtime's optional CUDA download is skipped.
 
 COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+RUN if [ -f package-lock.json ]; then ONNXRUNTIME_NODE_INSTALL=skip npm ci; else ONNXRUNTIME_NODE_INSTALL=skip npm install; fi
 
 COPY tsconfig.json ./
 COPY src ./src

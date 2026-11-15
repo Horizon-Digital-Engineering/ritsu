@@ -97,9 +97,8 @@ describe('ritsu-agent native ask_agent guards', () => {
 
   it('denies an opted-in escalation when the operator rejects (surfacing the reason)', async () => {
     const deps = fakeDeps({ approvals: fakeApprovals('rejected', 'not now') }, { escalation_approvable: true });
-    const out = await askAgent(deps).handler({ agent_id: 'privileged', message: 'do the thing' });
-    assert.match(String(out), /rejected/i);
-    assert.match(String(out), /not now/);
+    await assert.rejects(askAgent(deps).handler({ agent_id: 'privileged', message: 'do the thing' }),
+      { name: 'OperatorRejected', message: 'Operator rejected this escalated call to privileged: not now' });
   });
 
   it('hard-denies escalation for an injection-exposed (crm/social) caller even when opted in', async () => {

@@ -1,5 +1,6 @@
 import { conversationBus } from './conversation-bus.js';
 import type { Db } from './db.js';
+import type { ToolActivity } from './model/dispatcher.js';
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -28,6 +29,8 @@ export interface ConversationMessage {
    *  context path (AgentBase) re-attaches the current turn's images directly,
    *  so these are NOT replayed into history. */
   attachments?: MessageAttachment[];
+  /** Display only — never replayed into model context. */
+  tool_calls?: ToolActivity[];
 }
 
 /**
@@ -76,6 +79,7 @@ export interface ConversationStore {
     caller_label?: string | null,
     attachments?: MessageAttachment[],
     parent_message_id?: number | null,
+    tool_calls?: ToolActivity[],
   ): number;
   /** Id of the newest message in a conversation, or null when empty. The
    *  default parent for the next appended turn. */
@@ -131,7 +135,7 @@ export interface ConversationStore {
   /** True when this is the agent's canonical human thread — the anchor
    *  telegram and bare asks share. Never creates one. */
   isHumanAnchor(conversation_id: number): boolean;
-  /** Delete a conversation with its messages and attachments. The caller
+  /** Delete a conversation with its messages, attachments and tool calls. The caller
    *  refuses the human anchor first — deleting it would silently promote the
    *  next-oldest thread into being the default chat. */
   deleteConversation(conversation_id: number): boolean;
@@ -158,6 +162,7 @@ export class SqliteConversationStore implements ConversationStore {
     caller_label?: string | null,
     attachments?: MessageAttachment[],
     parent_message_id?: number | null,
+    tool_calls?: ToolActivity[],
   ): number {
     // One transaction: an attachment insert that fails partway used to leave
     // the message row with some of its images and no way to tell.
@@ -176,6 +181,15 @@ export class SqliteConversationStore implements ConversationStore {
           'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) VALUES (?, ?, ?, ?)',
         );
         for (const a of attachments) ins.run(id, conversation_id, a.media_type, a.data);
+      }
+      if (tool_calls && tool_calls.length > 0) {
+        const ins = this.db.prepare(
+          'INSERT INTO message_tool_calls (message_id, conversation_id, call_id, name, args, result, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        );
+        // A call can only be stored finished; one still marked running did not finish.
+        for (const c of tool_calls) {
+          ins.run(id, conversation_id, c.id, c.name, c.args, c.result ?? '', c.status === 'done' ? 'done' : 'error');
+        }
       }
       return id;
     })();
@@ -243,6 +257,25 @@ export class SqliteConversationStore implements ConversationStore {
         for (const r of rows) {
           const list = byMessage.get(r.id);
           if (list) r.attachments = list;
+        }
+      }
+      const calls = this.db
+        .prepare(
+          `SELECT message_id, call_id, name, args, result, status FROM message_tool_calls
+           WHERE message_id IN (${placeholders})
+           ORDER BY id ASC`,
+        )
+        .all(...ids) as Array<{ message_id: number; call_id: string; name: string; args: string; result: string; status: 'done' | 'error' }>;
+      if (calls.length > 0) {
+        const byMessage = new Map<number, ToolActivity[]>();
+        for (const c of calls) {
+          const list = byMessage.get(c.message_id) ?? [];
+          list.push({ id: c.call_id, name: c.name, args: c.args, status: c.status, result: c.result });
+          byMessage.set(c.message_id, list);
+        }
+        for (const r of rows) {
+          const list = byMessage.get(r.id);
+          if (list) r.tool_calls = list;
         }
       }
     }
@@ -376,9 +409,14 @@ export class SqliteConversationStore implements ConversationStore {
         'INSERT INTO message_attachments (message_id, conversation_id, media_type, data) ' +
         'SELECT ?, ?, media_type, data FROM message_attachments WHERE message_id = ? ORDER BY id ASC',
       );
+      const insCalls = this.db.prepare(
+        'INSERT INTO message_tool_calls (message_id, conversation_id, call_id, name, args, result, status, created_at) ' +
+        'SELECT ?, ?, call_id, name, args, result, status, created_at FROM message_tool_calls WHERE message_id = ? ORDER BY id ASC',
+      );
       for (const m of msgs) {
         const nm = Number(insMsg.run(newId, m.role, m.content, m.caller_label, m.created_at).lastInsertRowid);
         insAtt.run(nm, newId, m.id);
+        insCalls.run(nm, newId, m.id);
       }
     })();
     return newId;
@@ -402,6 +440,7 @@ export class SqliteConversationStore implements ConversationStore {
   deleteConversation(conversation_id: number): boolean {
     let removed = false;
     this.db.transaction(() => {
+      this.db.prepare('DELETE FROM message_tool_calls WHERE conversation_id = ?').run(conversation_id);
       this.db.prepare('DELETE FROM message_attachments WHERE conversation_id = ?').run(conversation_id);
       this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversation_id);
       removed = this.db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation_id).changes > 0;

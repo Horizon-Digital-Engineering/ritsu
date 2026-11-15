@@ -8,10 +8,12 @@
  * results with calls, so absent ids are synthesized (`gcall_*`). Synthesized
  * ids are never echoed back in functionResponse parts — Gemini pairs by
  * name/order; only ids the API itself issued are returned to it.
+ *
+ * Streamed chunks merge back into one response so both paths share one translation.
  */
-import { GoogleGenAI } from '@google/genai';
-import type { Content, GenerateContentConfig, GenerateContentParameters, GenerateContentResponse, Part } from '@google/genai';
-import type { RaClient, RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
+import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
+import type { Candidate, Content, GenerateContentConfig, GenerateContentParameters, Part } from '@google/genai';
+import type { RaClient, RaChatOptions, RaMessage, RaTool, RaCompletion, RaToolCall, RaProviderOptions } from './types.js';
 import { stripTrailingSlashes } from '../../util/path-utils.js';
 
 const SYNTH_ID_PREFIX = 'gcall_';
@@ -22,36 +24,85 @@ export interface GeminiClientOpts {
   providerOptions?: RaProviderOptions;
   /** Injected by tests; defaults to the live SDK call. */
   generateContentImpl?: (req: GenerateContentParameters) => Promise<GenerateContentResponse>;
+  /** Injected by tests. */
+  generateContentStreamImpl?: (req: GenerateContentParameters) => Promise<AsyncGenerator<GenerateContentResponse>>;
 }
 
 export class GeminiClient implements RaClient {
   private readonly model: string;
   private readonly providerOptions: RaProviderOptions | undefined;
   private readonly generate: (req: GenerateContentParameters) => Promise<GenerateContentResponse>;
+  private readonly generateStream: (req: GenerateContentParameters) => Promise<AsyncGenerator<GenerateContentResponse>>;
 
   constructor(opts: GeminiClientOpts) {
     this.model = opts.model;
     this.providerOptions = opts.providerOptions;
-    if (opts.generateContentImpl) {
-      this.generate = opts.generateContentImpl;
-    } else {
-      const httpOptions = {
-        ...(opts.providerOptions?.base_url ? { baseUrl: stripTrailingSlashes(opts.providerOptions.base_url) } : {}),
-        ...(opts.providerOptions?.api_version ? { apiVersion: opts.providerOptions.api_version } : {}),
-      };
-      const ai = new GoogleGenAI({
-        apiKey: opts.apiKey,
-        ...(Object.keys(httpOptions).length > 0 ? { httpOptions } : {}),
-      });
-      this.generate = req => ai.models.generateContent(req);
-    }
+    let ai: GoogleGenAI | undefined;
+    const live = (): GoogleGenAI => {
+      if (!ai) {
+        const httpOptions = {
+          ...(opts.providerOptions?.base_url ? { baseUrl: stripTrailingSlashes(opts.providerOptions.base_url) } : {}),
+          ...(opts.providerOptions?.api_version ? { apiVersion: opts.providerOptions.api_version } : {}),
+        };
+        ai = new GoogleGenAI({
+          apiKey: opts.apiKey,
+          ...(Object.keys(httpOptions).length > 0 ? { httpOptions } : {}),
+        });
+      }
+      return ai;
+    };
+    this.generate = opts.generateContentImpl ?? (req => live().models.generateContent(req));
+    this.generateStream = opts.generateContentStreamImpl ?? (req => live().models.generateContentStream(req));
   }
 
-  async chat(messages: RaMessage[], tools: RaTool[]): Promise<RaCompletion> {
+  async chat(messages: RaMessage[], tools: RaTool[], opts: RaChatOptions = {}): Promise<RaCompletion> {
+    const { onText, signal } = opts;
     const req = toGeminiRequest(this.model, messages, tools, this.providerOptions);
-    const res = await this.generate(req);
-    return fromGeminiResponse(res, this.model);
+    if (signal) req.config = { ...req.config, abortSignal: signal };
+    if (!onText) return fromGeminiResponse(await this.generate(req), this.model);
+
+    const chunks: GenerateContentResponse[] = [];
+    for await (const chunk of await this.generateStream(req)) {
+      chunks.push(chunk);
+      for (const p of chunk.candidates?.[0]?.content?.parts ?? []) {
+        if (p.text && !p.thought && !signal?.aborted) onText(p.text);
+      }
+      if (signal?.aborted) break;
+    }
+    signal?.throwIfAborted();
+    return fromGeminiResponse(mergeGeminiChunks(chunks), this.model);
   }
+}
+
+function mergeGeminiChunks(chunks: GenerateContentResponse[]): GenerateContentResponse {
+  const merged = new GenerateContentResponse();
+  const parts: Part[] = [];
+  let candidate: Candidate | undefined;
+  for (const chunk of chunks) {
+    const { candidates, ...fields } = chunk;
+    Object.assign(merged, fields);
+    const first = candidates?.[0];
+    if (!first) continue;
+    const { content: _content, ...meta } = first;
+    candidate = { ...candidate, ...meta };
+    for (const part of first.content?.parts ?? []) appendPart(parts, part);
+  }
+  if (candidate) merged.candidates = [{ ...candidate, content: { role: 'model', parts } }];
+  return merged;
+}
+
+function appendPart(parts: Part[], part: Part): void {
+  const last = parts.at(-1);
+  if (last && isPlainText(last) && isPlainText(part) && Boolean(last.thought) === Boolean(part.thought)) {
+    parts[parts.length - 1] = { ...last, text: (last.text ?? '') + (part.text ?? '') };
+    return;
+  }
+  parts.push({ ...part });
+}
+
+/** Text with nothing else attached (no thought signature), so safe to join. */
+function isPlainText(p: Part): boolean {
+  return typeof p.text === 'string' && Object.keys(p).every(k => k === 'text' || k === 'thought');
 }
 
 /** Translate the loop's transcript + tool defs into a generateContent

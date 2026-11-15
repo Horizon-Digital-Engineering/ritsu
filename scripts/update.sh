@@ -60,7 +60,7 @@ as_svc reset --hard "origin/${BRANCH}"
 note "now at ${BRANCH} @ $(as_svc rev-parse --short HEAD)"
 
 bold "==> Install + build"
-sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
+sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund && npm run build"
 
 bold "==> Backup + rehearse"
 # A fresh encrypted backup of the running database, then the NEW build's

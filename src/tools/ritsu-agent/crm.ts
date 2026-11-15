@@ -17,6 +17,7 @@
  * handed back.
  */
 import type { RaTool } from '../../model/ritsu-agent/types.js';
+import { OperatorRejected } from '../../model/ritsu-agent/operator-rejected.js';
 import type { SecretStore } from '../../auth/secret-store.js';
 import type { ApprovalStore } from '../../approval-store.js';
 import { loadEmailConfig, readInbox, readMessage, sendEmail } from '../../connectors/email.js';
@@ -46,20 +47,19 @@ const clampLimit = (v: unknown, def: number, min: number, max: number): number =
   return n == null ? def : Math.min(Math.max(Math.floor(n), min), max);
 };
 
-/** Block on the operator. Returns the rejection text to hand the model, or
- *  null once approved. */
+/** Block on the operator; throws OperatorRejected when they say no. */
 async function gate(
   deps: CrmToolDeps, toolName: string, args: Record<string, unknown>, noun: string,
-): Promise<string | null> {
+): Promise<void> {
   const decision = await deps.approvals.request({
     agentId: deps.agentId,
     conversationId: deps.conversationId,
     toolName,
     args,
   });
-  if (decision.state !== 'rejected') return null;
+  if (decision.state !== 'rejected') return;
   const reason = decision.reason?.trim();
-  return reason ? `Operator rejected ${noun}: ${reason}` : `Operator rejected ${noun}.`;
+  throw new OperatorRejected(reason ? `Operator rejected ${noun}: ${reason}` : `Operator rejected ${noun}.`);
 }
 
 export function buildEmailTools(deps: CrmToolDeps): RaTool[] {
@@ -149,12 +149,11 @@ export function buildEmailTools(deps: CrmToolDeps): RaTool[] {
         if (/[\r\n]/.test(subject) || /[\r\n]/.test(inReplyTo)) return 'error: header fields must not contain line breaks';
         if (!subject || !body) return 'error: subject and body are required';
         logger.info('email.send.gate', { agent_id: agentId, to, conversation_id: deps.conversationId });
-        const rejected = await gate(
+        await gate(
           deps, 'email_send_email',
           { to, subject, body, ...(inReplyTo ? { in_reply_to: inReplyTo } : {}) },
           'sending this email',
         );
-        if (rejected) return rejected;
         const cfg = loadEmailConfig(secrets);
         if (!cfg) return notConfigured;
         try {
@@ -243,10 +242,9 @@ export function buildSocialTools(deps: CrmToolDeps): RaTool[] {
         logger.info('social.post.gate', {
           agent_id: agentId, len: text.length, reply_to: replyTo || null, conversation_id: deps.conversationId,
         });
-        const rejected = await gate(
+        await gate(
           deps, 'social_post_tweet', { text, ...(replyTo ? { reply_to: replyTo } : {}) }, 'this post',
         );
-        if (rejected) return rejected;
         const cfg = loadTwitterConfig(secrets);
         if (!cfg) return noTwitter;
         try {
@@ -276,8 +274,7 @@ export function buildSocialTools(deps: CrmToolDeps): RaTool[] {
         if (!text) return 'error: text required';
         if (text.length > 3000) return `error: post is ${text.length} characters; the limit is 3000`;
         logger.info('social.linkedin.gate', { agent_id: agentId, len: text.length, conversation_id: deps.conversationId });
-        const rejected = await gate(deps, 'social_post_linkedin', { text }, 'this LinkedIn post');
-        if (rejected) return rejected;
+        await gate(deps, 'social_post_linkedin', { text }, 'this LinkedIn post');
         const cfg = loadLinkedInConfig(secrets);
         if (!cfg) return 'LinkedIn is not configured. Ask the operator to set the credentials in the Extensions tab.';
         try {

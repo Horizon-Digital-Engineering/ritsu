@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events';
 import express, { type Request, type Response } from 'express';
 import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, sep, resolve as resolvePath, normalize as normalizePath } from 'node:path';
@@ -17,6 +18,10 @@ import type { ConversationStore } from '../conversation-store.js';
 import type { ApprovalStore } from '../approval-store.js';
 import type { SecretStore } from '../auth/secret-store.js';
 import { checkPassword, type BackupManager } from '../backup.js';
+import {
+  CHOICES, NOT_WAV, SPEECH_ENGINE, SpeechError, TOO_LONG, WAV_BODY_LIMIT, WHISPER_URL, isChoice, whisperUrlError,
+  type SpeechService,
+} from '../speech/index.js';
 import { SEARCH_NS } from '../tools/ritsu-agent/search-config.js';
 import { SEARCH_PROVIDERS, isSearchProvider } from '../tools/ritsu-agent/search.js';
 import { EMAIL_NS, EMAIL_SECRET_KEYS } from '../connectors/email.js';
@@ -38,8 +43,9 @@ import { z } from 'zod';
 import { AgentDefinitionSchema, AgentDefinitionPatchSchema } from './schema.js';
 import { AGENT_TYPES } from '../agents/registry.js';
 import { eventBus } from '../event-bus.js';
-import { conversationBus, type ConversationEvent } from '../conversation-bus.js';
-import { approvalBus, type ApprovalEvent } from '../approval-bus.js';
+import { conversationBus } from '../conversation-bus.js';
+import { stopTurns } from '../turns.js';
+import { approvalBus } from '../approval-bus.js';
 import type { CommsDenialStore } from '../comms-denial-store.js';
 import { metricsHandler } from '../metrics.js';
 import { RateLimiter } from '../util/rate-limit.js';
@@ -203,6 +209,8 @@ export interface AdminDeps {
   memoryBoot?: { mode: string; remote: string | null };
   /** Operator-tunable runtime knobs. Absent = the settings UI reports 503. */
   settings?: import('../settings-store.js').SettingsStore;
+  /** Absent = the speech routes report 503. */
+  speech?: SpeechService;
 }
 
 /**
@@ -245,10 +253,14 @@ const SETTING_DEFAULTS: Record<string, string> = {
   'approvals.ttl_seconds': '86400',
   'oauth.max_per_ip_minute': '60',
   'oauth.dcr_max_per_ip_hour': '5',
+  [SPEECH_ENGINE]: 'auto',
+  [WHISPER_URL]: '',
 };
 
 /** Why a value cannot be stored under a key, or null when it can. */
 function settingError(key: string, value: string): string | null {
+  if (key === SPEECH_ENGINE) return isChoice(value) ? null : `speech engine must be one of ${CHOICES.join(', ')}`;
+  if (key === WHISPER_URL) return whisperUrlError(value);
   if (key === 'search.provider') return value === '' || isSearchProvider(value) ? null : `provider must be one of ${SEARCH_PROVIDERS.join(', ')}`;
   if (key === 'search.url') {
     if (value === '') return null;
@@ -560,6 +572,33 @@ function ensureWorkspaceDirExists(target: string, res: Response): boolean {
  *   DELETE /admin/api/tokens/:id         delete (only allowed after revoke)
  *   GET    /admin/api/tokens/:id/usage   recent audit rows for one token
  */
+/** Long enough that the nudge reaches the browser as a read of its own. */
+const SSE_NUDGE_MS = 40;
+
+/** WebKit passes a stream's newest read to the page only once another arrives,
+ *  so a short comment follows each burst, or Safari lags up to a keepalive (20 s). */
+export function streamEvents(req: Request, res: Response, bus: EventEmitter, name: string): void {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  let nudge: NodeJS.Timeout | null = null;
+  const write = (chunk: string): void => { if (!res.writableEnded && !res.destroyed) res.write(chunk); };
+  const onEvent = (ev: unknown): void => {
+    write(`data: ${JSON.stringify(ev)}\n\n`);
+    if (nudge) clearTimeout(nudge);
+    nudge = setTimeout(() => { nudge = null; write(':\n\n'); }, SSE_NUDGE_MS);
+  };
+  bus.on(name, onEvent);
+  const ping = setInterval(() => write(': keepalive\n\n'), 20_000);
+  req.on('close', () => {
+    clearInterval(ping);
+    if (nudge) clearTimeout(nudge);
+    bus.off(name, onEvent);
+  });
+}
+
 export function createAdminApp(deps: AdminDeps) {
   const { defStore, host, tokens, workspaces, pluginHost, memory, conversations, approvals, commsDenials, secrets, backup, projects, skills, prompts } = deps;
 
@@ -607,7 +646,7 @@ export function createAdminApp(deps: AdminDeps) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), interest-cohort=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), interest-cohort=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     // HSTS only when the client reached us over TLS. If a reverse proxy
@@ -728,6 +767,7 @@ export function createAdminApp(deps: AdminDeps) {
       || req.path === '/workspace' || req.path === '/workspace.js' || req.path === '/workspace.css'
       || req.path === '/ops' || req.path === '/ops.js' || req.path === '/ops.css'
       || req.path === '/apps.js' || req.path === '/apps.css' || req.path === '/rail.js'
+      || req.path === '/voice.js' || req.path === '/voice-worklet.js'
       || /^\/apps\/[^/]+$/.test(req.path)
       || req.path.startsWith('/vendor/')
       || req.path.startsWith('/plugins/')) {
@@ -923,6 +963,8 @@ export function createAdminApp(deps: AdminDeps) {
   const appsJs = readAdminAsset('apps.js');
   const appsCss = readAdminAsset('apps.css');
   const railJs = readAdminAsset('rail.js');
+  const voiceJs = readAdminAsset('voice.js');
+  const voiceWorkletJs = readAdminAsset('voice-worklet.js');
 
   // Vendored render libraries (mermaid/KaTeX) — boot-scanned into memory like
   // the other UI assets; the filename map IS the allowlist, so no path from
@@ -1033,6 +1075,14 @@ export function createAdminApp(deps: AdminDeps) {
     setNoCache(res);
     res.type('application/javascript').send(railJs);
   });
+  app.get('/admin/voice.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(voiceJs);
+  });
+  app.get('/admin/voice-worklet.js', (_req: Request, res: Response) => {
+    setNoCache(res);
+    res.type('application/javascript').send(voiceWorkletJs);
+  });
 
   // ---- log level ---------------------------------------------------------
 
@@ -1055,22 +1105,7 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   app.get('/admin/api/events/stream', (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const onEntry = (entry: unknown): void => {
-      res.write(`data: ${JSON.stringify(entry)}\n\n`);
-    };
-    eventBus.on('entry', onEntry);
-    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
-
-    req.on('close', () => {
-      clearInterval(ping);
-      eventBus.off('entry', onEntry);
-    });
+    streamEvents(req, res, eventBus, 'entry');
   });
 
   // Live conversation events — message appends + ask-start/ask-end typing
@@ -1079,22 +1114,7 @@ export function createAdminApp(deps: AdminDeps) {
   // without a manual refresh, and the typing indicator follows whoever is
   // currently asking (even if that's another session).
   app.get('/admin/api/conversations/stream', (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const onEvent = (ev: ConversationEvent): void => {
-      res.write(`data: ${JSON.stringify(ev)}\n\n`);
-    };
-    conversationBus.on('event', onEvent);
-    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
-
-    req.on('close', () => {
-      clearInterval(ping);
-      conversationBus.off('event', onEvent);
-    });
+    streamEvents(req, res, conversationBus, 'event');
   });
 
   // ---- approvals (human-in-the-loop) -------------------------------------
@@ -1135,22 +1155,7 @@ export function createAdminApp(deps: AdminDeps) {
   });
 
   app.get('/admin/api/approvals/stream', (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const onEvent = (ev: ApprovalEvent): void => {
-      res.write(`data: ${JSON.stringify(ev)}\n\n`);
-    };
-    approvalBus.on('event', onEvent);
-    const ping = setInterval(() => res.write(': keepalive\n\n'), 20_000);
-
-    req.on('close', () => {
-      clearInterval(ping);
-      approvalBus.off('event', onEvent);
-    });
+    streamEvents(req, res, approvalBus, 'event');
   });
 
   app.post('/admin/api/approvals/:id/decide', (req: Request, res: Response) => {
@@ -1412,17 +1417,7 @@ export function createAdminApp(deps: AdminDeps) {
     const ask = parseBody(req, res, AskBody);
     if (!ask) return;
     const { message, conversation_id, attachments, parent_message_id } = ask;
-    // Resolve the conversation up-front so the typing-dot SSE events
-    // carry the same id as the message events that follow. If the
-    // caller didn't supply one, this is the canonical human thread the
-    // agent will use anyway (see SqliteConversationStore.findOrStart…).
-    const resolvedConvoId = conversation_id ?? conversations.findOrStartHumanThread(def.id);
-    conversationBus.publish({
-      kind: 'ask-start',
-      conversation_id: resolvedConvoId,
-      agent_id: def.id,
-      ts: Math.floor(Date.now() / 1000),
-    });
+    // The agent publishes ask-start/ask-end itself so turns from every surface show live.
     try {
       const t0 = Date.now();
       // Admin calls always come from "the user" — there's one operator and no
@@ -1430,23 +1425,16 @@ export function createAdminApp(deps: AdminDeps) {
       // entirely for this constant, since whoever's reading the transcript
       // IS the admin.
       const r = await host.get(def.id).onMessage({
-        message, conversation_id: resolvedConvoId, caller_label: 'admin-ui', attachments,
+        message, conversation_id, caller_label: 'admin-ui', attachments,
         ...(parent_message_id !== undefined ? { parent_message_id } : {}),
       });
       // Auto-title: a cheap task model (the ingest endpoint, when configured)
       // names the chat after its first exchange — fire-and-forget, never
       // blocking the reply, never touching a manually-set title.
-      autoTitle(resolvedConvoId, message, r.reply).catch(() => undefined);
+      autoTitle(r.conversation_id, message, r.reply).catch(() => undefined);
       res.json({ ...r, duration_ms: Date.now() - t0 });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
-    } finally {
-      conversationBus.publish({
-        kind: 'ask-end',
-        conversation_id: resolvedConvoId,
-        agent_id: def.id,
-        ts: Math.floor(Date.now() / 1000),
-      });
     }
   });
 
@@ -1899,6 +1887,13 @@ export function createAdminApp(deps: AdminDeps) {
     res.status(projects.setSystemPrompt(pid, prompt) ? 200 : 404).json({ ok: true });
   });
 
+  // Stops turns from any surface; each keeps what it wrote and still answers.
+  app.post('/admin/api/conversations/:cid/stop', (req: Request, res: Response) => {
+    const cid = Number(param(req.params.cid));
+    if (!Number.isInteger(cid) || cid < 1) { res.status(400).json({ error: 'cid must be a positive integer' }); return; }
+    res.json({ stopped: stopTurns(cid) });
+  });
+
   // A sibling answer to an existing assistant turn — the original stays.
   app.post('/admin/api/conversations/:cid/regenerate', async (req: Request, res: Response) => {
     const body = parseBody(req, res, RegenBody);
@@ -2148,6 +2143,41 @@ export function createAdminApp(deps: AdminDeps) {
     }
     if (body.search_api_key?.trim()) secrets.set(SEARCH_NS, 'api_key', body.search_api_key.trim());
     res.json({ ok: true });
+  });
+
+  // Parsed here, after auth, so the global JSON parser and audit body hash never hold the audio.
+  const wavBody = express.raw({ type: ['audio/wav', 'audio/wave', 'audio/x-wav', 'application/octet-stream'], limit: WAV_BODY_LIMIT });
+  const readWavBody = (req: Request, res: Response, next: () => void): void => {
+    wavBody(req, res, (err?: unknown) => {
+      if (!err) { next(); return; }
+      if ((err as { status?: number }).status === 413) res.status(413).json({ error: TOO_LONG });
+      else res.status(400).json({ error: NOT_WAV });
+    });
+  };
+
+  app.get('/admin/api/speech', (_req: Request, res: Response) => {
+    if (!deps.speech) { res.status(503).json({ error: 'speech not wired' }); return; }
+    res.json(deps.speech.status());
+  });
+
+  app.post('/admin/api/speech/transcribe', readWavBody, async (req: Request, res: Response) => {
+    if (!deps.speech) { res.status(503).json({ error: 'speech not wired' }); return; }
+    const body: unknown = req.body;
+    if (!Buffer.isBuffer(body)) { res.status(400).json({ error: NOT_WAV }); return; }
+    // Only a hint for engines that take a prompt; an unknown chat just goes without one.
+    let context = '';
+    if (req.query.conversation_id !== undefined) {
+      const cid = Number(req.query.conversation_id);
+      if (!Number.isInteger(cid)) { res.status(400).json({ error: 'conversation_id must be integer' }); return; }
+      const agentId = conversations.agentIdOf(cid);
+      if (agentId) context = `A conversation with ${(await defStore.read(agentId))?.name || agentId}.`;
+    }
+    try {
+      res.json(await deps.speech.transcribe(body, context));
+    } catch (e) {
+      if (e instanceof SpeechError) res.status(e.status).json({ error: e.message });
+      else res.status(500).json({ error: (e as Error).message });
+    }
   });
 
   // ---- backups + export (data safety) ------------------------------------

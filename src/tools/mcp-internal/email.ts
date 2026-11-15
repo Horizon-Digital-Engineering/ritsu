@@ -127,6 +127,7 @@ export function buildAgentEmailMcp(deps: EmailMcpDeps) {
                   ? `Operator rejected sending this email: ${decision.reason.trim()}`
                   : 'Operator rejected sending this email.',
               }],
+              isError: true,
             };
           }
           const cfg = loadEmailConfig(secrets);

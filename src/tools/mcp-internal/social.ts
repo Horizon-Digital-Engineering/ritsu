@@ -127,6 +127,7 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
                   ? `Operator rejected this post: ${decision.reason.trim()}`
                   : 'Operator rejected this post.',
               }],
+              isError: true,
             };
           }
           const cfg = loadTwitterConfig(secrets);
@@ -162,6 +163,7 @@ export function buildAgentSocialMcp(deps: SocialMcpDeps) {
                   ? `Operator rejected this LinkedIn post: ${decision.reason.trim()}`
                   : 'Operator rejected this LinkedIn post.',
               }],
+              isError: true,
             };
           }
           const cfg = loadLinkedInConfig(secrets);

@@ -776,6 +776,35 @@
 
     <section id="pane-settings" class="pane">
       <div class="panel">
+        <h2>Voice</h2>
+        <p>Speech to text for the chat's microphone. <strong>Automatic</strong> sends a recording to the first engine below that can run. The built-in Whisper runs on this machine's processor from a model downloaded once on the server; a whisper.cpp server does the same elsewhere on your network; OpenAI is paid by the minute.</p>
+        <p id="voice-sentence" class="mb-3">loading…</p>
+        <div id="voice-engines" class="mb-3"></div>
+        <form class="grid" id="voice-form">
+          <label for="set-speech-engine">engine</label>
+          <select id="set-speech-engine">
+            <option value="auto">automatic</option>
+            <option value="builtin">built-in Whisper</option>
+            <option value="local">whisper server</option>
+            <option value="openai">OpenAI gpt-transcribe</option>
+            <option value="off">off</option>
+          </select>
+
+          <label for="set-speech-whisper-url">whisper server</label>
+          <input id="set-speech-whisper-url" autocomplete="off" placeholder="http://127.0.0.1:8080/inference" />
+
+          <span>built-in model</span>
+          <span id="voice-model" class="txt-muted">—</span>
+
+          <span></span>
+          <div class="form-actions">
+            <button type="button" class="primary" data-action="settings-save">Save</button>
+          </div>
+        </form>
+        <p class="form-hint">Download the built-in model on the server with <code>sudo ritsu speech-model</code> (small.en, 252 MB). <code>sudo ritsu speech-model tiny.en</code> is smaller and faster, with more mistakes. A new model is read on the next recording, without a restart.</p>
+      </div>
+
+      <div class="panel">
         <h2>Web search</h2>
         <p>The backend the <code>WebSearch</code> tool runs against. <strong>searxng</strong> is self-hosted and needs no key — only an instance URL. The hosted providers need an API key, stored encrypted. An agent can point at a different searxng instance with <code>provider_options.searxng_url</code>. Results are formatted identically whichever backend answers, so switching is invisible to agents.</p>
         <form class="grid" id="search-form">

@@ -115,7 +115,7 @@ export function backupDirFromEnv(): string | undefined {
 
 /** Files the CLI writes into the data dir as root take the data dir's owner,
  *  or the service could not read them. A no-op when the owner already matches. */
-function matchOwner(path: string, dataDir: string): void {
+export function matchOwner(path: string, dataDir: string): void {
   try {
     const { uid, gid } = statSync(dataDir);
     chownSync(path, uid, gid);

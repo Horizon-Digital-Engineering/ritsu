@@ -3147,13 +3147,42 @@ async function loadSettingsTab() {
       el.value = d.settings[key] ?? '';
       el.placeholder = `default ${d.defaults[key]}`;
     }
+    $('set-speech-engine').value = d.settings['speech.engine'] || 'auto';
+    $('set-speech-whisper-url').value = d.settings['speech.whisper_url'] || '';
     $('settings-note').textContent = '';
   } catch (e) { toast(e.message, 'err'); }
+  await loadVoiceStatus();
+}
+
+/** Wraps `x` in <code> on text that is already escaped. */
+const codeTicks = (escaped) => escaped.replaceAll(/`([^`]+)`/g, '<code>$1</code>');
+
+async function loadVoiceStatus() {
+  const sentence = $('voice-sentence');
+  try {
+    const d = await api('GET', '/admin/api/speech');
+    sentence.innerHTML = codeTicks(esc(d.sentence));
+    const rows = d.engines.map(e => `<tr>
+        <td>${esc(e.label)}${d.engine === e.id ? ' <span class="badge ok-tint">in use</span>' : ''}</td>
+        <td><span class="hstat ${e.available ? 'hstat-ok' : 'hstat-skip'}">${e.available ? 'yes' : 'no'}</span></td>
+        <td class="txt-muted">${codeTicks(esc(e.detail))}</td>
+        <td>${esc(e.cost)}</td>
+      </tr>`).join('');
+    $('voice-engines').innerHTML = `<table><thead><tr><th>engine</th><th>ready</th><th>detail</th><th>cost</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('voice-model').innerHTML = d.model
+      ? esc(d.model)
+      : 'none — download one with <code>sudo ritsu speech-model</code>';
+  } catch (e) {
+    sentence.textContent = `Voice status could not be read: ${e.message}`;
+    $('voice-engines').innerHTML = '';
+  }
 }
 async function saveSettings() {
   const settings = {
     'search.provider': $('set-search-provider').value,
     'search.url': $('set-search-url').value,
+    'speech.engine': $('set-speech-engine').value,
+    'speech.whisper_url': $('set-speech-whisper-url').value,
   };
   for (const el of document.querySelectorAll('#runtime-form [data-setting]')) {
     settings[el.dataset.setting] = el.value;
@@ -3167,7 +3196,7 @@ async function saveSettings() {
     toast('settings saved');
     // Reload first: the loader clears the note, so the note goes on after.
     await loadSettingsTab();
-    $('settings-note').textContent = 'saved — search applies now; retention and rate limits on next restart';
+    $('settings-note').textContent = 'saved — search and voice apply now; retention and rate limits on next restart';
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -3422,7 +3451,16 @@ document.addEventListener('change', (e) => {
 });
 
 // ---- bootstrap --------------------------------------------------------
+/** The hash is dropped once used, so later tab clicks own the view. */
+function openLinkedTab() {
+  const tab = location.hash.slice(1);
+  if (!TAB_TO_GROUP.has(tab)) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  switchTab(tab);
+}
 renderNav();
+openLinkedTab();
+window.addEventListener('hashchange', openLinkedTab);
 // Kick the initial-load endpoints in parallel; top-level await unwraps the
 // promises here so SonarQube's S7785 sees plain awaits, not floating
 // promises / .then() chains. refreshAgents depends on agent-types finishing
@@ -3436,8 +3474,8 @@ setInterval(refreshInfo, 5000);
 ensureApprovalsSse();
 await refreshApprovalBadge();
 
-// Tiles is the default tab → kick its polling immediately.
-startTilesPolling();
+// Tiles is the default tab → kick its polling immediately (unless a link opened another).
+if (activeTab === 'tiles') startTilesPolling();
 
 // Live filters on the Agents tab (debounced search, instant selects).
 $('agent-search')?.addEventListener('input', debounce(applyAgentFilters, 100));
@@ -3465,6 +3503,8 @@ $('mem-seed-form')?.addEventListener('submit', (e) => { e.preventDefault(); back
 $('ch-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(submitChannel()); });
 $('ak-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(mintApiKey()); });
 $('token-mint-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(mintToken()); });
+// Its one text field makes Enter submit the form, a GET that reloads Studio unsaved.
+$('voice-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(saveSettings()); });
 
 // Slide-in chat panel.
 $('ap-ask-form')?.addEventListener('submit', (e) => { e.preventDefault(); background(sendPanelAsk()); });

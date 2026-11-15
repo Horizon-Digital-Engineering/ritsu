@@ -87,7 +87,7 @@ sudo install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 700 "${INSTALL_DIR}
 note "${INSTALL_DIR}/data (owner: ${SERVICE_USER}, private)"
 
 bold "==> Install + build"
-sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && npm ci --no-audit --no-fund && npm run build"
+sudo -u "${SERVICE_USER}" -H bash -c "cd '${INSTALL_DIR}' && ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund && npm run build"
 
 bold "==> Verify the agent runtime binary"
 # The SDK ships a large native sidecar; a corrupted download installs without
@@ -104,7 +104,7 @@ if verify_runtime; then
 else
   warn "runtime binary failed to launch — reinstalling with a clean npm cache"
   sudo -u "${SERVICE_USER}" -H bash -c \
-    "cd '${INSTALL_DIR}' && npm cache clean --force && rm -rf node_modules && npm ci --no-audit --no-fund && npm run build"
+    "cd '${INSTALL_DIR}' && npm cache clean --force && rm -rf node_modules && ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund && npm run build"
   if verify_runtime; then
     note "runtime binary launches after reinstall"
   else
@@ -205,3 +205,4 @@ note "logs:    sudo journalctl -u ${SERVICE_NAME} -f"
 note "env:     sudo \$EDITOR ${ENV_FILE}  &&  sudo systemctl restart ${SERVICE_NAME}"
 note "update:  update-ritsu   (from anywhere on this box; re-running this script also works)"
 note "admin:   ssh-tunnel localhost:${admin_port:-7334} then open http://localhost:${admin_port:-7334}/admin"
+note "voice:   sudo ritsu speech-model   (downloads the built-in Whisper; or set a whisper server or an OpenAI key in Settings)"
