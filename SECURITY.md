@@ -94,7 +94,7 @@ If you're forking or self-hosting ritsu, enable the following in the GitHub UI f
 
 ## Reporting
 
-Found something? Open an issue or email `security@horizon-digital.dev`. No bounty program; just a thanks and credit if you want it.
+Found something? Open an issue or email `security@horizondigital.dev`. No bounty program; just a thanks and credit if you want it.
 
 ## Supported configurations
 
